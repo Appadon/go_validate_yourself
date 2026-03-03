@@ -1,0 +1,80 @@
+{
+  "fields": [
+    {
+      "name": "record_id",
+      "parquet_name": "record_id",
+      "type": "string",
+      "required": true,
+      "min_length": 1
+    },
+    {
+      "name": "customer_id",
+      "parquet_name": "customer_id",
+      "type": "string",
+      "required": true,
+      "min_length": 1
+    },
+    {
+      "name": "event_date",
+      "parquet_name": "event_date",
+      "type": "date",
+      "required": true,
+      "date_formats": ["2006-01-02", "2006-01-02 15:04:05"]
+    },
+    {
+      "name": "status",
+      "parquet_name": "status",
+      "type": "string",
+      "required": true,
+      "lower": true,
+      "allowed_values": ["active", "inactive", "pending", "cancelled"]
+    },
+    {
+      "name": "status_reason",
+      "parquet_name": "status_reason",
+      "type": "string",
+      "required": false,
+      "default": "unspecified",
+      "lower": true,
+      "min_length": 1
+    },
+    {
+      "name": "payment_method",
+      "parquet_name": "payment_method",
+      "type": "string",
+      "required": false,
+      "exclude_if_missing": true,
+      "default": "card",
+      "lower": true,
+      "allowed_values": ["card", "cash", "bank_transfer", "debit_order"]
+    },
+    {
+      "name": "amount",
+      "parquet_name": "amount",
+      "type": "float",
+      "required": false,
+      "default": 0.0
+    },
+    {
+      "name": "quantity",
+      "parquet_name": "quantity",
+      "type": "int",
+      "required": true,
+      "non_zero": true
+    },
+    {
+      "name": "region",
+      "parquet_name": "region",
+      "type": "string",
+      "required": false,
+      "default": "unknown",
+      "lower": true
+    },
+    {
+      "name": "expiry_date",
+      "parquet_name": "expiry_date",
+      "type": "date",
+      "required": false
+    }
+  ]
+}
