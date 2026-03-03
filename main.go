@@ -28,18 +28,20 @@ type SchemaConfig struct {
 
 // FieldRule describes validation and output behavior for one CSV column.
 type FieldRule struct {
-	Name             string      `json:"name"`
-	ParquetName      string      `json:"parquet_name"`
-	Type             string      `json:"type"`
-	Required         bool        `json:"required"`
-	ExcludeIfMissing bool        `json:"exclude_if_missing"`
-	MinLength        int         `json:"min_length"`
-	Lower            bool        `json:"lower"`
-	AllowedValues    []string    `json:"allowed_values"`
-	Default          interface{} `json:"default"`
-	NonZero          bool        `json:"non_zero"`
-	DateFormats      []string    `json:"date_formats"`
-	parsedAllowed    map[string]struct{}
+	Name                string            `json:"name"`
+	ParquetName         string            `json:"parquet_name"`
+	Type                string            `json:"type"`
+	Required            bool              `json:"required"`
+	ExcludeIfMissing    bool              `json:"exclude_if_missing"`
+	MinLength           int               `json:"min_length"`
+	Lower               bool              `json:"lower"`
+	AllowedValues       []string          `json:"allowed_values"`
+	InlineReplace       map[string]string `json:"inline_replace"`
+	Default             interface{}       `json:"default"`
+	NonZero             bool              `json:"non_zero"`
+	DateFormats         []string          `json:"date_formats"`
+	parsedAllowed       map[string]struct{}
+	parsedInlineReplace map[string]string
 }
 
 // ValidationError captures one field-level validation error for a row.
@@ -87,26 +89,28 @@ func main() {
 	successDir := flag.String("success-dir", "success", "Directory for valid parquet output")
 	errorDir := flag.String("error-dir", "errors", "Directory for validation error CSV output")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n  %s [flags] <input.csv>\n  %s [flags] -dir <input_dir>\n", os.Args[0], os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n  %s [flags] <input.csv> [write_empty_error]\n  %s [flags] -dir <input_dir> [write_empty_error]\n", os.Args[0], os.Args[0])
 		flag.PrintDefaults()
+		fmt.Fprintf(flag.CommandLine.Output(), "\nOptional positional [write_empty_error]: true|false (default false)\n")
 	}
 	flag.Parse()
 	if *threads < 1 {
 		*threads = 1
 	}
-	if *inputDir != "" && flag.NArg() > 0 {
-		exitf("use either positional <input.csv> or -dir, not both")
+	if *inputDir != "" && flag.NArg() > 1 {
+		exitf("for -dir mode, optional positional is only [write_empty_error]")
 	}
-	if *inputDir == "" && flag.NArg() != 1 {
-		flag.Usage()
-		os.Exit(2)
-	}
-	if *inputDir != "" && flag.NArg() != 0 {
+	if *inputDir == "" && (flag.NArg() < 1 || flag.NArg() > 2) {
 		flag.Usage()
 		os.Exit(2)
 	}
 	if strings.TrimSpace(*schemaPath) == "" {
 		exitf("missing required -schema <path>")
+	}
+
+	writeEmptyError, err := parseWriteEmptyErrorArg(*inputDir, flag.Args())
+	if err != nil {
+		exitf("invalid write_empty_error: %v", err)
 	}
 
 	if err := os.MkdirAll(*successDir, 0o755); err != nil {
@@ -128,7 +132,7 @@ func main() {
 	if *inputDir == "" {
 		input := flag.Arg(0)
 		parquetPath, errorCSVPath := outputPaths(input, *successDir, *errorDir)
-		stats, err := runValidationAndWriteParquet(input, parquetPath, errorCSVPath, schema)
+		stats, err := runValidationAndWriteParquet(input, parquetPath, errorCSVPath, schema, writeEmptyError)
 		if err != nil {
 			exitf("processing failed: %v", err)
 		}
@@ -145,7 +149,7 @@ func main() {
 	}
 
 	fmt.Fprintf(os.Stderr, "starting directory run: files=%d workers=%d\n", len(files), *threads)
-	summary := processDirectory(files, *threads, *successDir, *errorDir, schema)
+	summary := processDirectory(files, *threads, *successDir, *errorDir, schema, writeEmptyError)
 	fmt.Printf("done: files=%d failed_files=%d total=%d valid=%d invalid=%d workers=%d\n", summary.Files, summary.FailedFiles, summary.TotalRows, summary.ValidRows, summary.InvalidRows, *threads)
 	if summary.FailedFiles > 0 {
 		os.Exit(1)
@@ -161,7 +165,7 @@ type Stats struct {
 // runValidationAndWriteParquet validates a single CSV and writes:
 // 1) validated rows to parquet, and
 // 2) invalid rows to an error CSV.
-func runValidationAndWriteParquet(input, successOutput, errorOutput string, schema SchemaConfig) (Stats, error) {
+func runValidationAndWriteParquet(input, successOutput, errorOutput string, schema SchemaConfig, writeEmptyError bool) (Stats, error) {
 	writeCompleted := false
 	defer func() {
 		if !writeCompleted {
@@ -250,8 +254,12 @@ func runValidationAndWriteParquet(input, successOutput, errorOutput string, sche
 	if err := pWriter.WriteStop(); err != nil {
 		return stats, fmt.Errorf("close parquet writer: %w", err)
 	}
-	if err := writeErrorCSV(errorOutput, header, invalidRows); err != nil {
-		return stats, fmt.Errorf("write errors csv: %w", err)
+	if len(invalidRows) > 0 || writeEmptyError {
+		if err := writeErrorCSV(errorOutput, header, invalidRows); err != nil {
+			return stats, fmt.Errorf("write errors csv: %w", err)
+		}
+	} else if err := os.Remove(errorOutput); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return stats, fmt.Errorf("remove empty error csv: %w", err)
 	}
 
 	writeCompleted = true
@@ -324,6 +332,16 @@ func validateRow(rowNum int, record []string, headerIdx map[string]int, schema S
 
 // normalizeAndValidateValue converts one raw CSV value to a typed parquet-ready value.
 func normalizeAndValidateValue(raw string, field FieldRule) (*string, error) {
+	if len(field.parsedInlineReplace) > 0 {
+		lookup := raw
+		if field.Lower {
+			lookup = strings.ToLower(lookup)
+		}
+		if replacement, ok := field.parsedInlineReplace[lookup]; ok {
+			raw = replacement
+		}
+	}
+
 	if isMissing(raw) {
 		if field.ExcludeIfMissing {
 			return nil, errors.New("missing value excluded by rule")
@@ -464,6 +482,21 @@ func validateSchema(cfg SchemaConfig) error {
 				f.parsedAllowed[vv] = struct{}{}
 			}
 		}
+
+		if len(f.InlineReplace) > 0 {
+			f.parsedInlineReplace = make(map[string]string, len(f.InlineReplace))
+			for from, to := range f.InlineReplace {
+				key := strings.TrimSpace(from)
+				if key == "" {
+					return fmt.Errorf("field %q has empty inline_replace key", f.Name)
+				}
+				if f.Lower {
+					key = strings.ToLower(key)
+					to = strings.ToLower(to)
+				}
+				f.parsedInlineReplace[key] = strings.TrimSpace(to)
+			}
+		}
 	}
 
 	return nil
@@ -553,7 +586,7 @@ func listCSVFiles(dir string) ([]string, error) {
 }
 
 // processDirectory runs parallel file validation using a worker pool.
-func processDirectory(files []string, workers int, successDir, errorDir string, schema SchemaConfig) DirectorySummary {
+func processDirectory(files []string, workers int, successDir, errorDir string, schema SchemaConfig, writeEmptyError bool) DirectorySummary {
 	jobs := make(chan string)
 	results := make(chan FileResult, workers*4)
 	var wg sync.WaitGroup
@@ -565,7 +598,7 @@ func processDirectory(files []string, workers int, successDir, errorDir string, 
 			defer wg.Done()
 			for input := range jobs {
 				parquetPath, errorPath := outputPaths(input, successDir, errorDir)
-				stats, err := runValidationAndWriteParquet(input, parquetPath, errorPath, schema)
+				stats, err := runValidationAndWriteParquet(input, parquetPath, errorPath, schema, writeEmptyError)
 				results <- FileResult{
 					Input:       input,
 					ParquetPath: parquetPath,
@@ -652,4 +685,17 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm%02ds", m, s)
 	}
 	return fmt.Sprintf("%ds", s)
+}
+
+func parseWriteEmptyErrorArg(inputDir string, args []string) (bool, error) {
+	if inputDir == "" {
+		if len(args) < 2 {
+			return false, nil
+		}
+		return strconv.ParseBool(strings.TrimSpace(args[1]))
+	}
+	if len(args) == 0 {
+		return false, nil
+	}
+	return strconv.ParseBool(strings.TrimSpace(args[0]))
 }
