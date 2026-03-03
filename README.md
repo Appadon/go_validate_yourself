@@ -28,7 +28,7 @@ Single file:
   -schema policy_schema.json \
   -success-dir success \
   -error-dir errors \
-  input_file.csv
+  input_file.csv [write_empty_error]
 ```
 
 Directory mode (concurrent):
@@ -38,7 +38,8 @@ Directory mode (concurrent):
   -dir path_to_files \
   -t 8 \
   -success-dir success \
-  -error-dir errors
+  -error-dir errors \
+  [write_empty_error]
 ```
 
 CLI help:
@@ -48,6 +49,7 @@ CLI help:
 
 ## Arguments
 - Positional `<input.csv>`: validates one file.
+- Optional positional `[write_empty_error]`: `true|false` (default `false`). When `false`, no error CSV is written for files with zero invalid rows.
 - `-dir <path>`: validates all `.csv` files in a directory.
 - `-t <n>`: number of workers in directory mode (default `1`).
 - `-schema <path>`: schema JSON path (required).
@@ -88,8 +90,23 @@ Per-field options:
 - `min_length`: minimum length for `string`
 - `lower`: lowercase normalization before validation
 - `allowed_values`: accepted set for `string`
+- `inline_replace`: per-column exact replacements applied before missing/required/type checks
 - `non_zero`: enforce non-zero for `int`
 - `date_formats`: parse layouts for `date` (defaults include `2006-01-02` and `2006-01-02 15:04:05`)
+
+Example `inline_replace`:
+```json
+{
+  "name": "Payment Type",
+  "type": "string",
+  "lower": true,
+  "inline_replace": {
+    "cahs": "cash",
+    "debitorder": "debit order"
+  },
+  "allowed_values": ["cash/card", "debit order", "cash", "card"]
+}
+```
 
 Missing/null-like values recognized:
 - empty string, `none`, `null`, `nan`, `na`, `n/a` (case-insensitive)

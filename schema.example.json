@@ -46,6 +46,10 @@
       "exclude_if_missing": true,
       "default": "card",
       "lower": true,
+      "inline_replace": {
+        "cahs": "cash",
+        "debitorder": "debit_order"
+      },
       "allowed_values": ["card", "cash", "bank_transfer", "debit_order"]
     },
     {
