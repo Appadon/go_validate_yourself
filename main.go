@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"rt_policies_validator/internal/console"
-	"rt_policies_validator/internal/splitcsv"
-	"rt_policies_validator/internal/validator"
+	"go_validate_yourself/internal/console"
+	"go_validate_yourself/internal/splitcsv"
+	"go_validate_yourself/internal/validator"
 )
 
 /* cliOptions holds parsed command-line flags. */

@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rt_policies_validator/internal/console"
+	"go_validate_yourself/internal/console"
 
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/writer"

@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rt_policies_validator/internal/console"
+	"go_validate_yourself/internal/console"
 )
 
 /* Config defines behavior for splitting one CSV into many files by key. */
