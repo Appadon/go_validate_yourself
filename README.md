@@ -9,8 +9,6 @@ High-throughput CSV data quality pipeline written in Go.
 - write invalid rows to error CSV files,
 - run the full split+validate pipeline in one command (auto mode).
 
-This is designed for production ingestion workflows where you need deterministic outputs, strict validation, and fast batch processing.
-
 ## Table of Contents
 - [What It Does](#what-it-does)
 - [Core Concepts](#core-concepts)
@@ -60,23 +58,22 @@ go build -o gvy .
 
 ## Quick Start
 
-### 1) Validate one CSV file
+### 1) Run the full pipeline in one command (auto mode)
+```bash
+./gvy example_dataset.csv example_schema.json
+```
+This will:
+- auto-detect split key as the first CSV header column (unless `-split-primary-key` is provided),
+- split into `-split-output-dir` (default `split`),
+- validate all split files into `-success-dir` and `-error-dir`.
+
+### 2) Validate one CSV file
 ```bash
 ./gvy \
   -schema example_schema.json \
   -success-dir success \
   -error-dir errors \
   example.csv
-```
-
-### 2) Validate all CSV files in a directory with 8 workers
-```bash
-./gvy \
-  -schema example_schema.json \
-  -dir split \
-  -t 8 \
-  -success-dir success \
-  -error-dir errors
 ```
 
 ### 3) Split one large CSV by primary key
@@ -87,14 +84,15 @@ go build -o gvy .
   -split-output-dir split
 ```
 
-### 4) Run the full pipeline in one command (auto mode)
+### 4) Validate all CSV files in a directory with 8 workers
 ```bash
-./gvy example_dataset.csv example_schema.json
+./gvy \
+  -schema example_schema.json \
+  -dir split \
+  -t 8 \
+  -success-dir success \
+  -error-dir errors
 ```
-This will:
-- auto-detect split key as the first CSV header column (unless `-split-primary-key` is provided),
-- split into `-split-output-dir` (default `split`),
-- validate all split files into `-success-dir` and `-error-dir`.
 
 ## CLI Modes
 
