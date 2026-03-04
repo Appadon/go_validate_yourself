@@ -185,7 +185,7 @@ Directory:
 ## Schema Reference
 `schema.json` drives all CSV validation and Parquet typing. The structure below is an anonymized, production-style template based on `policy_schema.json` rule patterns.
 
-### Detailed `schema.json` Blueprint (Anonymized)
+### Detailed `schema.json` Template
 ```json
 {
   "fields": [
@@ -231,20 +231,6 @@ Use this as a pattern:
 - Replace each `name` with your real CSV header (exact match required).
 - Keep anonymized names out of production schemas; they are examples only.
 - Keep `parquet_name` in stable `snake_case` for downstream analytics.
-
-### Privacy-Safe Schema Authoring Checklist
-- Do not commit real customer or internal business labels to public repos; use neutral placeholders in docs and examples.
-- Treat `name` values as sensitive when they reveal domain internals; redact or generalize them before sharing externally.
-- Keep `parquet_name` stable and generic so analytics logic does not expose private terminology.
-- Use example defaults and allowed values in documentation (for example `unknown`, `default_method`) instead of production literals.
-- Replace typo maps in `inline_replace` with illustrative examples only; avoid publishing real observed bad inputs.
-- Avoid including sample rows in docs if they contain IDs, dates, or combinations that can re-identify entities.
-- Add private schemas and sample data paths to `.gitignore` when they are only for local runs.
-- Before publishing, run a final doc sweep for domain-specific terms in:
-  - schema examples
-  - CLI examples
-  - error message examples
-  - file names and comments
 
 ### Field Properties
 - `name` (string, required): source CSV header name (case-sensitive match).
@@ -362,7 +348,6 @@ Additional behavior:
 │   ├── validator/validator.go  # schema loading, row validation, parquet/error writing
 │   ├── splitcsv/split.go       # streaming CSV split by primary key
 │   └── console/console.go      # structured and progress logging
-├── policy_schema.json          # example production schema
 ├── schema.example.json         # minimal schema example
 └── README.md
 ```
