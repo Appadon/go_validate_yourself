@@ -1,4 +1,4 @@
-module rt_policies_validator
+module go_validate_yourself
 
 go 1.25
 

@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"go_validate_yourself/internal/console"
 )
 
 /* Config defines behavior for splitting one CSV into many files by key. */
@@ -185,18 +188,21 @@ func reportSplitProgress(done <-chan struct{}, totalRows, missingRows *atomic.In
 			elapsed := time.Since(startedAt)
 			rowRate, byteRate := splitRates(rows, readBytes, elapsed)
 			eta := splitETA(readBytes, inputSize, byteRate)
-			fmt.Fprintf(
-				os.Stderr,
-				"split progress: rows=%d missing=%d read=%.2f%% bytes=%s row_rate=%.2f rows/s io_rate=%.2f MiB/s eta=%s elapsed=%s\n",
-				rows,
-				missing,
-				pct,
-				formatBytes(readBytes),
-				rowRate,
-				byteRate/(1024*1024),
-				eta,
-				formatDuration(elapsed),
-			)
+			estimatedTotalRows := estimateTotalRows(rows, pct)
+			readMB := bytesToMiB(readBytes)
+			totalMB := bytesToMiB(inputSize)
+			console.Progressf(console.ProgressSnapshot{
+				Segments: []string{
+					fmt.Sprintf("%.2f/%.2f mb", readMB, totalMB),
+					fmt.Sprintf("%d/%s rows", rows, estimatedTotalRows),
+					fmt.Sprintf("%.2f%%", pct),
+					fmt.Sprintf("%.2f rows/s", rowRate),
+					fmt.Sprintf("read=%s io=%.2f MiB", console.FormatBytes(readBytes), byteRate/(1024*1024)),
+					fmt.Sprintf("%d missing", missing),
+					fmt.Sprintf("eta %s", eta),
+					fmt.Sprintf("elapsed %s", console.FormatDuration(elapsed)),
+				},
+			})
 		case <-done:
 			return
 		}
@@ -230,19 +236,26 @@ func splitETA(readBytes, inputSize int64, byteRate float64) string {
 		return "unknown"
 	}
 	etaSeconds := float64(inputSize-readBytes) / byteRate
-	return formatDuration(time.Duration(etaSeconds) * time.Second)
+	return console.FormatDuration(time.Duration(etaSeconds) * time.Second)
 }
 
 /* printSplitFinalProgress logs one final completed progress line. */
 func printSplitFinalProgress(rows, missing, readBytes int64, startedAt time.Time) {
-	fmt.Fprintf(
-		os.Stderr,
-		"split progress: rows=%d missing=%d read=100.00%% bytes=%s elapsed=%s\n",
-		rows,
-		missing,
-		formatBytes(readBytes),
-		formatDuration(time.Since(startedAt)),
-	)
+	elapsed := time.Since(startedAt)
+	rowRate, byteRate := splitRates(rows, readBytes, elapsed)
+	readMB := bytesToMiB(readBytes)
+	console.Progressf(console.ProgressSnapshot{
+		Segments: []string{
+			fmt.Sprintf("%.2f/%.2f mb", readMB, readMB),
+			fmt.Sprintf("%d/%d rows", rows, rows),
+			"100.00%",
+			fmt.Sprintf("%.2f rows/s", rowRate),
+			fmt.Sprintf("read=%s io=%.2f MiB", console.FormatBytes(readBytes), byteRate/(1024*1024)),
+			fmt.Sprintf("%d missing", missing),
+			"eta 0s",
+			fmt.Sprintf("elapsed %s", console.FormatDuration(elapsed)),
+		},
+	})
 }
 
 /* processSplitRows performs the input streaming loop and dispatches records by key. */
@@ -461,45 +474,25 @@ type countingReader struct {
 	bytesRead atomic.Int64
 }
 
+func estimateTotalRows(rows int64, pct float64) string {
+	if pct <= 0 || pct > 100 {
+		return "?"
+	}
+	estimated := int64(math.Round(float64(rows) * 100.0 / pct))
+	if estimated < rows {
+		estimated = rows
+	}
+	return fmt.Sprintf("%d", estimated)
+}
+
+func bytesToMiB(v int64) float64 {
+	return float64(v) / (1024 * 1024)
+}
+
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	if n > 0 {
 		c.bytesRead.Add(int64(n))
 	}
 	return n, err
-}
-
-func formatDuration(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	seconds := int(d.Seconds())
-	h := seconds / 3600
-	m := (seconds % 3600) / 60
-	s := seconds % 60
-	if h > 0 {
-		return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
-	}
-	if m > 0 {
-		return fmt.Sprintf("%dm%02ds", m, s)
-	}
-	return fmt.Sprintf("%ds", s)
-}
-
-func formatBytes(v int64) string {
-	const (
-		ki = 1024
-		mi = 1024 * ki
-		gi = 1024 * mi
-	)
-	switch {
-	case v >= gi:
-		return fmt.Sprintf("%.2f GiB", float64(v)/gi)
-	case v >= mi:
-		return fmt.Sprintf("%.2f MiB", float64(v)/mi)
-	case v >= ki:
-		return fmt.Sprintf("%.2f KiB", float64(v)/ki)
-	default:
-		return fmt.Sprintf("%d B", v)
-	}
 }

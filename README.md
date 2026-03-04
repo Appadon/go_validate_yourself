@@ -1,6 +1,6 @@
 # Go Validate Yourself
 
-`validatecsv` validates split policy CSV files against a JSON schema and writes:
+`gvy` validates split policy CSV files against a JSON schema and writes:
 - validated records to Parquet (`success/<file>.parquet`)
 - rejected records to CSV (`errors/<file>_error.csv`)
 
@@ -19,14 +19,14 @@ It supports split mode, single-file validation mode, and high-throughput directo
 ## Build
 ```bash
 go mod tidy
-go build -o validatecsv .
+go build -o gvy .
 ```
 
 ## Usage
 
 Split one large CSV by primary key:
 ```bash
-./validatecsv \
+./gvy \
   -split-input giant.csv \
   -split-primary-key "Policy Number"
 ```
@@ -38,7 +38,7 @@ Optional split flags (defaults shown):
 
 Single file:
 ```bash
-./validatecsv \
+./gvy \
   -schema policy_schema.json \
   -success-dir success \
   -error-dir errors \
@@ -47,7 +47,7 @@ Single file:
 
 Directory mode (concurrent):
 ```bash
-./validatecsv \
+./gvy \
   -schema policy_schema.json \
   -dir path_to_files \
   -t 8 \
@@ -58,7 +58,7 @@ Directory mode (concurrent):
 
 CLI help:
 ```bash
-./validatecsv -h
+./gvy -h
 ```
 
 ## Arguments

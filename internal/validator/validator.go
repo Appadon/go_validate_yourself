@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go_validate_yourself/internal/console"
+
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/writer"
 )
@@ -388,7 +390,7 @@ func ProcessDirectory(files []string, workers int, successDir, errorDir string, 
 		received.Add(1)
 		if r.Err != nil {
 			summary.FailedFiles++
-			fmt.Fprintf(os.Stderr, "file=%s status=failed error=%v\n", r.Input, r.Err)
+			console.Errorf("file=%s status=failed error=%v", r.Input, r.Err)
 			continue
 		}
 		summary.TotalRows += r.Stats.TotalRows
@@ -449,16 +451,15 @@ func reportDirectoryProgress(done <-chan struct{}, received *atomic.Int64, total
 			elapsed := time.Since(startedAt)
 			rate := directoryRate(completed, elapsed)
 			eta := directoryETA(total-int(completed), rate)
-			fmt.Fprintf(
-				os.Stderr,
-				"progress: %d/%d files (%.2f%%) rate=%.2f files/s eta=%s elapsed=%s\n",
-				completed,
-				total,
-				pct,
-				rate,
-				eta,
-				formatDuration(elapsed),
-			)
+			console.Progressf(console.ProgressSnapshot{
+				Segments: []string{
+					fmt.Sprintf("%d/%d files", completed, total),
+					fmt.Sprintf("%.2f%%", pct),
+					fmt.Sprintf("%.2f files/s", rate),
+					fmt.Sprintf("eta %s", eta),
+					fmt.Sprintf("elapsed %s", console.FormatDuration(elapsed)),
+				},
+			})
 		case <-done:
 			return
 		}
@@ -486,12 +487,20 @@ func directoryETA(remaining int, rate float64) string {
 	if rate <= 0 || remaining < 0 {
 		return "unknown"
 	}
-	return formatDuration(time.Duration(float64(remaining)/rate) * time.Second)
+	return console.FormatDuration(time.Duration(float64(remaining)/rate) * time.Second)
 }
 
 /* printDirectoryFinalProgress logs one final completed progress line. */
 func printDirectoryFinalProgress(completed int64, total int) {
-	fmt.Fprintf(os.Stderr, "progress: %d/%d files (100.00%%)\n", completed, total)
+	console.Progressf(console.ProgressSnapshot{
+		Segments: []string{
+			fmt.Sprintf("%d/%d files", completed, total),
+			"100.00%",
+			"0.00 files/s",
+			"eta 0s",
+			"elapsed done",
+		},
+	})
 }
 
 func writeErrorCSV(path string, header []string, rows []InvalidRow) error {
@@ -690,21 +699,4 @@ func baseNameWithoutExt(path string) string {
 func isMissing(s string) bool {
 	v := strings.TrimSpace(strings.ToLower(s))
 	return v == "" || v == "none" || v == "null" || v == "nan" || v == "na" || v == "n/a"
-}
-
-func formatDuration(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	seconds := int(d.Seconds())
-	h := seconds / 3600
-	m := (seconds % 3600) / 60
-	s := seconds % 60
-	if h > 0 {
-		return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
-	}
-	if m > 0 {
-		return fmt.Sprintf("%dm%02ds", m, s)
-	}
-	return fmt.Sprintf("%ds", s)
 }
