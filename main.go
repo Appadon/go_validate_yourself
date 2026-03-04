@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -51,6 +52,7 @@ func main() {
 /* parseFlags parses CLI flags for both validation and split modes. */
 func parseFlags() cliOptions {
 	opts := cliOptions{}
+	flag.Usage = printUsage
 	flag.StringVar(&opts.schemaPath, "schema", "", "Schema JSON file (required)")
 	flag.StringVar(&opts.inputDir, "dir", "", "Directory containing CSV files to validate")
 	flag.IntVar(&opts.threads, "t", 1, "Number of concurrent workers for -dir mode")
@@ -294,10 +296,59 @@ func validateValidationArgs(opts cliOptions, args []string) {
 
 /* printUsageAndExit writes CLI usage and exits. */
 func printUsageAndExit(code int) {
-	fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n  %s [flags] <main.csv> <schema.json> [write_empty_error] [clear_validation_cache]  (auto mode)\n  %s [flags] -schema <schema.json> <main.csv> [write_empty_error] [clear_validation_cache]  (auto mode)\n  %s [flags] <input.csv> [write_empty_error]\n  %s [flags] -dir <input_dir> [write_empty_error]\n", os.Args[0], os.Args[0], os.Args[0], os.Args[0])
-	flag.PrintDefaults()
-	fmt.Fprintf(flag.CommandLine.Output(), "\nAuto mode optional positionals:\n  [write_empty_error]: true|false (default false)\n  [clear_validation_cache]: true|false (default true)\n")
+	printUsage()
 	os.Exit(code)
+}
+
+/* printUsage writes complete CLI help, including mode-specific positionals and examples. */
+func printUsage() {
+	out := flag.CommandLine.Output()
+	bin := filepath.Base(os.Args[0])
+	fmt.Fprintf(out, "Usage:\n")
+	fmt.Fprintf(out, "  %s [flags] <main.csv> <schema.json> [write_empty_error] [clear_validation_cache]\n", bin)
+	fmt.Fprintf(out, "  %s [flags] -schema <schema.json> <main.csv> [write_empty_error] [clear_validation_cache]\n", bin)
+	fmt.Fprintf(out, "  %s [flags] <input.csv> [write_empty_error]\n", bin)
+	fmt.Fprintf(out, "  %s [flags] -dir <input_dir> [write_empty_error]\n", bin)
+	fmt.Fprintf(out, "  %s [flags] -split-input <input.csv> -split-primary-key <header_name>\n", bin)
+
+	fmt.Fprintf(out, "\nModes:\n")
+	fmt.Fprintf(out, "  auto mode:\n")
+	fmt.Fprintf(out, "    Splits a main CSV by primary key, then validates the generated split directory.\n")
+	fmt.Fprintf(out, "    Required positional args:\n")
+	fmt.Fprintf(out, "      <main.csv> <schema.json>  (or provide -schema and only <main.csv>)\n")
+	fmt.Fprintf(out, "    Optional positional args:\n")
+	fmt.Fprintf(out, "      [write_empty_error]      true|false (default: false)\n")
+	fmt.Fprintf(out, "      [clear_validation_cache] true|false (default: true)\n")
+
+	fmt.Fprintf(out, "  single-file validation mode:\n")
+	fmt.Fprintf(out, "    Validates one CSV using a schema.\n")
+	fmt.Fprintf(out, "    Required: -schema <schema.json> <input.csv>\n")
+	fmt.Fprintf(out, "    Optional positional args:\n")
+	fmt.Fprintf(out, "      [write_empty_error]      true|false (default: false)\n")
+
+	fmt.Fprintf(out, "  directory validation mode:\n")
+	fmt.Fprintf(out, "    Validates every CSV file in a directory using a schema.\n")
+	fmt.Fprintf(out, "    Required: -schema <schema.json> -dir <input_dir>\n")
+	fmt.Fprintf(out, "    Optional positional args:\n")
+	fmt.Fprintf(out, "      [write_empty_error]      true|false (default: false)\n")
+
+	fmt.Fprintf(out, "  split-only mode:\n")
+	fmt.Fprintf(out, "    Splits one CSV into many files by primary key.\n")
+	fmt.Fprintf(out, "    Required flags: -split-input <input.csv> -split-primary-key <header_name>\n")
+
+	fmt.Fprintf(out, "\nHelp:\n")
+	fmt.Fprintf(out, "  -h, -help\n")
+	fmt.Fprintf(out, "    Show this help message.\n")
+
+	fmt.Fprintf(out, "\nFlags:\n")
+	flag.PrintDefaults()
+
+	fmt.Fprintf(out, "\nExamples:\n")
+	fmt.Fprintf(out, "  %s main.csv schema.json\n", bin)
+	fmt.Fprintf(out, "  %s -schema schema.json main.csv true false\n", bin)
+	fmt.Fprintf(out, "  %s -schema schema.json input.csv true\n", bin)
+	fmt.Fprintf(out, "  %s -schema schema.json -dir split -t 8 true\n", bin)
+	fmt.Fprintf(out, "  %s -split-input main.csv -split-primary-key policy_number -split-output-dir split\n", bin)
 }
 
 /* createOutputDirs ensures output directories exist before validation starts. */
