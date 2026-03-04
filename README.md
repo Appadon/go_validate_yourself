@@ -63,16 +63,16 @@ go build -o gvy .
 ### 1) Validate one CSV file
 ```bash
 ./gvy \
-  -schema policy_schema.json \
+  -schema example_schema.json \
   -success-dir success \
   -error-dir errors \
-  999782.csv
+  example.csv
 ```
 
 ### 2) Validate all CSV files in a directory with 8 workers
 ```bash
 ./gvy \
-  -schema member_schema.json \
+  -schema example_schema.json \
   -dir split \
   -t 8 \
   -success-dir success \
@@ -82,14 +82,14 @@ go build -o gvy .
 ### 3) Split one large CSV by primary key
 ```bash
 ./gvy \
-  -split-input member_dataset.csv \
+  -split-input example_dataset.csv \
   -split-primary-key "Member Number" \
   -split-output-dir split
 ```
 
 ### 4) Run the full pipeline in one command (auto mode)
 ```bash
-./gvy member_dataset.csv member_schema.json
+./gvy example_dataset.csv example_schema.json
 ```
 This will:
 - auto-detect split key as the first CSV header column (unless `-split-primary-key` is provided),
@@ -98,39 +98,7 @@ This will:
 
 ## CLI Modes
 
-### 1) Split-only mode
-Triggered when `-split-input` is provided.
-
-Use when you only want to partition one CSV by key.
-
-Example:
-```bash
-./gvy \
-  -split-input member_dataset.csv \
-  -split-primary-key "Member Number" \
-  -split-output-dir split \
-  -split-max-open 256 \
-  -split-missing-file missing_keys.csv
-```
-
-### 2) Validation mode
-Triggered when not in split-only mode and not in auto mode.
-
-You can validate:
-- a single CSV file, or
-- all CSV files in a directory (`-dir`).
-
-Single-file:
-```bash
-./gvy -schema member_schema.json input.csv [write_empty_error]
-```
-
-Directory:
-```bash
-./gvy -schema member_schema.json -dir split -t 8 [write_empty_error]
-```
-
-### 3) Auto mode (split + validate)
+### 1) Auto mode (split + validate)
 Auto mode is selected when:
 - `-split-input` is not set,
 - `-dir` is not set,
@@ -152,6 +120,38 @@ Behavior:
 - success dir,
 - error dir,
 before running.
+
+### 2) Split-only mode
+Triggered when `-split-input` is provided.
+
+Use when you only want to partition one CSV by key.
+
+Example:
+```bash
+./gvy \
+  -split-input example_dataset.csv \
+  -split-primary-key "Member Number" \
+  -split-output-dir split \
+  -split-max-open 256 \
+  -split-missing-file missing_keys.csv
+```
+
+### 3) Validation mode
+Triggered when not in split-only mode and not in auto mode.
+
+You can validate:
+- a single CSV file, or
+- all CSV files in a directory (`-dir`).
+
+Single-file:
+```bash
+./gvy -schema example_schema.json input.csv [write_empty_error]
+```
+
+Directory:
+```bash
+./gvy -schema example_schema.json -dir split -t 8 [write_empty_error]
+```
 
 ## CLI Reference
 
