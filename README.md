@@ -72,7 +72,7 @@ go build -o gvy .
 ### 2) Validate all CSV files in a directory with 8 workers
 ```bash
 ./gvy \
-  -schema policy_schema.json \
+  -schema member_schema.json \
   -dir split \
   -t 8 \
   -success-dir success \
@@ -82,14 +82,14 @@ go build -o gvy .
 ### 3) Split one large CSV by primary key
 ```bash
 ./gvy \
-  -split-input Policies_WPP2.csv \
-  -split-primary-key "Policy Number" \
+  -split-input member_dataset.csv \
+  -split-primary-key "Member Number" \
   -split-output-dir split
 ```
 
 ### 4) Run the full pipeline in one command (auto mode)
 ```bash
-./gvy Policies_WPP2.csv policy_schema.json
+./gvy member_dataset.csv member_schema.json
 ```
 This will:
 - auto-detect split key as the first CSV header column (unless `-split-primary-key` is provided),
@@ -106,8 +106,8 @@ Use when you only want to partition one CSV by key.
 Example:
 ```bash
 ./gvy \
-  -split-input Policies_WPP2.csv \
-  -split-primary-key "Policy Number" \
+  -split-input member_dataset.csv \
+  -split-primary-key "Member Number" \
   -split-output-dir split \
   -split-max-open 256 \
   -split-missing-file missing_keys.csv
@@ -122,12 +122,12 @@ You can validate:
 
 Single-file:
 ```bash
-./gvy -schema policy_schema.json input.csv [write_empty_error]
+./gvy -schema member_schema.json input.csv [write_empty_error]
 ```
 
 Directory:
 ```bash
-./gvy -schema policy_schema.json -dir split -t 8 [write_empty_error]
+./gvy -schema member_schema.json -dir split -t 8 [write_empty_error]
 ```
 
 ### 3) Auto mode (split + validate)
