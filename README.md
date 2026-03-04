@@ -1,138 +1,312 @@
-# Go Validate Yourself
+# Go Validate Yourself (`gvy`)
 
-`gvy` validates split policy CSV files against a JSON schema and writes:
-- validated records to Parquet (`success/<file>.parquet`)
-- rejected records to CSV (`errors/<file>_error.csv`)
+High-throughput CSV data quality pipeline in Go.
 
-It supports split mode, single-file validation mode, and high-throughput directory mode with concurrent workers.
+`gvy` can:
+- split a large CSV into per-key CSV files,
+- validate CSV rows against a JSON schema,
+- write valid rows to Parquet,
+- write invalid rows to error CSV files,
+- run the full split+validate pipeline in one command (auto mode).
 
-## Features
-- JSON-configured schema (types, required, defaults, allowed values)
-- Optional row exclusion for missing/null-like values (`exclude_if_missing`)
-- Parquet output with typed columns (including logical `DATE`)
-- Error CSV with row number and field-level validation messages
-- Concurrent directory processing (`-dir` + `-t`)
-- Progress heartbeat with percentage, throughput, elapsed, and ETA
-- Streaming CSV split by primary key into many files (`-split-input`)
-- Dedicated `missing_keys.csv` for rows where the split key is blank
+This is designed for production ingestion workflows where you need deterministic outputs, strict validation, and fast batch processing.
 
-## Build
+## Table of Contents
+- [What It Does](#what-it-does)
+- [Core Concepts](#core-concepts)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [CLI Modes](#cli-modes)
+- [CLI Reference](#cli-reference)
+- [Schema Reference](#schema-reference)
+- [Output Contracts](#output-contracts)
+- [Exit Codes and Failure Behavior](#exit-codes-and-failure-behavior)
+- [Performance and Operations](#performance-and-operations)
+- [Project Layout](#project-layout)
+
+## What It Does
+Given one or more CSV files plus a schema definition:
+
+1. It validates each configured field per row.
+2. Valid rows are converted into typed Parquet columns.
+3. Invalid rows are preserved in a CSV with row-level error details.
+
+Optional split mode first partitions one big CSV by a primary key, then those split files can be validated in parallel.
+
+## Core Concepts
+- Schema-driven validation: no hardcoded field logic.
+- Strict output separation:
+  - `success/*.parquet` for valid rows.
+  - `errors/*_error.csv` for invalid rows.
+- Deterministic file ordering in directory mode (`.csv` files sorted by name).
+- Streaming processing for large files.
+- Progress logs every ~2 seconds for long-running split and directory-validation phases.
+
+## Installation
+
+### Requirements
+- Go `1.25+` (as defined in `go.mod`)
+
+### Build
 ```bash
 go mod tidy
 go build -o gvy .
 ```
 
-## Usage
-
-Split one large CSV by primary key:
-```bash
-./gvy \
-  -split-input giant.csv \
-  -split-primary-key "Policy Number"
-```
-
-Optional split flags (defaults shown):
-- `-split-output-dir split`
-- `-split-max-open 256`
-- `-split-missing-file missing_keys.csv`
-
-Single file:
-```bash
-./gvy \
-  -schema policy_schema.json \
-  -success-dir success \
-  -error-dir errors \
-  input_file.csv [write_empty_error]
-```
-
-Directory mode (concurrent):
-```bash
-./gvy \
-  -schema policy_schema.json \
-  -dir path_to_files \
-  -t 8 \
-  -success-dir success \
-  -error-dir errors \
-  [write_empty_error]
-```
-
-CLI help:
+### Help
 ```bash
 ./gvy -h
 ```
 
-## Arguments
-- Positional `<input.csv>`: validates one file.
-- Optional positional `[write_empty_error]`: `true|false` (default `false`). When `false`, no error CSV is written for files with zero invalid rows.
-- `-dir <path>`: validates all `.csv` files in a directory.
-- `-t <n>`: number of workers in directory mode (default `1`).
-- `-schema <path>`: schema JSON path (required).
-- `-success-dir <path>`: parquet output directory (default `success`).
+## Quick Start
+
+### 1) Validate one CSV file
+```bash
+./gvy \
+  -schema policy_schema.json \
+  -success-dir success \
+  -error-dir errors \
+  999782.csv
+```
+
+### 2) Validate all CSV files in a directory with 8 workers
+```bash
+./gvy \
+  -schema policy_schema.json \
+  -dir split \
+  -t 8 \
+  -success-dir success \
+  -error-dir errors
+```
+
+### 3) Split one large CSV by primary key
+```bash
+./gvy \
+  -split-input Policies_WPP2.csv \
+  -split-primary-key "Policy Number" \
+  -split-output-dir split
+```
+
+### 4) Run the full pipeline in one command (auto mode)
+```bash
+./gvy Policies_WPP2.csv policy_schema.json
+```
+This will:
+- auto-detect split key as the first CSV header column (unless `-split-primary-key` is provided),
+- split into `-split-output-dir` (default `split`),
+- validate all split files into `-success-dir` and `-error-dir`.
+
+## CLI Modes
+
+### 1) Split-only mode
+Triggered when `-split-input` is provided.
+
+Use when you only want to partition one CSV by key.
+
+Example:
+```bash
+./gvy \
+  -split-input Policies_WPP2.csv \
+  -split-primary-key "Policy Number" \
+  -split-output-dir split \
+  -split-max-open 256 \
+  -split-missing-file missing_keys.csv
+```
+
+### 2) Validation mode
+Triggered when not in split-only mode and not in auto mode.
+
+You can validate:
+- a single CSV file, or
+- all CSV files in a directory (`-dir`).
+
+Single-file:
+```bash
+./gvy -schema policy_schema.json input.csv [write_empty_error]
+```
+
+Directory:
+```bash
+./gvy -schema policy_schema.json -dir split -t 8 [write_empty_error]
+```
+
+### 3) Auto mode (split + validate)
+Auto mode is selected when:
+- `-split-input` is not set,
+- `-dir` is not set,
+- and positional arguments match one of:
+
+```text
+./gvy [flags] <main.csv> <schema.json> [write_empty_error] [clear_validation_cache]
+./gvy [flags] -schema <schema.json> <main.csv> [write_empty_error] [clear_validation_cache]
+```
+
+Behavior:
+- Split phase runs first.
+- Validation phase runs on the split output directory.
+- If `-split-primary-key` is omitted, the first header in `<main.csv>` is used.
+- If `-t` is omitted, auto mode uses ~60% of CPU cores (`max(1, int(0.6 * NumCPU))`).
+
+`clear_validation_cache` defaults to `true` in auto mode and removes:
+- split output dir,
+- success dir,
+- error dir,
+before running.
+
+## CLI Reference
+
+### Flags
+- `-schema <path>`: schema JSON path.
+- `-dir <path>`: directory containing CSV files for validation mode.
+- `-t <n>`: workers for `-dir` mode (validation mode default `1`; auto mode default is CPU-based when omitted).
+- `-success-dir <path>`: Parquet output directory (default `success`).
 - `-error-dir <path>`: error CSV output directory (default `errors`).
-- `-split-input <path>`: split input CSV by primary key into one-file-per-key output.
-- `-split-primary-key <header>`: header name used as split key (required for split mode).
-- `-split-output-dir <path>`: output directory for split files (default `split`).
-- `-split-max-open <n>`: max concurrently open split writers (default `256`).
-- `-split-missing-file <name>`: filename for blank-key rows (default `missing_keys.csv`).
+- `-split-input <path>`: input CSV for split-only mode.
+- `-split-output-dir <path>`: split file output directory (default `split`).
+- `-split-primary-key <header>`: header used as split key.
+- `-split-max-open <n>`: max open split file writers (default `256`).
+- `-split-missing-file <name>`: output filename for blank split-key rows (default `missing_keys.csv`).
 
-Rules:
-- Use either positional `<input.csv>` or `-dir` (not both).
-- Output directories are auto-created.
-- In split mode, rows with blank split keys are written to `missing_keys.csv`.
+### Positional Arguments
+- Validation mode:
+  - `<input.csv>` (single-file mode)
+  - `[write_empty_error]` optional `true|false`, default `false`
+- Directory validation mode:
+  - `[write_empty_error]` optional `true|false`, default `false`
+- Auto mode:
+  - `<main.csv> <schema.json>` (or `-schema <schema.json> <main.csv>`)
+  - `[write_empty_error]` optional `true|false`, default `false`
+  - `[clear_validation_cache]` optional `true|false`, default `true`
 
-## Output files
-For input `some/path/input_file.csv`:
-- `success/input_file.parquet`
-- `errors/input_file_error.csv`
+### Important Argument Rules
+- Validation mode requires `-schema`.
+- Use either single-file input or `-dir` for validation.
+- `-split-primary-key` is required in split-only mode.
+- In auto mode, omitting `-split-primary-key` enables key auto-detection (first header).
 
-Error CSV columns:
-- `__row_number`
-- `__errors`
-- original CSV columns...
+## Schema Reference
+Schema file format:
 
-## Schema format
-Schema root:
 ```json
 {
   "fields": [
-    { "name": "Policy Number", "parquet_name": "policy_number", "type": "string", "required": true, "min_length": 1 }
+    {
+      "name": "Member_Number",
+      "parquet_name": "member_number",
+      "type": "string",
+      "required": true,
+      "min_length": 1
+    }
   ]
 }
 ```
 
-Per-field options:
-- `name`: source CSV header to read
-- `parquet_name`: output parquet column name (auto-derived if empty)
-- `type`: `string | float | int | date`
-- `required`: if true, missing/null-like values fail
-- `default`: fallback value when missing/null-like (unless excluded by rule below)
-- `exclude_if_missing`: if true, missing/null-like values fail even if default exists
-- `min_length`: minimum length for `string`
-- `lower`: lowercase normalization before validation
-- `allowed_values`: accepted set for `string`
-- `inline_replace`: per-column exact replacements applied before missing/required/type checks
-- `non_zero`: enforce non-zero for `int`
-- `date_formats`: parse layouts for `date` (defaults include `2006-01-02` and `2006-01-02 15:04:05`)
+### Field Properties
+- `name` (string, required): source CSV header name.
+- `parquet_name` (string, optional): output Parquet column name. Auto-generated from `name` (snake_case) when empty.
+- `type` (string, required): one of `string | float | int | date`.
+- `required` (bool): reject missing/null-like values.
+- `exclude_if_missing` (bool): if missing/null-like, reject immediately (takes precedence over `default`).
+- `default` (any): fallback for missing/null-like values.
+- `min_length` (int): min character length for `string`.
+- `lower` (bool): lowercase normalization for string processing.
+- `allowed_values` ([]string): allowed set for `string` values.
+- `inline_replace` (object): exact value replacement map before validation.
+- `non_zero` (bool): for `int`, rejects `0`.
+- `date_formats` ([]string): parse layouts for `date`. If not provided, defaults are:
+  - `2006-01-02`
+  - `2006-01-02 15:04:05`
+  - `RFC3339`
 
-Example `inline_replace`:
-```json
-{
-  "name": "Payment Type",
-  "type": "string",
-  "lower": true,
-  "inline_replace": {
-    "cahs": "cash",
-    "debitorder": "debit order"
-  },
-  "allowed_values": ["cash/card", "debit order", "cash", "card"]
-}
+### Validation Order (Per Field)
+For each row/field:
+1. Read raw value from CSV header match.
+2. Apply `inline_replace` (exact match; case-normalized when `lower=true`).
+3. Evaluate missing/null-like.
+4. Apply `exclude_if_missing`, `default`, `required` rules.
+5. Apply type-specific checks/normalization (`string`, `float`, `int`, `date`).
+6. Emit normalized value to Parquet.
+
+### Missing/Null-like Values
+These values are treated as missing (case-insensitive):
+- `""` (empty)
+- `none`
+- `null`
+- `nan`
+- `na`
+- `n/a`
+
+### Type Notes
+- `string`: optional lowercase conversion, min length, allowed-values enforcement.
+- `float`: parsed as `float64`; written as Parquet `DOUBLE`.
+- `int`: accepts integer strings; also accepts float-looking values if mathematically integral (e.g. `"10.0"`), rejects fractional values.
+- `date`: parsed with configured/default layouts; written as Parquet logical `DATE` (`INT32` days since Unix epoch).
+
+### Schema Validation Constraints
+`gvy` fails fast if schema is invalid, including:
+- empty `fields`,
+- duplicate `name`,
+- duplicate `parquet_name`,
+- unsupported `type`,
+- empty `inline_replace` keys.
+
+## Output Contracts
+
+### Parquet output
+For input `path/to/input_file.csv`:
+- `success/input_file.parquet`
+
+Only rows that pass all schema field validations are written.
+
+### Error CSV output
+For input `path/to/input_file.csv`:
+- `errors/input_file_error.csv`
+
+Columns:
+- `__row_number`
+- `__errors`
+- original input header columns
+
+`__errors` contains pipe-separated field errors, for example:
+```text
+Payment Type: value "cashh" not in allowed_values | Benefit From Date: invalid date: "2024/13/01"
 ```
 
-Missing/null-like values recognized:
-- empty string, `none`, `null`, `nan`, `na`, `n/a` (case-insensitive)
+If a run fails while writing outputs, partial parquet/error files for that input are removed.
 
-## Operational notes
-- Files are processed in stable sorted order.
-- If writing a file fails, partial output files for that input are removed.
-- Directory mode returns non-zero exit code when one or more files fail to process.
-- Extra CSV columns are ignored unless referenced in schema.
+### Split output
+For split mode:
+- One CSV file per key under `-split-output-dir`, filename `<key>.csv` (with `/`, `\`, NUL sanitized).
+- Rows with blank split keys are written to `-split-missing-file` (created only when needed).
+
+## Exit Codes and Failure Behavior
+- `0`: success.
+- `1`: runtime/process failure (including split/validation errors, or directory validation with failed files).
+- `2`: invalid usage in argument-validation paths.
+
+Additional behavior:
+- Directory validation exits non-zero if any file fails.
+- In validation mode, output directories are created automatically.
+- In auto mode with default `clear_validation_cache=true`, target output directories are deleted before run.
+
+## Performance and Operations
+- Directory mode uses a worker pool (`-t`).
+- Split mode controls file descriptor pressure with LRU writer cache (`-split-max-open`).
+- Progress logs include throughput, elapsed time, and ETA.
+- For large runs:
+  - place input/output on fast local storage,
+  - tune `-t` based on CPU and I/O,
+  - tune `-split-max-open` based on OS file-descriptor limits.
+
+## Project Layout
+```text
+.
+├── main.go                     # CLI and mode orchestration
+├── internal/
+│   ├── validator/validator.go  # schema loading, row validation, parquet/error writing
+│   ├── splitcsv/split.go       # streaming CSV split by primary key
+│   └── console/console.go      # structured and progress logging
+├── policy_schema.json          # example production schema
+├── schema.example.json         # minimal schema example
+└── README.md
+```
