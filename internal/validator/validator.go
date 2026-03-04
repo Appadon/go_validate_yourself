@@ -20,12 +20,12 @@ import (
 	"github.com/xitongsys/parquet-go/writer"
 )
 
-// SchemaConfig defines the full validation contract loaded from JSON.
+/* SchemaConfig defines the full validation contract loaded from JSON. */
 type SchemaConfig struct {
 	Fields []FieldRule `json:"fields"`
 }
 
-// FieldRule describes validation and output behavior for one CSV column.
+/* FieldRule describes validation and output behavior for one CSV column. */
 type FieldRule struct {
 	Name                string            `json:"name"`
 	ParquetName         string            `json:"parquet_name"`
@@ -43,14 +43,14 @@ type FieldRule struct {
 	parsedInlineReplace map[string]string
 }
 
-// Stats captures row-level counts for one file.
+/* Stats captures row-level counts for one file. */
 type Stats struct {
 	TotalRows   int
 	ValidRows   int
 	InvalidRows int
 }
 
-// FileResult is the outcome of processing one input file in directory mode.
+/* FileResult is the outcome of processing one input file in directory mode. */
 type FileResult struct {
 	Input       string
 	ParquetPath string
@@ -59,7 +59,7 @@ type FileResult struct {
 	Err         error
 }
 
-// DirectorySummary contains aggregated metrics for directory processing.
+/* DirectorySummary contains aggregated metrics for directory processing. */
 type DirectorySummary struct {
 	Files       int
 	FailedFiles int
@@ -68,14 +68,14 @@ type DirectorySummary struct {
 	InvalidRows int
 }
 
-// ValidationError captures one field-level validation error for a row.
+/* ValidationError captures one field-level validation error for a row. */
 type ValidationError struct {
 	Row   int
 	Field string
 	Msg   string
 }
 
-// InvalidRow stores original data plus validation errors for error CSV output.
+/* InvalidRow stores original data plus validation errors for error CSV output. */
 type InvalidRow struct {
 	RowNum int
 	Record []string
@@ -88,7 +88,7 @@ var defaultDateFormats = []string{
 	time.RFC3339,
 }
 
-// LoadSchema reads schema configuration from JSON.
+/* LoadSchema reads schema configuration from JSON. */
 func LoadSchema(path string) (SchemaConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -101,7 +101,7 @@ func LoadSchema(path string) (SchemaConfig, error) {
 	return cfg, nil
 }
 
-// ValidateSchema normalizes and verifies schema config once at startup.
+/* ValidateSchema normalizes and verifies schema config once at startup. */
 func ValidateSchema(cfg *SchemaConfig) error {
 	if len(cfg.Fields) == 0 {
 		return errors.New("schema.fields cannot be empty")
@@ -115,10 +115,6 @@ func ValidateSchema(cfg *SchemaConfig) error {
 		f.Name = strings.TrimSpace(f.Name)
 		f.ParquetName = strings.TrimSpace(f.ParquetName)
 		f.Type = strings.ToLower(strings.TrimSpace(f.Type))
-		if f.Required == false && f.Default == nil {
-			// Keep user-provided false value; this line keeps behavior explicit.
-		}
-
 		if f.Name == "" {
 			return errors.New("field name cannot be empty")
 		}
@@ -176,63 +172,122 @@ func ValidateSchema(cfg *SchemaConfig) error {
 	return nil
 }
 
-// RunValidationAndWriteParquet validates a single CSV and writes:
-// 1) validated rows to parquet, and
-// 2) invalid rows to an error CSV.
+/*
+RunValidationAndWriteParquet validates a single CSV and writes:
+1) validated rows to parquet, and
+2) invalid rows to an error CSV.
+*/
 func RunValidationAndWriteParquet(input, successOutput, errorOutput string, schema SchemaConfig, writeEmptyError bool) (Stats, error) {
-	writeCompleted := false
-	defer func() {
-		if !writeCompleted {
-			_ = os.Remove(successOutput)
-			_ = os.Remove(errorOutput)
-		}
-	}()
+	state := &validationOutputState{
+		successOutput: successOutput,
+		errorOutput:   errorOutput,
+	}
+	defer state.cleanupOnFailure()
 
-	f, err := os.Open(input)
+	f, reader, header, headerIdx, err := openCSVWithHeaderIndex(input)
 	if err != nil {
-		return Stats{}, fmt.Errorf("open input: %w", err)
+		return Stats{}, err
 	}
 	defer f.Close()
 
+	if err := validateSchemaFieldsAgainstHeader(schema, headerIdx); err != nil {
+		return Stats{}, err
+	}
+
+	pWriter, parquetFile, err := openParquetWriter(successOutput, schema)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer parquetFile.Close()
+
+	stats, invalidRows, err := validateAndWriteRows(reader, headerIdx, schema, pWriter)
+	if err != nil {
+		return stats, err
+	}
+
+	if err := pWriter.WriteStop(); err != nil {
+		return stats, fmt.Errorf("close parquet writer: %w", err)
+	}
+	if err := finalizeErrorOutput(errorOutput, header, invalidRows, writeEmptyError); err != nil {
+		return stats, err
+	}
+
+	state.writeCompleted = true
+	return stats, nil
+}
+
+/* validationOutputState tracks output paths and removes partial files when processing fails. */
+type validationOutputState struct {
+	successOutput  string
+	errorOutput    string
+	writeCompleted bool
+}
+
+/* cleanupOnFailure removes partial success and error files when a run exits early. */
+func (s *validationOutputState) cleanupOnFailure() {
+	if s.writeCompleted {
+		return
+	}
+	_ = os.Remove(s.successOutput)
+	_ = os.Remove(s.errorOutput)
+}
+
+/* openCSVWithHeaderIndex opens input CSV and returns header plus a header-index map. */
+func openCSVWithHeaderIndex(input string) (*os.File, *csv.Reader, []string, map[string]int, error) {
+	f, err := os.Open(input)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("open input: %w", err)
+	}
+
 	reader := csv.NewReader(f)
 	reader.FieldsPerRecord = -1
-
 	header, err := reader.Read()
 	if err != nil {
-		return Stats{}, fmt.Errorf("read header: %w", err)
+		_ = f.Close()
+		return nil, nil, nil, nil, fmt.Errorf("read header: %w", err)
 	}
 
 	headerIdx := make(map[string]int, len(header))
 	for i, h := range header {
 		headerIdx[strings.TrimSpace(h)] = i
 	}
+	return f, reader, header, headerIdx, nil
+}
 
+/* validateSchemaFieldsAgainstHeader verifies required/defaulted schema fields exist in the input header. */
+func validateSchemaFieldsAgainstHeader(schema SchemaConfig, headerIdx map[string]int) error {
 	for _, field := range schema.Fields {
-		if _, ok := headerIdx[field.Name]; !ok {
-			if field.Required || field.Default != nil {
-				return Stats{}, fmt.Errorf("required schema field %q not found in CSV header", field.Name)
-			}
+		if _, ok := headerIdx[field.Name]; !ok && (field.Required || field.Default != nil) {
+			return fmt.Errorf("required schema field %q not found in CSV header", field.Name)
 		}
 	}
+	return nil
+}
 
+/* openParquetWriter creates a parquet CSV writer configured for validation output. */
+func openParquetWriter(successOutput string, schema SchemaConfig) (*writer.CSVWriter, interface{ Close() error }, error) {
 	pw, err := local.NewLocalFileWriter(successOutput)
 	if err != nil {
-		return Stats{}, fmt.Errorf("create output: %w", err)
+		return nil, nil, fmt.Errorf("create output: %w", err)
 	}
-	defer pw.Close()
 
 	parquetSchema, err := buildParquetSchemaMetadata(schema)
 	if err != nil {
-		return Stats{}, fmt.Errorf("parquet schema build: %w", err)
+		_ = pw.Close()
+		return nil, nil, fmt.Errorf("parquet schema build: %w", err)
 	}
-
 	pWriter, err := writer.NewCSVWriter(parquetSchema, pw, 4)
 	if err != nil {
-		return Stats{}, fmt.Errorf("new parquet writer: %w", err)
+		_ = pw.Close()
+		return nil, nil, fmt.Errorf("new parquet writer: %w", err)
 	}
 	pWriter.RowGroupSize = 128 * 1024 * 1024
-	pWriter.CompressionType = 1 // SNAPPY
+	pWriter.CompressionType = 1
+	return pWriter, pw, nil
+}
 
+/* validateAndWriteRows validates each CSV row, writes valid rows to parquet, and captures invalid rows. */
+func validateAndWriteRows(reader *csv.Reader, headerIdx map[string]int, schema SchemaConfig, pWriter *writer.CSVWriter) (Stats, []InvalidRow, error) {
 	stats := Stats{}
 	invalidRows := make([]InvalidRow, 0)
 	rowNum := 1
@@ -241,10 +296,10 @@ func RunValidationAndWriteParquet(input, successOutput, errorOutput string, sche
 		rowNum++
 		record, err := reader.Read()
 		if errors.Is(err, io.EOF) {
-			break
+			return stats, invalidRows, nil
 		}
 		if err != nil {
-			return stats, fmt.Errorf("read row %d: %w", rowNum, err)
+			return stats, invalidRows, fmt.Errorf("read row %d: %w", rowNum, err)
 		}
 
 		stats.TotalRows++
@@ -260,33 +315,33 @@ func RunValidationAndWriteParquet(input, successOutput, errorOutput string, sche
 		}
 
 		if err := pWriter.WriteString(outRow); err != nil {
-			return stats, fmt.Errorf("write parquet row %d: %w", rowNum, err)
+			return stats, invalidRows, fmt.Errorf("write parquet row %d: %w", rowNum, err)
 		}
 		stats.ValidRows++
 	}
-
-	if err := pWriter.WriteStop(); err != nil {
-		return stats, fmt.Errorf("close parquet writer: %w", err)
-	}
-	if len(invalidRows) > 0 || writeEmptyError {
-		if err := writeErrorCSV(errorOutput, header, invalidRows); err != nil {
-			return stats, fmt.Errorf("write errors csv: %w", err)
-		}
-	} else if err := os.Remove(errorOutput); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return stats, fmt.Errorf("remove empty error csv: %w", err)
-	}
-
-	writeCompleted = true
-	return stats, nil
 }
 
-// OutputPaths returns parquet and error paths for one input file.
+/* finalizeErrorOutput writes error rows when needed or removes stale error outputs when none exist. */
+func finalizeErrorOutput(errorOutput string, header []string, invalidRows []InvalidRow, writeEmptyError bool) error {
+	if len(invalidRows) > 0 || writeEmptyError {
+		if err := writeErrorCSV(errorOutput, header, invalidRows); err != nil {
+			return fmt.Errorf("write errors csv: %w", err)
+		}
+		return nil
+	}
+	if err := os.Remove(errorOutput); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove empty error csv: %w", err)
+	}
+	return nil
+}
+
+/* OutputPaths returns parquet and error paths for one input file. */
 func OutputPaths(input, successDir, errorDir string) (string, string) {
 	base := baseNameWithoutExt(input)
 	return filepath.Join(successDir, base+".parquet"), filepath.Join(errorDir, base+"_error.csv")
 }
 
-// ListCSVFiles finds CSV files in a directory in stable sorted order.
+/* ListCSVFiles finds CSV files in a directory in stable sorted order. */
 func ListCSVFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -302,13 +357,15 @@ func ListCSVFiles(dir string) ([]string, error) {
 			files = append(files, filepath.Join(dir, name))
 		}
 	}
-	// Stable ordering improves reproducibility and makes operational debugging easier.
 	sort.Strings(files)
 	return files, nil
 }
 
-// ProcessDirectory runs parallel file validation using a worker pool.
+/* ProcessDirectory runs parallel file validation using a worker pool. */
 func ProcessDirectory(files []string, workers int, successDir, errorDir string, schema SchemaConfig, writeEmptyError bool) DirectorySummary {
+	if workers < 1 {
+		workers = 1
+	}
 	jobs := make(chan string)
 	results := make(chan FileResult, workers*4)
 	var wg sync.WaitGroup
@@ -316,64 +373,15 @@ func ProcessDirectory(files []string, workers int, successDir, errorDir string, 
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for input := range jobs {
-				parquetPath, errorPath := OutputPaths(input, successDir, errorDir)
-				stats, err := RunValidationAndWriteParquet(input, parquetPath, errorPath, schema, writeEmptyError)
-				results <- FileResult{
-					Input:       input,
-					ParquetPath: parquetPath,
-					ErrorPath:   errorPath,
-					Stats:       stats,
-					Err:         err,
-				}
-			}
-		}()
+		go directoryWorker(jobs, results, successDir, errorDir, schema, writeEmptyError, &wg)
 	}
 
-	go func() {
-		for _, f := range files {
-			jobs <- f
-		}
-		close(jobs)
-	}()
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+	go dispatchValidationJobs(files, jobs)
+	go closeResultsOnWorkersDone(results, &wg)
 
-	// Heartbeat progress for large runs where per-file logs are too noisy.
-	doneProgress := make(chan struct{})
 	var received atomic.Int64
 	startedAt := time.Now()
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				c := received.Load()
-				pct := float64(c) * 100.0 / float64(total)
-				if total == 0 {
-					pct = 100
-				}
-				elapsed := time.Since(startedAt)
-				rate := 0.0
-				if elapsed > 0 {
-					rate = float64(c) / elapsed.Seconds()
-				}
-				remaining := total - int(c)
-				eta := "unknown"
-				if rate > 0 && remaining >= 0 {
-					eta = formatDuration(time.Duration(float64(remaining)/rate) * time.Second)
-				}
-				fmt.Fprintf(os.Stderr, "progress: %d/%d files (%.2f%%) rate=%.2f files/s eta=%s elapsed=%s\n", c, total, pct, rate, eta, formatDuration(elapsed))
-			case <-doneProgress:
-				return
-			}
-		}
-	}()
+	doneProgress := startDirectoryProgressReporter(&received, total, startedAt)
 
 	summary := DirectorySummary{Files: len(files)}
 	for r := range results {
@@ -388,8 +396,102 @@ func ProcessDirectory(files []string, workers int, successDir, errorDir string, 
 		summary.InvalidRows += r.Stats.InvalidRows
 	}
 	close(doneProgress)
-	fmt.Fprintf(os.Stderr, "progress: %d/%d files (100.00%%)\n", received.Load(), total)
+	printDirectoryFinalProgress(received.Load(), total)
 	return summary
+}
+
+/* directoryWorker processes input files from jobs and sends one result per file. */
+func directoryWorker(jobs <-chan string, results chan<- FileResult, successDir, errorDir string, schema SchemaConfig, writeEmptyError bool, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for input := range jobs {
+		parquetPath, errorPath := OutputPaths(input, successDir, errorDir)
+		stats, err := RunValidationAndWriteParquet(input, parquetPath, errorPath, schema, writeEmptyError)
+		results <- FileResult{
+			Input:       input,
+			ParquetPath: parquetPath,
+			ErrorPath:   errorPath,
+			Stats:       stats,
+			Err:         err,
+		}
+	}
+}
+
+/* dispatchValidationJobs enqueues all files and closes jobs when dispatch is complete. */
+func dispatchValidationJobs(files []string, jobs chan<- string) {
+	for _, f := range files {
+		jobs <- f
+	}
+	close(jobs)
+}
+
+/* closeResultsOnWorkersDone closes results after all workers finish. */
+func closeResultsOnWorkersDone(results chan<- FileResult, wg *sync.WaitGroup) {
+	wg.Wait()
+	close(results)
+}
+
+/* startDirectoryProgressReporter starts periodic progress logs for directory mode. */
+func startDirectoryProgressReporter(received *atomic.Int64, total int, startedAt time.Time) chan struct{} {
+	done := make(chan struct{})
+	go reportDirectoryProgress(done, received, total, startedAt)
+	return done
+}
+
+/* reportDirectoryProgress emits progress snapshots until done is closed. */
+func reportDirectoryProgress(done <-chan struct{}, received *atomic.Int64, total int, startedAt time.Time) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			completed := received.Load()
+			pct := directoryPercent(completed, total)
+			elapsed := time.Since(startedAt)
+			rate := directoryRate(completed, elapsed)
+			eta := directoryETA(total-int(completed), rate)
+			fmt.Fprintf(
+				os.Stderr,
+				"progress: %d/%d files (%.2f%%) rate=%.2f files/s eta=%s elapsed=%s\n",
+				completed,
+				total,
+				pct,
+				rate,
+				eta,
+				formatDuration(elapsed),
+			)
+		case <-done:
+			return
+		}
+	}
+}
+
+/* directoryPercent returns completion percentage for directory mode. */
+func directoryPercent(completed int64, total int) float64 {
+	if total == 0 {
+		return 100
+	}
+	return float64(completed) * 100.0 / float64(total)
+}
+
+/* directoryRate returns completed files per second. */
+func directoryRate(completed int64, elapsed time.Duration) float64 {
+	if elapsed <= 0 {
+		return 0
+	}
+	return float64(completed) / elapsed.Seconds()
+}
+
+/* directoryETA estimates remaining duration from completion rate. */
+func directoryETA(remaining int, rate float64) string {
+	if rate <= 0 || remaining < 0 {
+		return "unknown"
+	}
+	return formatDuration(time.Duration(float64(remaining)/rate) * time.Second)
+}
+
+/* printDirectoryFinalProgress logs one final completed progress line. */
+func printDirectoryFinalProgress(completed int64, total int) {
+	fmt.Fprintf(os.Stderr, "progress: %d/%d files (100.00%%)\n", completed, total)
 }
 
 func writeErrorCSV(path string, header []string, rows []InvalidRow) error {
