@@ -1,6 +1,6 @@
 # Go Validate Yourself (`gvy`)
 
-High-throughput CSV data quality pipeline in Go.
+High-throughput CSV data quality pipeline written in Go.
 
 `gvy` can:
 - split a large CSV into per-key CSV files,
