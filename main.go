@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"go_validate_yourself/internal/console"
 	"go_validate_yourself/internal/splitcsv"
@@ -31,8 +32,13 @@ type cliOptions struct {
 	splitMissingFile string
 }
 
+var runStartedAt = time.Now()
+
 /* main parses arguments and dispatches either split or validation modes. */
 func main() {
+	runStartedAt = time.Now()
+	defer logTotalRuntime()
+
 	opts := parseFlags()
 	args := flag.Args()
 
@@ -140,6 +146,7 @@ func runAutoMode(opts cliOptions, args []string) {
 
 	if clearValidationCache {
 		console.Infof("clearing validation cache directories: %s, %s, %s", opts.splitOutputDir, opts.successDir, opts.errorDir)
+		console.Infof("this might take a while depending on the size of the cache")
 		clearValidationOutputDirs(opts.splitOutputDir, opts.successDir, opts.errorDir)
 	}
 	runSplitMode(mainInput, opts.splitOutputDir, primaryKey, opts.splitMissingFile, opts.splitMaxOpen)
@@ -297,7 +304,7 @@ func validateValidationArgs(opts cliOptions, args []string) {
 /* printUsageAndExit writes CLI usage and exits. */
 func printUsageAndExit(code int) {
 	printUsage()
-	os.Exit(code)
+	exitWithCode(code)
 }
 
 /* printUsage writes complete CLI help, including mode-specific positionals and examples. */
@@ -401,7 +408,7 @@ func runDirectoryValidation(inputDir string, threads int, successDir, errorDir s
 	summary := validator.ProcessDirectory(files, threads, successDir, errorDir, schema, writeEmptyError)
 	console.Successf("directory complete files=%d failed_files=%d total=%d valid=%d invalid=%d workers=%d", summary.Files, summary.FailedFiles, summary.TotalRows, summary.ValidRows, summary.InvalidRows, threads)
 	if summary.FailedFiles > 0 {
-		os.Exit(1)
+		exitf("directory validation completed with %d failed file(s)", summary.FailedFiles)
 	}
 }
 
@@ -456,7 +463,17 @@ func parseWriteEmptyErrorArg(inputDir string, args []string) (bool, error) {
 /* exitf writes an error message to stderr and exits the process. */
 func exitf(format string, args ...interface{}) {
 	console.Errorf(format, args...)
-	os.Exit(1)
+	exitWithCode(1)
+}
+
+func exitWithCode(code int) {
+	logTotalRuntime()
+	os.Exit(code)
+}
+
+func logTotalRuntime() {
+	elapsed := time.Since(runStartedAt)
+	console.Infof("total run time %s", console.GreenValue(console.FormatDuration(elapsed)))
 }
 
 type autoModeBannerConfig struct {
