@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Config defines behavior for splitting one CSV into many files by key.
+/* Config defines behavior for splitting one CSV into many files by key. */
 type Config struct {
 	InputPath       string
 	OutputDir       string
@@ -22,7 +22,7 @@ type Config struct {
 	MissingKeysFile string
 }
 
-// Summary captures split run metrics.
+/* Summary captures split run metrics. */
 type Summary struct {
 	TotalRows      int
 	SplitRows      int
@@ -46,16 +46,65 @@ type writerCache struct {
 	createdFiles int
 }
 
-// SplitByPrimaryKey streams input rows and writes each row to <primaryKey>.csv in one output folder.
+/* SplitByPrimaryKey streams one CSV and writes each row to one output file per primary-key value. */
 func SplitByPrimaryKey(cfg Config) (Summary, error) {
+	cfg, err := normalizeSplitConfig(cfg)
+	if err != nil {
+		return Summary{}, err
+	}
+	if err := os.MkdirAll(cfg.OutputDir, 0o755); err != nil {
+		return Summary{}, fmt.Errorf("create output dir: %w", err)
+	}
+
+	in, reader, counter, inputSize, err := openInputCSV(cfg.InputPath)
+	if err != nil {
+		return Summary{}, err
+	}
+	defer in.Close()
+
+	header, keyIdx, err := readHeaderAndKeyIndex(reader, cfg.PrimaryKey)
+	if err != nil {
+		return Summary{}, err
+	}
+
+	cache := newWriterCache(cfg, header)
+	defer cache.closeAll()
+
+	var totalRows atomic.Int64
+	var missingRows atomic.Int64
+	startedAt := time.Now()
+	doneProgress := startSplitProgressReporter(&totalRows, &missingRows, counter, inputSize, startedAt)
+	defer close(doneProgress)
+
+	missing := newMissingRowWriter(cfg.OutputDir, cfg.MissingKeysFile, header)
+	defer missing.Close()
+
+	summary, err := processSplitRows(reader, header, keyIdx, cache, missing, &totalRows, &missingRows)
+	if err != nil {
+		return summary, err
+	}
+	if err := missing.Close(); err != nil {
+		return summary, err
+	}
+	if err := cache.closeAll(); err != nil {
+		return summary, err
+	}
+
+	summary.OutputFiles = cache.createdFiles
+	printSplitFinalProgress(totalRows.Load(), missingRows.Load(), counter.bytesRead.Load(), startedAt)
+	return summary, nil
+}
+
+/* normalizeSplitConfig validates mandatory options and fills default values. */
+func normalizeSplitConfig(cfg Config) (Config, error) {
 	if strings.TrimSpace(cfg.InputPath) == "" {
-		return Summary{}, errors.New("input path is required")
+		return Config{}, errors.New("input path is required")
 	}
 	if strings.TrimSpace(cfg.OutputDir) == "" {
-		return Summary{}, errors.New("output dir is required")
+		return Config{}, errors.New("output dir is required")
 	}
 	if strings.TrimSpace(cfg.PrimaryKey) == "" {
-		return Summary{}, errors.New("primary key is required")
+		return Config{}, errors.New("primary key is required")
 	}
 	if cfg.MaxOpenWriters <= 0 {
 		cfg.MaxOpenWriters = 256
@@ -63,137 +112,146 @@ func SplitByPrimaryKey(cfg Config) (Summary, error) {
 	if strings.TrimSpace(cfg.MissingKeysFile) == "" {
 		cfg.MissingKeysFile = "missing_keys.csv"
 	}
+	return cfg, nil
+}
 
-	if err := os.MkdirAll(cfg.OutputDir, 0o755); err != nil {
-		return Summary{}, fmt.Errorf("create output dir: %w", err)
+/* openInputCSV opens an input file and returns a CSV reader with byte-count tracking. */
+func openInputCSV(path string) (*os.File, *csv.Reader, *countingReader, int64, error) {
+	in, err := os.Open(path)
+	if err != nil {
+		return nil, nil, nil, 0, fmt.Errorf("open input: %w", err)
+	}
+	stat, err := in.Stat()
+	if err != nil {
+		_ = in.Close()
+		return nil, nil, nil, 0, fmt.Errorf("stat input: %w", err)
 	}
 
-	in, err := os.Open(cfg.InputPath)
-	if err != nil {
-		return Summary{}, fmt.Errorf("open input: %w", err)
-	}
-	defer in.Close()
-	inStat, err := in.Stat()
-	if err != nil {
-		return Summary{}, fmt.Errorf("stat input: %w", err)
-	}
+	counter := &countingReader{r: in}
+	reader := csv.NewReader(counter)
+	reader.FieldsPerRecord = -1
+	return in, reader, counter, stat.Size(), nil
+}
 
-	cr := &countingReader{r: in}
-	r := csv.NewReader(cr)
-	r.FieldsPerRecord = -1
-
-	header, err := r.Read()
+/* readHeaderAndKeyIndex reads the header and resolves the index of the configured primary key. */
+func readHeaderAndKeyIndex(reader *csv.Reader, primaryKey string) ([]string, int, error) {
+	header, err := reader.Read()
 	if err != nil {
-		return Summary{}, fmt.Errorf("read header: %w", err)
+		return nil, -1, fmt.Errorf("read header: %w", err)
 	}
 
 	keyIdx := -1
 	for i, h := range header {
-		if strings.TrimSpace(h) == strings.TrimSpace(cfg.PrimaryKey) {
+		if strings.TrimSpace(h) == strings.TrimSpace(primaryKey) {
 			keyIdx = i
 			break
 		}
 	}
 	if keyIdx < 0 {
-		return Summary{}, fmt.Errorf("primary key %q not found in CSV header", cfg.PrimaryKey)
+		return nil, -1, fmt.Errorf("primary key %q not found in CSV header", primaryKey)
 	}
+	return header, keyIdx, nil
+}
 
-	cache := &writerCache{
+/* newWriterCache creates the file-writer LRU cache for split outputs. */
+func newWriterCache(cfg Config, header []string) *writerCache {
+	return &writerCache{
 		outputDir: cfg.OutputDir,
 		header:    append([]string(nil), header...),
 		maxOpen:   cfg.MaxOpenWriters,
 		order:     list.New(),
 		entries:   make(map[string]*writerEntry, cfg.MaxOpenWriters),
 	}
-	defer cache.closeAll()
+}
 
-	var totalRows atomic.Int64
-	var missingRows atomic.Int64
-	doneProgress := make(chan struct{})
-	startedAt := time.Now()
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				rows := totalRows.Load()
-				missing := missingRows.Load()
-				readBytes := cr.bytesRead.Load()
-				pct := 0.0
-				if inStat.Size() > 0 {
-					pct = float64(readBytes) * 100.0 / float64(inStat.Size())
-					if pct > 100 {
-						pct = 100
-					}
-				}
-				elapsed := time.Since(startedAt)
-				rowRate := 0.0
-				byteRate := 0.0
-				if elapsed > 0 {
-					rowRate = float64(rows) / elapsed.Seconds()
-					byteRate = float64(readBytes) / elapsed.Seconds()
-				}
-				eta := "unknown"
-				if byteRate > 0 && inStat.Size() > 0 && readBytes <= inStat.Size() {
-					etaSeconds := float64(inStat.Size()-readBytes) / byteRate
-					eta = formatDuration(time.Duration(etaSeconds) * time.Second)
-				}
-				fmt.Fprintf(
-					os.Stderr,
-					"split progress: rows=%d missing=%d read=%.2f%% bytes=%s row_rate=%.2f rows/s io_rate=%.2f MiB/s eta=%s elapsed=%s\n",
-					rows,
-					missing,
-					pct,
-					formatBytes(readBytes),
-					rowRate,
-					byteRate/(1024*1024),
-					eta,
-					formatDuration(elapsed),
-				)
-			case <-doneProgress:
-				return
-			}
-		}
-	}()
-	defer close(doneProgress)
+/* startSplitProgressReporter starts periodic progress logs for split mode. */
+func startSplitProgressReporter(totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time) chan struct{} {
+	done := make(chan struct{})
+	go reportSplitProgress(done, totalRows, missingRows, counter, inputSize, startedAt)
+	return done
+}
 
-	var missingFile *os.File
-	var missingWriter *csv.Writer
-	missingPath := filepath.Join(cfg.OutputDir, cfg.MissingKeysFile)
-	missingOpened := false
-	openMissing := func() error {
-		if missingOpened {
-			return nil
+/* reportSplitProgress emits split progress snapshots until done is closed. */
+func reportSplitProgress(done <-chan struct{}, totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			rows := totalRows.Load()
+			missing := missingRows.Load()
+			readBytes := counter.bytesRead.Load()
+			pct := splitReadPercent(readBytes, inputSize)
+			elapsed := time.Since(startedAt)
+			rowRate, byteRate := splitRates(rows, readBytes, elapsed)
+			eta := splitETA(readBytes, inputSize, byteRate)
+			fmt.Fprintf(
+				os.Stderr,
+				"split progress: rows=%d missing=%d read=%.2f%% bytes=%s row_rate=%.2f rows/s io_rate=%.2f MiB/s eta=%s elapsed=%s\n",
+				rows,
+				missing,
+				pct,
+				formatBytes(readBytes),
+				rowRate,
+				byteRate/(1024*1024),
+				eta,
+				formatDuration(elapsed),
+			)
+		case <-done:
+			return
 		}
-		f, e := os.Create(missingPath)
-		if e != nil {
-			return fmt.Errorf("create missing keys file: %w", e)
-		}
-		w := csv.NewWriter(f)
-		if e := w.Write(header); e != nil {
-			_ = f.Close()
-			return fmt.Errorf("write missing keys header: %w", e)
-		}
-		missingFile = f
-		missingWriter = w
-		missingOpened = true
-		return nil
 	}
-	defer func() {
-		if missingWriter != nil {
-			missingWriter.Flush()
-		}
-		if missingFile != nil {
-			_ = missingFile.Close()
-		}
-	}()
+}
 
+/* splitReadPercent returns input read completion percentage. */
+func splitReadPercent(readBytes, inputSize int64) float64 {
+	if inputSize <= 0 {
+		return 0
+	}
+	pct := float64(readBytes) * 100.0 / float64(inputSize)
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+/* splitRates computes row and byte throughput over elapsed time. */
+func splitRates(rows, readBytes int64, elapsed time.Duration) (float64, float64) {
+	if elapsed <= 0 {
+		return 0, 0
+	}
+	seconds := elapsed.Seconds()
+	return float64(rows) / seconds, float64(readBytes) / seconds
+}
+
+/* splitETA estimates remaining time from current byte throughput. */
+func splitETA(readBytes, inputSize int64, byteRate float64) string {
+	if byteRate <= 0 || inputSize <= 0 || readBytes > inputSize {
+		return "unknown"
+	}
+	etaSeconds := float64(inputSize-readBytes) / byteRate
+	return formatDuration(time.Duration(etaSeconds) * time.Second)
+}
+
+/* printSplitFinalProgress logs one final completed progress line. */
+func printSplitFinalProgress(rows, missing, readBytes int64, startedAt time.Time) {
+	fmt.Fprintf(
+		os.Stderr,
+		"split progress: rows=%d missing=%d read=100.00%% bytes=%s elapsed=%s\n",
+		rows,
+		missing,
+		formatBytes(readBytes),
+		formatDuration(time.Since(startedAt)),
+	)
+}
+
+/* processSplitRows performs the input streaming loop and dispatches records by key. */
+func processSplitRows(reader *csv.Reader, header []string, keyIdx int, cache *writerCache, missing *missingRowWriter, totalRows, missingRows *atomic.Int64) (Summary, error) {
 	summary := Summary{}
 	for {
-		record, err := r.Read()
+		record, err := reader.Read()
 		if errors.Is(err, io.EOF) {
-			break
+			return summary, nil
 		}
 		if err != nil {
 			return summary, fmt.Errorf("read row: %w", err)
@@ -201,52 +259,111 @@ func SplitByPrimaryKey(cfg Config) (Summary, error) {
 
 		summary.TotalRows++
 		totalRows.Add(1)
-		key := ""
-		if keyIdx < len(record) {
-			key = strings.TrimSpace(record[keyIdx])
-		}
+
+		key := splitKey(record, keyIdx)
 		if key == "" {
-			if err := openMissing(); err != nil {
+			if err := missing.WriteRecord(padToHeader(record, len(header))); err != nil {
 				return summary, err
-			}
-			if err := missingWriter.Write(padToHeader(record, len(header))); err != nil {
-				return summary, fmt.Errorf("write missing key row: %w", err)
 			}
 			summary.MissingKeyRows++
 			missingRows.Add(1)
 			continue
 		}
 
-		entry, err := cache.get(key)
-		if err != nil {
+		if err := writeSplitRecord(cache, key, padToHeader(record, len(header))); err != nil {
 			return summary, err
-		}
-		if err := entry.writer.Write(padToHeader(record, len(header))); err != nil {
-			return summary, fmt.Errorf("write row for key %q: %w", key, err)
 		}
 		summary.SplitRows++
 	}
+}
 
-	if missingWriter != nil {
-		missingWriter.Flush()
-		if err := missingWriter.Error(); err != nil {
-			return summary, fmt.Errorf("flush missing keys file: %w", err)
-		}
+/* splitKey extracts and trims the split key value from a record. */
+func splitKey(record []string, keyIdx int) string {
+	if keyIdx >= len(record) {
+		return ""
 	}
+	return strings.TrimSpace(record[keyIdx])
+}
 
-	if err := cache.closeAll(); err != nil {
-		return summary, err
+/* writeSplitRecord writes one normalized record to the key-specific writer. */
+func writeSplitRecord(cache *writerCache, key string, record []string) error {
+	entry, err := cache.get(key)
+	if err != nil {
+		return err
 	}
-	summary.OutputFiles = cache.createdFiles
-	fmt.Fprintf(
-		os.Stderr,
-		"split progress: rows=%d missing=%d read=100.00%% bytes=%s elapsed=%s\n",
-		totalRows.Load(),
-		missingRows.Load(),
-		formatBytes(cr.bytesRead.Load()),
-		formatDuration(time.Since(startedAt)),
-	)
-	return summary, nil
+	if err := entry.writer.Write(record); err != nil {
+		return fmt.Errorf("write row for key %q: %w", key, err)
+	}
+	return nil
+}
+
+/* missingRowWriter lazily creates and writes the split output for missing keys. */
+type missingRowWriter struct {
+	path   string
+	header []string
+	file   *os.File
+	writer *csv.Writer
+	opened bool
+}
+
+/* newMissingRowWriter builds a lazy writer for rows with a blank split key. */
+func newMissingRowWriter(outputDir, fileName string, header []string) *missingRowWriter {
+	return &missingRowWriter{
+		path:   filepath.Join(outputDir, fileName),
+		header: append([]string(nil), header...),
+	}
+}
+
+/* WriteRecord appends one row to the missing-keys output file. */
+func (m *missingRowWriter) WriteRecord(record []string) error {
+	if err := m.ensureOpen(); err != nil {
+		return err
+	}
+	if err := m.writer.Write(record); err != nil {
+		return fmt.Errorf("write missing key row: %w", err)
+	}
+	return nil
+}
+
+/* Close flushes and closes the missing-keys output file. */
+func (m *missingRowWriter) Close() error {
+	if !m.opened {
+		return nil
+	}
+	m.writer.Flush()
+	if err := m.writer.Error(); err != nil {
+		_ = m.file.Close()
+		m.opened = false
+		return fmt.Errorf("flush missing keys file: %w", err)
+	}
+	if err := m.file.Close(); err != nil {
+		m.opened = false
+		return fmt.Errorf("close missing keys file: %w", err)
+	}
+	m.file = nil
+	m.writer = nil
+	m.opened = false
+	return nil
+}
+
+/* ensureOpen creates missing-keys output on first write and writes the header once. */
+func (m *missingRowWriter) ensureOpen() error {
+	if m.opened {
+		return nil
+	}
+	f, err := os.Create(m.path)
+	if err != nil {
+		return fmt.Errorf("create missing keys file: %w", err)
+	}
+	w := csv.NewWriter(f)
+	if err := w.Write(m.header); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write missing keys header: %w", err)
+	}
+	m.file = f
+	m.writer = w
+	m.opened = true
+	return nil
 }
 
 func (c *writerCache) get(key string) (*writerEntry, error) {
