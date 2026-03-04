@@ -185,7 +185,7 @@ Directory:
 ## Schema Reference
 `schema.json` drives all CSV validation and Parquet typing. The structure below is an anonymized, production-style template based on `policy_schema.json` rule patterns.
 
-### Detailed `schema.json` Template
+### Schema Template
 ```json
 {
   "fields": [
