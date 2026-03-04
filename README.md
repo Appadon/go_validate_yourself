@@ -80,7 +80,7 @@ This will:
 ```bash
 ./gvy \
   -split-input example_dataset.csv \
-  -split-primary-key "Member Number" \
+  -split-primary-key "Record ID" \
   -split-output-dir split
 ```
 
@@ -128,7 +128,7 @@ Example:
 ```bash
 ./gvy \
   -split-input example_dataset.csv \
-  -split-primary-key "Member Number" \
+  -split-primary-key "Record ID" \
   -split-output-dir split \
   -split-max-open 256 \
   -split-missing-file missing_keys.csv
@@ -183,30 +183,77 @@ Directory:
 - In auto mode, omitting `-split-primary-key` enables key auto-detection (first header).
 
 ## Schema Reference
-Schema file format:
+`schema.json` drives all CSV validation and Parquet typing. The structure below is an anonymized, production-style template based on `policy_schema.json` rule patterns.
 
+### Detailed `schema.json` Blueprint (Anonymized)
 ```json
 {
   "fields": [
+    {"name": "Record ID", "parquet_name": "record_id", "type": "string", "required": true, "min_length": 1},
+    {"name": "Record Group ID", "parquet_name": "record_group_id", "type": "string", "required": true, "min_length": 1},
+    {"name": "Coverage Start Date", "parquet_name": "coverage_start_date", "type": "date", "required": true},
+    {"name": "Coverage End Date", "parquet_name": "coverage_end_date", "type": "date", "required": false},
+    {"name": "Lifecycle Status", "parquet_name": "lifecycle_status", "type": "string", "required": true, "min_length": 1, "lower": true},
+    {"name": "Lifecycle Status Reason", "parquet_name": "lifecycle_status_reason", "type": "string", "required": true, "min_length": 1, "lower": true},
+    {"name": "Primary Subject Identifier", "parquet_name": "primary_subject_identifier", "type": "string", "required": true, "min_length": 1},
+    {"name": "Billing Party Identifier", "parquet_name": "billing_party_identifier", "type": "string", "required": true, "min_length": 1},
+    {"name": "Product Identifier", "parquet_name": "product_identifier", "type": "string", "required": true, "min_length": 1},
+    {"name": "Marketing Source", "parquet_name": "marketing_source", "type": "string", "required": true, "min_length": 1},
     {
-      "name": "Member_Number",
-      "parquet_name": "member_number",
+      "name": "Collection Method",
+      "parquet_name": "collection_method",
       "type": "string",
-      "required": true,
-      "min_length": 1
-    }
+      "required": false,
+      "exclude_if_missing": false,
+      "min_length": 1,
+      "default": "default_payment_method",
+      "lower": true,
+      "inline_replace": {"crad": "card"}
+    },
+    {"name": "Contract Effective Date", "parquet_name": "contract_effective_date", "type": "date", "required": true},
+    {"name": "Contract Start Date", "parquet_name": "contract_start_date", "type": "date", "required": true},
+    {"name": "Covered Subject Identifier", "parquet_name": "covered_subject_identifier", "type": "string", "required": true, "min_length": 1},
+    {"name": "Covered Amount", "parquet_name": "covered_amount", "type": "float", "required": false, "default": 0.0},
+    {"name": "Maximum Covered Amount", "parquet_name": "maximum_covered_amount", "type": "float", "required": false, "default": 0.0},
+    {"name": "Total Charge", "parquet_name": "total_charge", "type": "float", "required": false, "default": 0.0},
+    {"name": "Secondary Subject Identifier", "parquet_name": "secondary_subject_identifier", "type": "string", "required": true, "min_length": 1},
+    {"name": "Relationship Category", "parquet_name": "relationship_category", "type": "string", "required": true, "min_length": 1},
+    {"name": "Distribution Code", "parquet_name": "distribution_code", "type": "string", "required": false, "min_length": 1},
+    {"name": "Period Code", "parquet_name": "period_code", "type": "int", "required": false, "default": 0},
+    {"name": "Acquisition Channel", "parquet_name": "acquisition_channel", "type": "string", "required": false, "default": "unknown", "min_length": 1},
+    {"name": "Servicing Region", "parquet_name": "servicing_region", "type": "string", "required": true, "min_length": 1},
+    {"name": "Contract Maturity Date", "parquet_name": "contract_maturity_date", "type": "date", "required": true}
   ]
 }
 ```
 
+Use this as a pattern:
+- Replace each `name` with your real CSV header (exact match required).
+- Keep anonymized names out of production schemas; they are examples only.
+- Keep `parquet_name` in stable `snake_case` for downstream analytics.
+
+### Privacy-Safe Schema Authoring Checklist
+- Do not commit real customer or internal business labels to public repos; use neutral placeholders in docs and examples.
+- Treat `name` values as sensitive when they reveal domain internals; redact or generalize them before sharing externally.
+- Keep `parquet_name` stable and generic so analytics logic does not expose private terminology.
+- Use example defaults and allowed values in documentation (for example `unknown`, `default_method`) instead of production literals.
+- Replace typo maps in `inline_replace` with illustrative examples only; avoid publishing real observed bad inputs.
+- Avoid including sample rows in docs if they contain IDs, dates, or combinations that can re-identify entities.
+- Add private schemas and sample data paths to `.gitignore` when they are only for local runs.
+- Before publishing, run a final doc sweep for domain-specific terms in:
+  - schema examples
+  - CLI examples
+  - error message examples
+  - file names and comments
+
 ### Field Properties
-- `name` (string, required): source CSV header name.
+- `name` (string, required): source CSV header name (case-sensitive match).
 - `parquet_name` (string, optional): output Parquet column name. Auto-generated from `name` (snake_case) when empty.
 - `type` (string, required): one of `string | float | int | date`.
 - `required` (bool): reject missing/null-like values.
 - `exclude_if_missing` (bool): if missing/null-like, reject immediately (takes precedence over `default`).
 - `default` (any): fallback for missing/null-like values.
-- `min_length` (int): min character length for `string`.
+- `min_length` (int): minimum character length for `string`.
 - `lower` (bool): lowercase normalization for string processing.
 - `allowed_values` ([]string): allowed set for `string` values.
 - `inline_replace` (object): exact value replacement map before validation.
@@ -215,6 +262,17 @@ Schema file format:
   - `2006-01-02`
   - `2006-01-02 15:04:05`
   - `RFC3339`
+
+### Common Field Patterns
+- Identifier fields: `type: "string"`, `required: true`, `min_length: 1`.
+- Status/category fields: `type: "string"`, usually `lower: true`, optional `allowed_values`.
+- Monetary fields: `type: "float"`, often `required: false`, `default: 0.0`.
+- Date fields:
+  - lifecycle start/critical dates: usually `required: true`
+  - optional lifecycle end dates: usually `required: false`
+- Channel/method fields:
+  - often optional with fallback `default`
+  - can use `inline_replace` to normalize known typos before validation.
 
 ### Validation Order (Per Field)
 For each row/field:
@@ -267,7 +325,7 @@ Columns:
 
 `__errors` contains pipe-separated field errors, for example:
 ```text
-Payment Type: value "cashh" not in allowed_values | Benefit From Date: invalid date: "2024/13/01"
+Collection Method: value "cardd" not in allowed_values | Coverage Start Date: invalid date: "2024/13/01"
 ```
 
 If a run fails while writing outputs, partial parquet/error files for that input are removed.
