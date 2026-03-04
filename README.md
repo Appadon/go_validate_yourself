@@ -4,7 +4,7 @@
 - validated records to Parquet (`success/<file>.parquet`)
 - rejected records to CSV (`errors/<file>_error.csv`)
 
-It supports both single-file mode and high-throughput directory mode with concurrent workers.
+It supports split mode, single-file validation mode, and high-throughput directory mode with concurrent workers.
 
 ## Features
 - JSON-configured schema (types, required, defaults, allowed values)
@@ -13,14 +13,28 @@ It supports both single-file mode and high-throughput directory mode with concur
 - Error CSV with row number and field-level validation messages
 - Concurrent directory processing (`-dir` + `-t`)
 - Progress heartbeat with percentage, throughput, elapsed, and ETA
+- Streaming CSV split by primary key into many files (`-split-input`)
+- Dedicated `missing_keys.csv` for rows where the split key is blank
 
 ## Build
 ```bash
 go mod tidy
-go build -o validatecsv ./cmd/validatecsv
+go build -o validatecsv .
 ```
 
 ## Usage
+
+Split one large CSV by primary key:
+```bash
+./validatecsv \
+  -split-input giant.csv \
+  -split-primary-key "Policy Number"
+```
+
+Optional split flags (defaults shown):
+- `-split-output-dir split`
+- `-split-max-open 256`
+- `-split-missing-file missing_keys.csv`
 
 Single file:
 ```bash
@@ -55,10 +69,16 @@ CLI help:
 - `-schema <path>`: schema JSON path (required).
 - `-success-dir <path>`: parquet output directory (default `success`).
 - `-error-dir <path>`: error CSV output directory (default `errors`).
+- `-split-input <path>`: split input CSV by primary key into one-file-per-key output.
+- `-split-primary-key <header>`: header name used as split key (required for split mode).
+- `-split-output-dir <path>`: output directory for split files (default `split`).
+- `-split-max-open <n>`: max concurrently open split writers (default `256`).
+- `-split-missing-file <name>`: filename for blank-key rows (default `missing_keys.csv`).
 
 Rules:
 - Use either positional `<input.csv>` or `-dir` (not both).
 - Output directories are auto-created.
+- In split mode, rows with blank split keys are written to `missing_keys.csv`.
 
 ## Output files
 For input `some/path/input_file.csv`:
