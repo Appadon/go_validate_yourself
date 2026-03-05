@@ -97,45 +97,46 @@ This will:
 ## CLI Modes
 
 ### 1) Auto mode (split + validate)
-Auto mode is selected when:
-- `-split-input` is not set,
-- `-dir` is not set,
-- and positional arguments match one of:
+Auto mode can be selected explicitly:
+
+```bash
+./gvy -mode auto <main.csv> <schema.json>
+```
+
+or inferred when `-mode` is omitted and positional args begin with:
 
 ```text
-./gvy [flags] <main.csv> <schema.json> [write_empty_error] [clear_validation_cache]
-./gvy [flags] -schema <schema.json> <main.csv> [write_empty_error] [clear_validation_cache]
+<main.csv> <schema.json>
 ```
 
 Behavior:
 - Split phase runs first.
 - Validation phase runs on the split output directory.
 - If `-split-primary-key` is omitted, the first header in `<main.csv>` is used.
-- If `-t` is omitted, auto mode uses ~60% of CPU cores (`max(1, int(0.6 * NumCPU))`).
-
-`clear_validation_cache` defaults to `true` in auto mode and removes:
-- split output dir,
-- success dir,
-- error dir,
-before running.
+- If `-t` is omitted, worker threads default to ~60% of CPU cores (`max(1, int(0.6 * NumCPU))`).
+- `-write-empty-error` defaults to `false`.
+- `-clear-validation-cache` defaults to:
+  - `true` when auto mode is inferred (no `-mode` provided),
+  - `false` when auto mode is explicit (`-mode auto`), unless the flag is passed.
 
 ### 2) Split-only mode
-Triggered when `-split-input` is provided.
+Use `-mode split` when you only want to partition one CSV by key.
 
-Use when you only want to partition one CSV by key.
+`<input.csv>` can be provided either positionally or via `-split-input`.
+If `-split-primary-key` is omitted, the first CSV header is auto-detected.
 
 Example:
 ```bash
 ./gvy \
-  -split-input example_dataset.csv \
-  -split-primary-key "Record ID" \
+  -mode split \
+  example_dataset.csv \
   -split-output-dir split \
   -split-max-open 256 \
   -split-missing-file missing_keys.csv
 ```
 
 ### 3) Validation mode
-Triggered when not in split-only mode and not in auto mode.
+Use `-mode validate` for validation-only execution.
 
 You can validate:
 - a single CSV file, or
@@ -143,20 +144,23 @@ You can validate:
 
 Single-file:
 ```bash
-./gvy -schema example_schema.json input.csv [write_empty_error]
+./gvy -mode validate -schema example_schema.json input.csv
 ```
 
 Directory:
 ```bash
-./gvy -schema example_schema.json -dir split -t 8 [write_empty_error]
+./gvy -mode validate -schema example_schema.json -dir split -t 8
 ```
 
 ## CLI Reference
 
 ### Flags
+- `-mode <auto|validate|split>`: explicit execution mode. If omitted, mode is inferred.
 - `-schema <path>`: schema JSON path.
 - `-dir <path>`: directory containing CSV files for validation mode.
-- `-t <n>`: workers for `-dir` mode (validation mode default `1`; auto mode default is CPU-based when omitted).
+- `-t <n>`: worker count for directory validation (default is ~60% of CPU cores when omitted).
+- `-write-empty-error`: write empty error CSV outputs for valid files (default `false`).
+- `-clear-validation-cache`: clear split/success/error directories before auto-mode run.
 - `-success-dir <path>`: Parquet output directory (default `success`).
 - `-error-dir <path>`: error CSV output directory (default `errors`).
 - `-split-input <path>`: input CSV for split-only mode.
@@ -166,21 +170,20 @@ Directory:
 - `-split-missing-file <name>`: output filename for blank split-key rows (default `missing_keys.csv`).
 
 ### Positional Arguments
-- Validation mode:
-  - `<input.csv>` (single-file mode)
-  - `[write_empty_error]` optional `true|false`, default `false`
-- Directory validation mode:
-  - `[write_empty_error]` optional `true|false`, default `false`
 - Auto mode:
-  - `<main.csv> <schema.json>` (or `-schema <schema.json> <main.csv>`)
-  - `[write_empty_error]` optional `true|false`, default `false`
-  - `[clear_validation_cache]` optional `true|false`, default `true`
+  - `<main.csv> <schema.json>`
+- Validation mode:
+  - `<input.csv>` for single-file validation, or no positional when `-dir` is used.
+- Split mode:
+  - `<input.csv>` when not using `-split-input`.
 
 ### Important Argument Rules
-- Validation mode requires `-schema`.
-- Use either single-file input or `-dir` for validation.
-- `-split-primary-key` is required in split-only mode.
-- In auto mode, omitting `-split-primary-key` enables key auto-detection (first header).
+- Flags can be placed before or after positional args.
+- Inferred auto mode expects positional shape `<main.csv> <schema.json>`.
+- If `-dir` is used with inferred auto shape, CLI prints an INFO message guiding `-mode validate`.
+- Validation mode uses `policy_schema.json` by default when `-schema` is not provided and that file exists.
+- Use either single-file input or `-dir` for validation mode (not both).
+- In split mode and auto mode, omitting `-split-primary-key` enables key auto-detection (first header).
 
 ## Schema Reference
 `schema.json` drives all CSV validation and Parquet typing. The structure below is an anonymized, production-style template based on `policy_schema.json` rule patterns.
@@ -329,7 +332,8 @@ For split mode:
 Additional behavior:
 - Directory validation exits non-zero if any file fails.
 - In validation mode, output directories are created automatically.
-- In auto mode with default `clear_validation_cache=true`, target output directories are deleted before run.
+- In inferred auto mode (no `-mode` flag), cache clearing is enabled by default.
+- In explicit `-mode auto`, cache clearing is disabled by default unless `-clear-validation-cache` is set.
 
 ## Performance and Operations
 - Directory mode uses a worker pool (`-t`).
@@ -337,7 +341,7 @@ Additional behavior:
 - Progress logs include throughput, elapsed time, and ETA.
 - For large runs:
   - place input/output on fast local storage,
-  - tune `-t` based on CPU and I/O,
+  - tune `-t` based on CPU and I/O (default is ~60% of CPU cores),
   - tune `-split-max-open` based on OS file-descriptor limits.
 
 ## Project Layout

@@ -19,10 +19,15 @@ import (
 
 /* cliOptions holds parsed command-line flags. */
 type cliOptions struct {
+	mode             string
+	modeSpecified    bool
 	schemaPath       string
 	inputDir         string
 	threads          int
 	threadsSpecified bool
+	writeEmptyError  bool
+	clearCache       bool
+	clearCacheSet    bool
 	successDir       string
 	errorDir         string
 	splitInput       string
@@ -34,6 +39,14 @@ type cliOptions struct {
 
 var runStartedAt = time.Now()
 
+const (
+	modeAuto     = "auto"
+	modeValidate = "validate"
+	modeSplit    = "split"
+
+	defaultSchemaPath = "policy_schema.json"
+)
+
 /* main parses arguments and dispatches either split or validation modes. */
 func main() {
 	runStartedAt = time.Now()
@@ -42,26 +55,35 @@ func main() {
 	opts := parseFlags()
 	args := flag.Args()
 
-	if shouldRunAutoMode(opts, args) {
-		runAutoMode(opts, args)
-		return
+	mode, err := resolveMode(opts, args)
+	if err != nil {
+		console.Infof("%v", err)
+		printUsageAndExit(2)
 	}
 
-	if strings.TrimSpace(opts.splitInput) != "" {
-		printSplitModeBanner(opts.splitInput, opts.splitOutputDir, opts.splitPrimaryKey, opts.splitMaxOpen, opts.splitMissingFile)
-		runSplitMode(opts.splitInput, opts.splitOutputDir, opts.splitPrimaryKey, opts.splitMissingFile, opts.splitMaxOpen)
-		return
+	switch mode {
+	case modeAuto:
+		runAutoMode(opts, args)
+	case modeSplit:
+		runSplitOnlyMode(opts, args)
+	case modeValidate:
+		runValidationMode(opts, args)
+	default:
+		exitf("unsupported mode %q", mode)
 	}
-	runValidationMode(opts, args)
 }
 
 /* parseFlags parses CLI flags for both validation and split modes. */
 func parseFlags() cliOptions {
 	opts := cliOptions{}
+	normalizedArgs := normalizeArgsForFlexibleFlags(os.Args[1:])
 	flag.Usage = printUsage
+	flag.StringVar(&opts.mode, "mode", "", "Execution mode: auto | validate | split (default: inferred)")
 	flag.StringVar(&opts.schemaPath, "schema", "", "Schema JSON file (required)")
 	flag.StringVar(&opts.inputDir, "dir", "", "Directory containing CSV files to validate")
-	flag.IntVar(&opts.threads, "t", 1, "Number of concurrent workers for -dir mode")
+	flag.IntVar(&opts.threads, "t", defaultThreadCount(), "Number of concurrent workers for -dir mode")
+	flag.BoolVar(&opts.writeEmptyError, "write-empty-error", false, "Write empty error CSV files for fully valid inputs")
+	flag.BoolVar(&opts.clearCache, "clear-validation-cache", false, "Clear split/success/error directories before auto mode run")
 	flag.StringVar(&opts.successDir, "success-dir", "success", "Directory for valid parquet output")
 	flag.StringVar(&opts.errorDir, "error-dir", "errors", "Directory for validation error CSV output")
 	flag.StringVar(&opts.splitInput, "split-input", "", "Input CSV file to split by primary key")
@@ -69,8 +91,15 @@ func parseFlags() cliOptions {
 	flag.StringVar(&opts.splitPrimaryKey, "split-primary-key", "", "Header name to use as split key")
 	flag.IntVar(&opts.splitMaxOpen, "split-max-open", 256, "Maximum number of concurrently open split file writers")
 	flag.StringVar(&opts.splitMissingFile, "split-missing-file", "missing_keys.csv", "Name for rows where split key is blank")
-	flag.Parse()
+	if err := flag.CommandLine.Parse(normalizedArgs); err != nil {
+		exitWithCode(2)
+	}
+	opts.modeSpecified = isFlagProvided("mode")
 	opts.threadsSpecified = isFlagProvided("t")
+	opts.clearCacheSet = isFlagProvided("clear-validation-cache")
+	if !opts.threadsSpecified {
+		opts.threads = defaultThreadCount()
+	}
 	return opts
 }
 
@@ -85,27 +114,162 @@ func isFlagProvided(name string) bool {
 	return provided
 }
 
-/* shouldRunAutoMode reports whether invocation matches positional auto mode. */
-func shouldRunAutoMode(opts cliOptions, args []string) bool {
-	if strings.TrimSpace(opts.splitInput) != "" || strings.TrimSpace(opts.inputDir) != "" {
+/* normalizeArgsForFlexibleFlags allows flags before or after positional arguments. */
+func normalizeArgsForFlexibleFlags(raw []string) []string {
+	flags := make([]string, 0, len(raw))
+	positionals := make([]string, 0, len(raw))
+	takesValue := map[string]bool{
+		"mode":                   true,
+		"schema":                 true,
+		"dir":                    true,
+		"t":                      true,
+		"write-empty-error":      false,
+		"clear-validation-cache": false,
+		"success-dir":            true,
+		"error-dir":              true,
+		"split-input":            true,
+		"split-output-dir":       true,
+		"split-primary-key":      true,
+		"split-max-open":         true,
+		"split-missing-file":     true,
+	}
+
+	for i := 0; i < len(raw); i++ {
+		token := raw[i]
+		if token == "--" {
+			positionals = append(positionals, raw[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(token, "-") || token == "-" {
+			positionals = append(positionals, token)
+			continue
+		}
+
+		name, hasInlineValue := parseLongFlagName(token)
+		if !takesValue[name] || hasInlineValue {
+			flags = append(flags, token)
+			continue
+		}
+
+		flags = append(flags, token)
+		if i+1 < len(raw) {
+			i++
+			flags = append(flags, raw[i])
+		}
+	}
+
+	return append(flags, positionals...)
+}
+
+/* parseLongFlagName extracts the flag name and reports whether it includes an inline value (e.g. -f=v). */
+func parseLongFlagName(token string) (string, bool) {
+	clean := strings.TrimLeft(token, "-")
+	if eq := strings.Index(clean, "="); eq >= 0 {
+		return clean[:eq], true
+	}
+	return clean, false
+}
+
+/* resolveMode selects execution mode from explicit -mode or inferred defaults. */
+func resolveMode(opts cliOptions, args []string) (string, error) {
+	explicitMode := strings.ToLower(strings.TrimSpace(opts.mode))
+	if explicitMode != "" {
+		switch explicitMode {
+		case modeAuto:
+			if strings.TrimSpace(opts.inputDir) != "" {
+				return "", fmt.Errorf("-dir is only valid in %q mode; use -mode validate -dir <input_dir>", modeValidate)
+			}
+			return modeAuto, nil
+		case modeValidate:
+			return modeValidate, nil
+		case modeSplit:
+			return modeSplit, nil
+		default:
+			return "", fmt.Errorf("invalid -mode %q (expected: auto | validate | split)", opts.mode)
+		}
+	}
+
+	if strings.TrimSpace(opts.inputDir) != "" && looksLikeImplicitAuto(args) {
+		return "", fmt.Errorf("inferred auto mode from <main.csv> <schema.json>, but -dir requires validation mode; use -mode validate -dir <input_dir>")
+	}
+
+	if looksLikeImplicitAuto(args) {
+		return modeAuto, nil
+	}
+	if strings.TrimSpace(opts.splitInput) != "" {
+		return modeSplit, nil
+	}
+	if strings.TrimSpace(opts.inputDir) != "" || strings.TrimSpace(opts.schemaPath) != "" || len(args) > 0 {
+		return modeValidate, nil
+	}
+	return modeAuto, nil
+}
+
+/* looksLikeImplicitAuto reports whether positional args match inferred auto mode shape (<main.csv> <schema.json> ...). */
+func looksLikeImplicitAuto(args []string) bool {
+	if len(args) < 2 {
 		return false
 	}
-	if strings.TrimSpace(opts.schemaPath) != "" {
-		return len(args) >= 1
+	if strings.ToLower(filepath.Ext(args[1])) != ".json" {
+		return false
 	}
-	return len(args) >= 2
+	return true
+}
+
+/* runSplitOnlyMode resolves split inputs and executes split mode with default key detection when needed. */
+func runSplitOnlyMode(opts cliOptions, args []string) {
+	input, err := resolveSplitInput(opts, args)
+	if err != nil {
+		exitf("split mode argument error: %v", err)
+	}
+
+	primaryKey := strings.TrimSpace(opts.splitPrimaryKey)
+	if primaryKey == "" {
+		primaryKey, err = detectPrimaryKey(input)
+		if err != nil {
+			exitf("failed detecting split primary key: %v", err)
+		}
+	}
+
+	printSplitModeBanner(input, opts.splitOutputDir, primaryKey, opts.splitMaxOpen, opts.splitMissingFile)
+	runSplitMode(input, opts.splitOutputDir, primaryKey, opts.splitMissingFile, opts.splitMaxOpen)
+}
+
+/* resolveSplitInput resolves split input from either -split-input or the single positional argument. */
+func resolveSplitInput(opts cliOptions, args []string) (string, error) {
+	splitInput := strings.TrimSpace(opts.splitInput)
+	if splitInput == "" {
+		if len(args) == 0 {
+			return "", fmt.Errorf("missing split input CSV; use -mode split <input.csv> or -split-input <input.csv>")
+		}
+		if len(args) > 1 {
+			return "", fmt.Errorf("split mode accepts one positional input CSV")
+		}
+		return args[0], nil
+	}
+
+	if len(args) == 0 {
+		return splitInput, nil
+	}
+	if len(args) > 1 {
+		return "", fmt.Errorf("split mode accepts one positional input CSV")
+	}
+	if args[0] != splitInput {
+		return "", fmt.Errorf("conflicting split input values: %q and %q", splitInput, args[0])
+	}
+	return splitInput, nil
 }
 
 /* runAutoMode splits the main CSV and validates the split directory in one command. */
 func runAutoMode(opts cliOptions, args []string) {
-	mainInput, schemaPath, autoArgs, err := resolveAutoModeInputs(opts, args)
+	mainInput, schemaPath, err := resolveAutoModeInputs(opts, args)
 	if err != nil {
 		exitf("auto mode argument error: %v", err)
 	}
-
-	writeEmptyError, clearValidationCache, err := parseAutoModeOptionalArgs(autoArgs)
-	if err != nil {
-		exitf("invalid auto mode optional args: %v", err)
+	writeEmptyError := opts.writeEmptyError
+	clearValidationCache := opts.clearCache
+	if !opts.modeSpecified && !opts.clearCacheSet {
+		clearValidationCache = true
 	}
 
 	primaryKey := strings.TrimSpace(opts.splitPrimaryKey)
@@ -157,43 +321,25 @@ func runAutoMode(opts cliOptions, args []string) {
 }
 
 /* resolveAutoModeInputs maps supported auto-mode CLI patterns to input and schema paths. */
-func resolveAutoModeInputs(opts cliOptions, args []string) (string, string, []string, error) {
-	if strings.TrimSpace(opts.schemaPath) != "" {
-		if len(args) < 1 {
-			return "", "", nil, fmt.Errorf("missing main input CSV")
+func resolveAutoModeInputs(opts cliOptions, args []string) (string, string, error) {
+	remaining := append([]string{}, args...)
+	schemaPath := strings.TrimSpace(opts.schemaPath)
+	if schemaPath == "" {
+		idx := indexOfSchemaArg(remaining)
+		if idx == -1 {
+			return "", "", fmt.Errorf("missing schema path; pass <schema.json> or -schema <path>")
 		}
-		return args[0], opts.schemaPath, args[1:], nil
+		schemaPath = remaining[idx]
+		remaining = removeArgAt(remaining, idx)
 	}
-	if len(args) < 2 {
-		return "", "", nil, fmt.Errorf("missing required <main.csv> <schema.json>")
+	if len(remaining) < 1 {
+		return "", "", fmt.Errorf("missing main input CSV")
 	}
-	return args[0], args[1], args[2:], nil
-}
-
-/* parseAutoModeOptionalArgs parses [write_empty_error] [clear_validation_cache] for auto mode. */
-func parseAutoModeOptionalArgs(args []string) (bool, bool, error) {
-	writeEmptyError := false
-	clearValidationCache := true
-
-	if len(args) >= 1 {
-		parsed, err := strconv.ParseBool(strings.TrimSpace(args[0]))
-		if err != nil {
-			return false, true, fmt.Errorf("write_empty_error: %w", err)
-		}
-		writeEmptyError = parsed
+	if len(remaining) > 1 {
+		return "", "", fmt.Errorf("auto mode accepts only <main.csv> plus flags")
 	}
-	if len(args) >= 2 {
-		parsed, err := strconv.ParseBool(strings.TrimSpace(args[1]))
-		if err != nil {
-			return false, true, fmt.Errorf("clear_validation_cache: %w", err)
-		}
-		clearValidationCache = parsed
-	}
-	if len(args) > 2 {
-		return false, true, fmt.Errorf("too many optional positional arguments")
-	}
-
-	return writeEmptyError, clearValidationCache, nil
+	mainInput := remaining[0]
+	return mainInput, schemaPath, nil
 }
 
 /* clearValidationOutputDirs removes stale split/success/error artifacts before auto-mode run. */
@@ -247,31 +393,31 @@ func defaultThreadCount() int {
 /* runValidationMode validates CLI arguments and executes single-file or directory processing. */
 func runValidationMode(opts cliOptions, args []string) {
 	normalizeValidationOptions(&opts)
-	validateValidationArgs(opts, args)
-
-	writeEmptyError, err := parseWriteEmptyErrorArg(opts.inputDir, args)
+	inputCSV, schemaPath, err := resolveValidationInputs(opts, args)
 	if err != nil {
-		exitf("invalid write_empty_error: %v", err)
+		exitf("validation mode argument error: %v", err)
 	}
+	writeEmptyError := opts.writeEmptyError
+
 	createOutputDirs(opts.successDir, opts.errorDir)
-	schema := loadAndValidateSchema(opts.schemaPath)
+	schema := loadAndValidateSchema(schemaPath)
 
 	if opts.inputDir == "" {
 		printValidationBanner(validationBannerConfig{
 			Mode:            "single-file validation",
-			SchemaPath:      opts.schemaPath,
-			Input:           args[0],
+			SchemaPath:      schemaPath,
+			Input:           inputCSV,
 			SuccessDir:      opts.successDir,
 			ErrorDir:        opts.errorDir,
 			WriteEmptyError: writeEmptyError,
 			Threads:         1,
 		})
-		runSingleFileValidation(args[0], opts.successDir, opts.errorDir, schema, writeEmptyError)
+		runSingleFileValidation(inputCSV, opts.successDir, opts.errorDir, schema, writeEmptyError)
 		return
 	}
 	printValidationBanner(validationBannerConfig{
 		Mode:            "directory validation",
-		SchemaPath:      opts.schemaPath,
+		SchemaPath:      schemaPath,
 		Input:           opts.inputDir,
 		SuccessDir:      opts.successDir,
 		ErrorDir:        opts.errorDir,
@@ -288,17 +434,69 @@ func normalizeValidationOptions(opts *cliOptions) {
 	}
 }
 
-/* validateValidationArgs checks argument combinations for validation mode. */
-func validateValidationArgs(opts cliOptions, args []string) {
-	if strings.TrimSpace(opts.schemaPath) == "" {
-		exitf("missing required -schema <path>")
+/* resolveValidationInputs resolves schema and input targets for validation mode and enforces arg rules. */
+func resolveValidationInputs(opts cliOptions, args []string) (string, string, error) {
+	remaining := append([]string{}, args...)
+	schemaPath := strings.TrimSpace(opts.schemaPath)
+
+	if schemaPath == "" {
+		idx := indexOfSchemaArg(remaining)
+		if idx >= 0 {
+			schemaPath = remaining[idx]
+			remaining = removeArgAt(remaining, idx)
+		}
 	}
-	if opts.inputDir != "" && len(args) > 1 {
-		exitf("for -dir mode, optional positional is only [write_empty_error]")
+	if schemaPath == "" {
+		defaulted, err := resolveDefaultSchemaPath()
+		if err != nil {
+			return "", "", err
+		}
+		schemaPath = defaulted
+		console.Infof("no schema provided; defaulting to %s", console.GreenValue(schemaPath))
 	}
-	if opts.inputDir == "" && (len(args) < 1 || len(args) > 2) {
-		printUsageAndExit(2)
+
+	if strings.TrimSpace(opts.inputDir) != "" {
+		if len(remaining) > 0 {
+			return "", "", fmt.Errorf("for -dir mode, use flags only (no positional arguments)")
+		}
+		return "", schemaPath, nil
 	}
+
+	if len(remaining) < 1 {
+		return "", "", fmt.Errorf("missing input CSV; use -mode validate <input.csv> [-schema <schema.json>]")
+	}
+	if len(remaining) > 1 {
+		return "", "", fmt.Errorf("single-file validation accepts only <input.csv> plus flags")
+	}
+
+	inputCSV := remaining[0]
+	return inputCSV, schemaPath, nil
+}
+
+/* resolveDefaultSchemaPath returns the default schema path when available. */
+func resolveDefaultSchemaPath() (string, error) {
+	if _, err := os.Stat(defaultSchemaPath); err == nil {
+		return defaultSchemaPath, nil
+	}
+	return "", fmt.Errorf("missing schema; pass -schema <path> (default %q not found)", defaultSchemaPath)
+}
+
+/* indexOfSchemaArg returns the first positional index that looks like a JSON schema path. */
+func indexOfSchemaArg(args []string) int {
+	for i, arg := range args {
+		if strings.ToLower(filepath.Ext(strings.TrimSpace(arg))) == ".json" {
+			return i
+		}
+	}
+	return -1
+}
+
+/* removeArgAt returns a new slice without the element at idx. */
+func removeArgAt(args []string, idx int) []string {
+	if idx < 0 || idx >= len(args) {
+		return args
+	}
+	return append(args[:idx], args[idx+1:]...)
 }
 
 /* printUsageAndExit writes CLI usage and exits. */
@@ -312,36 +510,42 @@ func printUsage() {
 	out := flag.CommandLine.Output()
 	bin := filepath.Base(os.Args[0])
 	fmt.Fprintf(out, "Usage:\n")
-	fmt.Fprintf(out, "  %s [flags] <main.csv> <schema.json> [write_empty_error] [clear_validation_cache]\n", bin)
-	fmt.Fprintf(out, "  %s [flags] -schema <schema.json> <main.csv> [write_empty_error] [clear_validation_cache]\n", bin)
-	fmt.Fprintf(out, "  %s [flags] <input.csv> [write_empty_error]\n", bin)
-	fmt.Fprintf(out, "  %s [flags] -dir <input_dir> [write_empty_error]\n", bin)
-	fmt.Fprintf(out, "  %s [flags] -split-input <input.csv> -split-primary-key <header_name>\n", bin)
+	fmt.Fprintf(out, "  %s <main.csv> <schema.json> [flags]\n", bin)
+	fmt.Fprintf(out, "  %s -mode auto <main.csv> <schema.json> [flags]\n", bin)
+	fmt.Fprintf(out, "  %s -mode validate <input.csv> [-schema <schema.json>] [flags]\n", bin)
+	fmt.Fprintf(out, "  %s -mode validate -dir <input_dir> [-schema <schema.json>] [flags]\n", bin)
+	fmt.Fprintf(out, "  %s -mode split <input.csv>\n", bin)
+	fmt.Fprintf(out, "  %s -mode split -split-input <input.csv>\n", bin)
 
 	fmt.Fprintf(out, "\nModes:\n")
 	fmt.Fprintf(out, "  auto mode:\n")
 	fmt.Fprintf(out, "    Splits a main CSV by primary key, then validates the generated split directory.\n")
 	fmt.Fprintf(out, "    Required positional args:\n")
-	fmt.Fprintf(out, "      <main.csv> <schema.json>  (or provide -schema and only <main.csv>)\n")
-	fmt.Fprintf(out, "    Optional positional args:\n")
-	fmt.Fprintf(out, "      [write_empty_error]      true|false (default: false)\n")
-	fmt.Fprintf(out, "      [clear_validation_cache] true|false (default: true)\n")
+	fmt.Fprintf(out, "      <main.csv> <schema.json>\n")
+	fmt.Fprintf(out, "    Optional flags:\n")
+	fmt.Fprintf(out, "      -write-empty-error=true\n")
+	fmt.Fprintf(out, "      -clear-validation-cache=true\n")
+	fmt.Fprintf(out, "    Notes:\n")
+	fmt.Fprintf(out, "      - If -split-primary-key is omitted, the first CSV header is used.\n")
 
 	fmt.Fprintf(out, "  single-file validation mode:\n")
 	fmt.Fprintf(out, "    Validates one CSV using a schema.\n")
-	fmt.Fprintf(out, "    Required: -schema <schema.json> <input.csv>\n")
-	fmt.Fprintf(out, "    Optional positional args:\n")
-	fmt.Fprintf(out, "      [write_empty_error]      true|false (default: false)\n")
+	fmt.Fprintf(out, "    Required: <input.csv>\n")
+	fmt.Fprintf(out, "    Optional: -schema <schema.json> (defaults to %s when present)\n", defaultSchemaPath)
+	fmt.Fprintf(out, "    Optional flags:\n")
+	fmt.Fprintf(out, "      -write-empty-error=true\n")
 
 	fmt.Fprintf(out, "  directory validation mode:\n")
 	fmt.Fprintf(out, "    Validates every CSV file in a directory using a schema.\n")
-	fmt.Fprintf(out, "    Required: -schema <schema.json> -dir <input_dir>\n")
-	fmt.Fprintf(out, "    Optional positional args:\n")
-	fmt.Fprintf(out, "      [write_empty_error]      true|false (default: false)\n")
+	fmt.Fprintf(out, "    Required: -dir <input_dir>\n")
+	fmt.Fprintf(out, "    Optional: -schema <schema.json> (defaults to %s when present)\n", defaultSchemaPath)
+	fmt.Fprintf(out, "    Optional flags:\n")
+	fmt.Fprintf(out, "      -write-empty-error=true\n")
 
 	fmt.Fprintf(out, "  split-only mode:\n")
 	fmt.Fprintf(out, "    Splits one CSV into many files by primary key.\n")
-	fmt.Fprintf(out, "    Required flags: -split-input <input.csv> -split-primary-key <header_name>\n")
+	fmt.Fprintf(out, "    Required: <input.csv> (or -split-input <input.csv>)\n")
+	fmt.Fprintf(out, "    Optional: -split-primary-key <header_name> (defaults to first CSV header)\n")
 
 	fmt.Fprintf(out, "\nHelp:\n")
 	fmt.Fprintf(out, "  -h, -help\n")
@@ -352,10 +556,11 @@ func printUsage() {
 
 	fmt.Fprintf(out, "\nExamples:\n")
 	fmt.Fprintf(out, "  %s main.csv schema.json\n", bin)
-	fmt.Fprintf(out, "  %s -schema schema.json main.csv true false\n", bin)
-	fmt.Fprintf(out, "  %s -schema schema.json input.csv true\n", bin)
-	fmt.Fprintf(out, "  %s -schema schema.json -dir split -t 8 true\n", bin)
-	fmt.Fprintf(out, "  %s -split-input main.csv -split-primary-key policy_number -split-output-dir split\n", bin)
+	fmt.Fprintf(out, "  %s main.csv schema.json -t 10 -write-empty-error=true\n", bin)
+	fmt.Fprintf(out, "  %s -mode validate -dir split/\n", bin)
+	fmt.Fprintf(out, "  %s -mode validate input.csv -schema schema.json -write-empty-error=true\n", bin)
+	fmt.Fprintf(out, "  %s -mode split main.csv\n", bin)
+	fmt.Fprintf(out, "  %s -mode split -split-input main.csv -split-primary-key policy_number\n", bin)
 }
 
 /* createOutputDirs ensures output directories exist before validation starts. */
@@ -446,31 +651,19 @@ func runSplitMode(input, outDir, primaryKey, missingFile string, maxOpen int) {
 	)
 }
 
-/* parseWriteEmptyErrorArg parses optional positional bool for writing empty error CSV outputs. */
-func parseWriteEmptyErrorArg(inputDir string, args []string) (bool, error) {
-	if inputDir == "" {
-		if len(args) < 2 {
-			return false, nil
-		}
-		return strconv.ParseBool(strings.TrimSpace(args[1]))
-	}
-	if len(args) == 0 {
-		return false, nil
-	}
-	return strconv.ParseBool(strings.TrimSpace(args[0]))
-}
-
 /* exitf writes an error message to stderr and exits the process. */
 func exitf(format string, args ...interface{}) {
 	console.Errorf(format, args...)
 	exitWithCode(1)
 }
 
+/* exitWithCode logs runtime and exits with the provided status code. */
 func exitWithCode(code int) {
 	logTotalRuntime()
 	os.Exit(code)
 }
 
+/* logTotalRuntime prints total process runtime using console formatting. */
 func logTotalRuntime() {
 	elapsed := time.Since(runStartedAt)
 	console.Infof("total run time %s", console.GreenValue(console.FormatDuration(elapsed)))
@@ -503,6 +696,7 @@ type validationBannerConfig struct {
 	Threads         int
 }
 
+/* printAutoModeBanner prints a full auto-mode configuration banner before processing starts. */
 func printAutoModeBanner(cfg autoModeBannerConfig) {
 	items := []console.BannerItem{
 		{Key: "mode", Value: "auto (split + directory validate)"},
@@ -522,6 +716,7 @@ func printAutoModeBanner(cfg autoModeBannerConfig) {
 	console.PrintBanner("Validation Run Configuration", items)
 }
 
+/* printValidationBanner prints a configuration banner for single-file or directory validation mode. */
 func printValidationBanner(cfg validationBannerConfig) {
 	items := []console.BannerItem{
 		{Key: "mode", Value: cfg.Mode},
@@ -535,6 +730,7 @@ func printValidationBanner(cfg validationBannerConfig) {
 	console.PrintBanner("Validation Run Configuration", items)
 }
 
+/* printSplitModeBanner prints a split-only configuration banner before split processing starts. */
 func printSplitModeBanner(input, splitOutputDir, primaryKey string, splitMaxOpen int, splitMissingFile string) {
 	items := []console.BannerItem{
 		{Key: "mode", Value: "split-only"},
