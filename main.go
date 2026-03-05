@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"go_validate_yourself/internal/batchparquet"
 	"go_validate_yourself/internal/console"
 	"go_validate_yourself/internal/splitcsv"
 	"go_validate_yourself/internal/validator"
@@ -35,6 +36,9 @@ type cliOptions struct {
 	splitPrimaryKey  string
 	splitMaxOpen     int
 	splitMissingFile string
+	batchSize        int
+	batchDir         string
+	batchExportDir   string
 }
 
 var runStartedAt = time.Now()
@@ -43,6 +47,7 @@ const (
 	modeAuto     = "auto"
 	modeValidate = "validate"
 	modeSplit    = "split"
+	modeBatch    = "batch"
 
 	defaultSchemaPath = "policy_schema.json"
 )
@@ -68,6 +73,8 @@ func main() {
 		runSplitOnlyMode(opts, args)
 	case modeValidate:
 		runValidationMode(opts, args)
+	case modeBatch:
+		runBatchMode(opts, args)
 	default:
 		exitf("unsupported mode %q", mode)
 	}
@@ -78,7 +85,7 @@ func parseFlags() cliOptions {
 	opts := cliOptions{}
 	normalizedArgs := normalizeArgsForFlexibleFlags(os.Args[1:])
 	flag.Usage = printUsage
-	flag.StringVar(&opts.mode, "mode", "", "Execution mode: auto | validate | split (default: inferred)")
+	flag.StringVar(&opts.mode, "mode", "", "Execution mode: auto | validate | split | batch (default: inferred)")
 	flag.StringVar(&opts.schemaPath, "schema", "", "Schema JSON file (required)")
 	flag.StringVar(&opts.inputDir, "dir", "", "Directory containing CSV files to validate")
 	flag.IntVar(&opts.threads, "t", defaultThreadCount(), "Number of concurrent workers for -dir mode")
@@ -91,6 +98,9 @@ func parseFlags() cliOptions {
 	flag.StringVar(&opts.splitPrimaryKey, "split-primary-key", "", "Header name to use as split key")
 	flag.IntVar(&opts.splitMaxOpen, "split-max-open", 256, "Maximum number of concurrently open split file writers")
 	flag.StringVar(&opts.splitMissingFile, "split-missing-file", "missing_keys.csv", "Name for rows where split key is blank")
+	flag.IntVar(&opts.batchSize, "batch-size", 1000, "Number of parquet files per output batch")
+	flag.StringVar(&opts.batchDir, "batch-dir", "", "Directory containing parquet files for batch mode (defaults to success-dir in auto mode)")
+	flag.StringVar(&opts.batchExportDir, "batch-export-dir", "batch_export", "Directory for batch mode output parquet files")
 	if err := flag.CommandLine.Parse(normalizedArgs); err != nil {
 		exitWithCode(2)
 	}
@@ -132,6 +142,9 @@ func normalizeArgsForFlexibleFlags(raw []string) []string {
 		"split-primary-key":      true,
 		"split-max-open":         true,
 		"split-missing-file":     true,
+		"batch-size":             true,
+		"batch-dir":              true,
+		"batch-export-dir":       true,
 	}
 
 	for i := 0; i < len(raw); i++ {
@@ -184,8 +197,10 @@ func resolveMode(opts cliOptions, args []string) (string, error) {
 			return modeValidate, nil
 		case modeSplit:
 			return modeSplit, nil
+		case modeBatch:
+			return modeBatch, nil
 		default:
-			return "", fmt.Errorf("invalid -mode %q (expected: auto | validate | split)", opts.mode)
+			return "", fmt.Errorf("invalid -mode %q (expected: auto | validate | split | batch)", opts.mode)
 		}
 	}
 
@@ -198,6 +213,9 @@ func resolveMode(opts cliOptions, args []string) (string, error) {
 	}
 	if strings.TrimSpace(opts.splitInput) != "" {
 		return modeSplit, nil
+	}
+	if strings.TrimSpace(opts.batchDir) != "" {
+		return modeBatch, nil
 	}
 	if strings.TrimSpace(opts.inputDir) != "" || strings.TrimSpace(opts.schemaPath) != "" || len(args) > 0 {
 		return modeValidate, nil
@@ -306,18 +324,24 @@ func runAutoMode(opts cliOptions, args []string) {
 		Threads:              threads,
 		ThreadSource:         threadSource,
 		CPUCount:             runtime.NumCPU(),
+		BatchDir:             resolveAutoBatchDir(opts),
+		BatchExportDir:       opts.batchExportDir,
+		BatchSize:            normalizeBatchSize(opts.batchSize),
+		BatchThreads:         threads,
+		BatchThreadSource:    threadSource,
 	})
 
 	if clearValidationCache {
-		console.Infof("clearing validation cache directories: %s, %s, %s", opts.splitOutputDir, opts.successDir, opts.errorDir)
+		console.Infof("clearing validation cache directories: %s, %s, %s, %s", opts.splitOutputDir, opts.successDir, opts.errorDir, opts.batchExportDir)
 		console.Infof("this might take a while depending on the size of the cache")
-		clearValidationOutputDirs(opts.splitOutputDir, opts.successDir, opts.errorDir)
+		clearValidationOutputDirs(opts.splitOutputDir, opts.successDir, opts.errorDir, opts.batchExportDir)
 	}
 	runSplitMode(mainInput, opts.splitOutputDir, primaryKey, opts.splitMissingFile, opts.splitMaxOpen)
 
 	createOutputDirs(opts.successDir, opts.errorDir)
 	schema := loadAndValidateSchema(schemaPath)
 	runDirectoryValidation(opts.splitOutputDir, threads, opts.successDir, opts.errorDir, schema, writeEmptyError)
+	runBatchParquetMode(resolveAutoBatchDir(opts), opts.batchExportDir, normalizeBatchSize(opts.batchSize), threads)
 }
 
 /* resolveAutoModeInputs maps supported auto-mode CLI patterns to input and schema paths. */
@@ -342,14 +366,84 @@ func resolveAutoModeInputs(opts cliOptions, args []string) (string, string, erro
 	return mainInput, schemaPath, nil
 }
 
-/* clearValidationOutputDirs removes stale split/success/error artifacts before auto-mode run. */
-func clearValidationOutputDirs(splitOutputDir, successDir, errorDir string) {
-	dirs := []string{splitOutputDir, successDir, errorDir}
+/* clearValidationOutputDirs removes stale split/success/error/batch artifacts before auto-mode run. */
+func clearValidationOutputDirs(splitOutputDir, successDir, errorDir, batchExportDir string) {
+	dirs := []string{splitOutputDir, successDir, errorDir, batchExportDir}
 	for _, dir := range dirs {
 		if err := os.RemoveAll(dir); err != nil {
 			exitf("failed clearing output dir %q: %v", dir, err)
 		}
 	}
+}
+
+/* runBatchMode resolves batch inputs and executes parquet batching mode. */
+func runBatchMode(opts cliOptions, args []string) {
+	batchDir, err := resolveBatchInput(opts, args)
+	if err != nil {
+		exitf("batch mode argument error: %v", err)
+	}
+	clearValidationCache := opts.clearCache
+	if !opts.clearCacheSet {
+		clearValidationCache = true
+	}
+	batchSize := normalizeBatchSize(opts.batchSize)
+	threads := opts.threads
+	threadSource := "cli"
+	if !opts.threadsSpecified {
+		threads = defaultThreadCount()
+		threadSource = "default(60% cpu)"
+	}
+	printBatchModeBanner(batchDir, opts.batchExportDir, batchSize, threads, threadSource, clearValidationCache)
+	if clearValidationCache {
+		console.Infof("clearing batch export directory: %s", opts.batchExportDir)
+		console.Infof("this might take a while depending on the size of the cache")
+		if err := os.RemoveAll(opts.batchExportDir); err != nil {
+			exitf("failed clearing batch export dir %q: %v", opts.batchExportDir, err)
+		}
+	}
+	runBatchParquetMode(batchDir, opts.batchExportDir, batchSize, threads)
+}
+
+/* resolveBatchInput resolves batch input directory from -batch-dir or a single positional arg. */
+func resolveBatchInput(opts cliOptions, args []string) (string, error) {
+	batchDir := strings.TrimSpace(opts.batchDir)
+	if batchDir == "" {
+		if len(args) == 0 {
+			return "", fmt.Errorf("missing batch directory; use -mode batch -batch-dir <dir> or -mode batch <dir>")
+		}
+		if len(args) > 1 {
+			return "", fmt.Errorf("batch mode accepts one positional directory")
+		}
+		return args[0], nil
+	}
+
+	if len(args) == 0 {
+		return batchDir, nil
+	}
+	if len(args) > 1 {
+		return "", fmt.Errorf("batch mode accepts one positional directory")
+	}
+	if args[0] != batchDir {
+		return "", fmt.Errorf("conflicting batch directory values: %q and %q", batchDir, args[0])
+	}
+	return batchDir, nil
+}
+
+/* normalizeBatchSize applies lower bounds and defaults for parquet batching. */
+func normalizeBatchSize(batchSize int) int {
+	if batchSize < 1 {
+		return 1
+	}
+	return batchSize
+}
+
+/* resolveAutoBatchDir returns the parquet input directory used during auto mode batch phase. */
+func resolveAutoBatchDir(opts cliOptions) string {
+	batchDir := strings.TrimSpace(opts.batchDir)
+	if batchDir == "" {
+		return opts.successDir
+	}
+	return batchDir
 }
 
 /* detectPrimaryKey reads the first CSV header and returns it as split key. */
@@ -516,15 +610,20 @@ func printUsage() {
 	fmt.Fprintf(out, "  %s -mode validate -dir <input_dir> [-schema <schema.json>] [flags]\n", bin)
 	fmt.Fprintf(out, "  %s -mode split <input.csv>\n", bin)
 	fmt.Fprintf(out, "  %s -mode split -split-input <input.csv>\n", bin)
+	fmt.Fprintf(out, "  %s -mode batch -batch-dir <input_dir> [-batch-size <n>] [flags]\n", bin)
 
 	fmt.Fprintf(out, "\nModes:\n")
 	fmt.Fprintf(out, "  auto mode:\n")
-	fmt.Fprintf(out, "    Splits a main CSV by primary key, then validates the generated split directory.\n")
+	fmt.Fprintf(out, "    Splits a main CSV by primary key, validates split files, then batches success parquet outputs.\n")
 	fmt.Fprintf(out, "    Required positional args:\n")
 	fmt.Fprintf(out, "      <main.csv> <schema.json>\n")
 	fmt.Fprintf(out, "    Optional flags:\n")
+	fmt.Fprintf(out, "      -t=<n> (workers for validate + batch phases; default ~60%% cpu)\n")
 	fmt.Fprintf(out, "      -write-empty-error=true\n")
 	fmt.Fprintf(out, "      -clear-validation-cache=true\n")
+	fmt.Fprintf(out, "      -batch-size=<n> (default 1000)\n")
+	fmt.Fprintf(out, "      -batch-dir=<path> (default: value of -success-dir)\n")
+	fmt.Fprintf(out, "      -batch-export-dir=<path> (default batch_export)\n")
 	fmt.Fprintf(out, "    Notes:\n")
 	fmt.Fprintf(out, "      - If -split-primary-key is omitted, the first CSV header is used.\n")
 
@@ -547,6 +646,14 @@ func printUsage() {
 	fmt.Fprintf(out, "    Required: <input.csv> (or -split-input <input.csv>)\n")
 	fmt.Fprintf(out, "    Optional: -split-primary-key <header_name> (defaults to first CSV header)\n")
 
+	fmt.Fprintf(out, "  batch mode:\n")
+	fmt.Fprintf(out, "    Groups parquet files into batched parquet outputs.\n")
+	fmt.Fprintf(out, "    Required: -batch-dir <input_dir> (or <input_dir> positional)\n")
+	fmt.Fprintf(out, "    Optional: -t <n> (batch workers, default ~60%% cpu)\n")
+	fmt.Fprintf(out, "    Optional: -batch-size <n> (default 1000)\n")
+	fmt.Fprintf(out, "    Optional: -batch-export-dir <path> (default batch_export)\n")
+	fmt.Fprintf(out, "    Optional: -clear-validation-cache=true|false (default true in batch mode)\n")
+
 	fmt.Fprintf(out, "\nHelp:\n")
 	fmt.Fprintf(out, "  -h, -help\n")
 	fmt.Fprintf(out, "    Show this help message.\n")
@@ -561,6 +668,7 @@ func printUsage() {
 	fmt.Fprintf(out, "  %s -mode validate input.csv -schema schema.json -write-empty-error=true\n", bin)
 	fmt.Fprintf(out, "  %s -mode split main.csv\n", bin)
 	fmt.Fprintf(out, "  %s -mode split -split-input main.csv -split-primary-key policy_number\n", bin)
+	fmt.Fprintf(out, "  %s -mode batch -batch-size 1000 -batch-dir success/ -batch-export-dir batch_export\n", bin)
 }
 
 /* createOutputDirs ensures output directories exist before validation starts. */
@@ -651,6 +759,23 @@ func runSplitMode(input, outDir, primaryKey, missingFile string, maxOpen int) {
 	)
 }
 
+/* runBatchParquetMode batches parquet files from one directory into grouped parquet outputs. */
+func runBatchParquetMode(batchDir, batchExportDir string, batchSize, workers int) {
+	summary, err := batchparquet.BatchDirectory(batchDir, batchExportDir, batchSize, workers)
+	if err != nil {
+		exitf("batch phase failed: %v", err)
+	}
+	console.Successf(
+		"batch complete files=%d batches=%d total_rows=%d batch_size=%d workers=%d out_dir=%s",
+		summary.InputFiles,
+		summary.Batches,
+		summary.TotalRows,
+		summary.BatchSize,
+		summary.Workers,
+		summary.OutputDir,
+	)
+}
+
 /* exitf writes an error message to stderr and exits the process. */
 func exitf(format string, args ...interface{}) {
 	console.Errorf(format, args...)
@@ -684,6 +809,11 @@ type autoModeBannerConfig struct {
 	Threads              int
 	ThreadSource         string
 	CPUCount             int
+	BatchDir             string
+	BatchExportDir       string
+	BatchSize            int
+	BatchThreads         int
+	BatchThreadSource    string
 }
 
 type validationBannerConfig struct {
@@ -699,7 +829,7 @@ type validationBannerConfig struct {
 /* printAutoModeBanner prints a full auto-mode configuration banner before processing starts. */
 func printAutoModeBanner(cfg autoModeBannerConfig) {
 	items := []console.BannerItem{
-		{Key: "mode", Value: "auto (split + directory validate)"},
+		{Key: "mode", Value: "auto (split + directory validate + batch)"},
 		{Key: "input_csv", Value: cfg.MainInput},
 		{Key: "schema", Value: cfg.SchemaPath},
 		{Key: "write_empty_error", Value: strconv.FormatBool(cfg.WriteEmptyError)},
@@ -712,6 +842,10 @@ func printAutoModeBanner(cfg autoModeBannerConfig) {
 		{Key: "missing_keys_file", Value: cfg.MissingKeysFile},
 		{Key: "threads", Value: fmt.Sprintf("%d (%s)", cfg.Threads, cfg.ThreadSource)},
 		{Key: "cpu_count", Value: strconv.Itoa(cfg.CPUCount)},
+		{Key: "batch_dir", Value: cfg.BatchDir},
+		{Key: "batch_export_dir", Value: cfg.BatchExportDir},
+		{Key: "batch_size", Value: strconv.Itoa(cfg.BatchSize)},
+		{Key: "batch_threads", Value: fmt.Sprintf("%d (%s)", cfg.BatchThreads, cfg.BatchThreadSource)},
 	}
 	console.PrintBanner("Validation Run Configuration", items)
 }
@@ -739,6 +873,19 @@ func printSplitModeBanner(input, splitOutputDir, primaryKey string, splitMaxOpen
 		{Key: "primary_key", Value: fmt.Sprintf("%q", primaryKey)},
 		{Key: "split_max_open", Value: strconv.Itoa(splitMaxOpen)},
 		{Key: "missing_keys_file", Value: splitMissingFile},
+	}
+	console.PrintBanner("Validation Run Configuration", items)
+}
+
+/* printBatchModeBanner prints a batch-only configuration banner before batch processing starts. */
+func printBatchModeBanner(batchDir, batchExportDir string, batchSize, batchThreads int, threadSource string, clearValidationCache bool) {
+	items := []console.BannerItem{
+		{Key: "mode", Value: "batch-only"},
+		{Key: "batch_dir", Value: batchDir},
+		{Key: "batch_export_dir", Value: batchExportDir},
+		{Key: "batch_size", Value: strconv.Itoa(batchSize)},
+		{Key: "batch_threads", Value: fmt.Sprintf("%d (%s)", batchThreads, threadSource)},
+		{Key: "clear_validation_cache", Value: strconv.FormatBool(clearValidationCache)},
 	}
 	console.PrintBanner("Validation Run Configuration", items)
 }

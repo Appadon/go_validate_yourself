@@ -379,6 +379,7 @@ func (m *missingRowWriter) ensureOpen() error {
 	return nil
 }
 
+/* get returns a writer for key, creating or rotating cached files as needed. */
 func (c *writerCache) get(key string) (*writerEntry, error) {
 	if e, ok := c.entries[key]; ok {
 		c.order.MoveToFront(e.elem)
@@ -422,6 +423,7 @@ func (c *writerCache) get(key string) (*writerEntry, error) {
 	return e, nil
 }
 
+/* closeAll flushes and closes every cached writer entry. */
 func (c *writerCache) closeAll() error {
 	var firstErr error
 	for len(c.entries) > 0 {
@@ -437,6 +439,7 @@ func (c *writerCache) closeAll() error {
 	return firstErr
 }
 
+/* close flushes and closes one cached writer entry and removes it from cache. */
 func (c *writerCache) close(e *writerEntry) error {
 	e.writer.Flush()
 	if err := e.writer.Error(); err != nil {
@@ -455,6 +458,7 @@ func (c *writerCache) close(e *writerEntry) error {
 	return nil
 }
 
+/* padToHeader right-pads records with empty values to match header width. */
 func padToHeader(record []string, size int) []string {
 	if len(record) == size {
 		return record
@@ -464,6 +468,7 @@ func padToHeader(record []string, size int) []string {
 	return out
 }
 
+/* sanitizeFileName replaces unsafe path separators and null bytes in key values. */
 func sanitizeFileName(v string) string {
 	r := strings.NewReplacer("/", "_", "\\", "_", "\x00", "_")
 	return r.Replace(v)
@@ -474,6 +479,7 @@ type countingReader struct {
 	bytesRead atomic.Int64
 }
 
+/* estimateTotalRows projects total rows from current rows and completion percent. */
 func estimateTotalRows(rows int64, pct float64) string {
 	if pct <= 0 || pct > 100 {
 		return "?"
@@ -485,10 +491,12 @@ func estimateTotalRows(rows int64, pct float64) string {
 	return fmt.Sprintf("%d", estimated)
 }
 
+/* bytesToMiB converts byte count to mebibytes. */
 func bytesToMiB(v int64) float64 {
 	return float64(v) / (1024 * 1024)
 }
 
+/* Read proxies underlying reads while tracking total bytes consumed. */
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	if n > 0 {

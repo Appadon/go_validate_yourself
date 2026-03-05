@@ -174,11 +174,7 @@ func ValidateSchema(cfg *SchemaConfig) error {
 	return nil
 }
 
-/*
-RunValidationAndWriteParquet validates a single CSV and writes:
-1) validated rows to parquet, and
-2) invalid rows to an error CSV.
-*/
+/* RunValidationAndWriteParquet validates one CSV and writes parquet + error CSV outputs. */
 func RunValidationAndWriteParquet(input, successOutput, errorOutput string, schema SchemaConfig, writeEmptyError bool) (Stats, error) {
 	state := &validationOutputState{
 		successOutput: successOutput,
@@ -503,6 +499,7 @@ func printDirectoryFinalProgress(completed int64, total int) {
 	})
 }
 
+/* writeErrorCSV persists invalid records and their error details to CSV. */
 func writeErrorCSV(path string, header []string, rows []InvalidRow) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -531,6 +528,7 @@ func writeErrorCSV(path string, header []string, rows []InvalidRow) error {
 	return w.Error()
 }
 
+/* formatRowErrors joins field-level errors into one serialized message. */
 func formatRowErrors(errs []ValidationError) string {
 	parts := make([]string, 0, len(errs))
 	for _, e := range errs {
@@ -539,6 +537,7 @@ func formatRowErrors(errs []ValidationError) string {
 	return strings.Join(parts, " | ")
 }
 
+/* validateRow validates one CSV row and returns parquet-ready values or errors. */
 func validateRow(rowNum int, record []string, headerIdx map[string]int, schema SchemaConfig) ([]*string, []ValidationError) {
 	out := make([]*string, 0, len(schema.Fields))
 	errs := make([]ValidationError, 0)
@@ -565,6 +564,7 @@ func validateRow(rowNum int, record []string, headerIdx map[string]int, schema S
 	return out, nil
 }
 
+/* normalizeAndValidateValue applies field rules and returns normalized output value. */
 func normalizeAndValidateValue(raw string, field FieldRule) (*string, error) {
 	if len(field.parsedInlineReplace) > 0 {
 		lookup := raw
@@ -643,6 +643,7 @@ func normalizeAndValidateValue(raw string, field FieldRule) (*string, error) {
 	}
 }
 
+/* buildParquetSchemaMetadata converts schema config into parquet-go CSV metadata tags. */
 func buildParquetSchemaMetadata(cfg SchemaConfig) ([]string, error) {
 	md := make([]string, 0, len(cfg.Fields))
 	for _, f := range cfg.Fields {
@@ -670,6 +671,7 @@ func buildParquetSchemaMetadata(cfg SchemaConfig) ([]string, error) {
 	return md, nil
 }
 
+/* toSnakeCase creates a basic snake_case identifier from a source field name. */
 func toSnakeCase(s string) string {
 	s = strings.TrimSpace(strings.ToLower(s))
 	replacer := strings.NewReplacer(" ", "_", "-", "_", "/", "_", ".", "_")
@@ -680,22 +682,26 @@ func toSnakeCase(s string) string {
 	return s
 }
 
+/* daysSinceEpoch converts a date to parquet DATE logical type day count. */
 func daysSinceEpoch(t time.Time) int32 {
 	y, m, d := t.Date()
 	utcDate := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 	return int32(utcDate.Unix() / 86400)
 }
 
+/* stringPtr returns a pointer to the provided string value. */
 func stringPtr(s string) *string {
 	return &s
 }
 
+/* baseNameWithoutExt returns filename without extension. */
 func baseNameWithoutExt(path string) string {
 	name := filepath.Base(path)
 	ext := filepath.Ext(name)
 	return strings.TrimSuffix(name, ext)
 }
 
+/* isMissing identifies null-like text values used in input CSV rows. */
 func isMissing(s string) bool {
 	v := strings.TrimSpace(strings.ToLower(s))
 	return v == "" || v == "none" || v == "null" || v == "nan" || v == "na" || v == "n/a"

@@ -115,6 +115,7 @@ func FormatBytes(v int64) string {
 	}
 }
 
+/* logf writes one formatted log line with timestamp and level label. */
 func logf(w *os.File, level, color, format string, args ...interface{}) {
 	timestamp := time.Now().Format("15:04:05")
 	levelLabel := paint(level, color)
@@ -122,6 +123,7 @@ func logf(w *os.File, level, color, format string, args ...interface{}) {
 	fmt.Fprintf(w, "[%s] %-8s %s\n", timestamp, levelLabel, msg)
 }
 
+/* paint wraps output in ANSI color codes when color output is enabled. */
 func paint(s, color string) string {
 	if !isColorEnabled() {
 		return s
@@ -129,6 +131,7 @@ func paint(s, color string) string {
 	return color + s + colorReset
 }
 
+/* isColorEnabled reports whether ANSI color output should be used. */
 func isColorEnabled() bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
@@ -137,6 +140,7 @@ func isColorEnabled() bool {
 	return term != "" && term != "dumb"
 }
 
+/* center pads a string with spaces so it is centered at the given width. */
 func center(s string, width int) string {
 	if len(s) >= width {
 		return s
@@ -147,6 +151,7 @@ func center(s string, width int) string {
 	return strings.Repeat(" ", left) + s + strings.Repeat(" ", right)
 }
 
+/* max returns the larger integer value. */
 func max(a, b int) int {
 	if a > b {
 		return a
@@ -154,6 +159,7 @@ func max(a, b int) int {
 	return b
 }
 
+/* computeBannerWidth calculates a minimum banner width for title and key-values. */
 func computeBannerWidth(title string, items []BannerItem) int {
 	width := max(76, len(title)+8)
 	for _, item := range items {
@@ -168,6 +174,7 @@ func computeBannerWidth(title string, items []BannerItem) int {
 	return width
 }
 
+/* buildProgressMessage renders normalized progress segments into one line. */
 func buildProgressMessage(segments []string) string {
 	out := make([]string, 0, len(segments))
 	for _, segment := range segments {
@@ -180,6 +187,7 @@ func buildProgressMessage(segments []string) string {
 	return strings.Join(out, " ")
 }
 
+/* formatSegmentWithColors applies segment-level color formatting for progress logs. */
 func formatSegmentWithColors(segment string) string {
 	if !isColorEnabled() {
 		return "[" + segment + "]"
@@ -193,6 +201,7 @@ func formatSegmentWithColors(segment string) string {
 	return paint("[", colorBlue) + content + paint("]", colorBlue)
 }
 
+/* isPercentageSegment reports whether a segment is a numeric percentage token. */
 func isPercentageSegment(segment string) bool {
 	value := strings.TrimSpace(segment)
 	if !strings.HasSuffix(value, "%") {
@@ -206,6 +215,7 @@ func isPercentageSegment(segment string) bool {
 	return err == nil
 }
 
+/* splitLabelValueSegment parses supported label/value progress segments. */
 func splitLabelValueSegment(segment string) (string, string, bool) {
 	value := strings.TrimSpace(segment)
 	if strings.HasPrefix(value, "eta ") {
