@@ -7,7 +7,8 @@ High-throughput CSV data quality pipeline written in Go.
 - validate CSV rows against a JSON schema,
 - write valid rows to Parquet,
 - write invalid rows to error CSV files,
-- run the full split+validate pipeline in one command (auto mode).
+- batch parquet files into grouped outputs,
+- run the full split+validate+batch pipeline in one command (auto mode).
 
 ## Table of Contents
 - [What It Does](#what-it-does)
@@ -38,7 +39,7 @@ Optional split mode first partitions one big CSV by a primary key, then those sp
   - `errors/*_error.csv` for invalid rows.
 - Deterministic file ordering in directory mode (`.csv` files sorted by name).
 - Streaming processing for large files.
-- Progress logs every ~2 seconds for long-running split and directory-validation phases.
+- Progress logs every ~2 seconds for long-running split, directory-validation, and batch phases.
 
 ## Installation
 
@@ -65,7 +66,8 @@ go build -o gvy .
 This will:
 - auto-detect split key as the first CSV header column (unless `-split-primary-key` is provided),
 - split into `-split-output-dir` (default `split`),
-- validate all split files into `-success-dir` and `-error-dir`.
+- validate all split files into `-success-dir` and `-error-dir`,
+- batch parquet outputs from `-batch-dir` (default `-success-dir`) into `-batch-export-dir` (default `batch_export`) using `-batch-size` (default `1000`).
 
 ### 2) Validate one CSV file
 ```bash
@@ -112,12 +114,16 @@ or inferred when `-mode` is omitted and positional args begin with:
 Behavior:
 - Split phase runs first.
 - Validation phase runs on the split output directory.
+- Batch phase runs on parquet files from `-batch-dir` (default `-success-dir`).
 - If `-split-primary-key` is omitted, the first header in `<main.csv>` is used.
 - If `-t` is omitted, worker threads default to ~60% of CPU cores (`max(1, int(0.6 * NumCPU))`).
+- `-t` applies to both directory validation and parquet batching worker pools.
+- If `-batch-size` is omitted, it defaults to `1000`.
 - `-write-empty-error` defaults to `false`.
 - `-clear-validation-cache` defaults to:
   - `true` when auto mode is inferred (no `-mode` provided),
   - `false` when auto mode is explicit (`-mode auto`), unless the flag is passed.
+  - In batch mode, clearing `-batch-export-dir` defaults to `true` unless you explicitly pass `-clear-validation-cache=false`.
 
 ### 2) Split-only mode
 Use `-mode split` when you only want to partition one CSV by key.
@@ -152,15 +158,29 @@ Directory:
 ./gvy -mode validate -schema example_schema.json -dir split -t 8
 ```
 
+### 4) Batch mode
+Use `-mode batch` to group parquet files into fixed-size batches.
+By default, batch mode clears `-batch-export-dir` before writing output files.
+
+Example:
+```bash
+./gvy \
+  -mode batch \
+  -t 8 \
+  -batch-dir success \
+  -batch-size 1000 \
+  -batch-export-dir batch_export
+```
+
 ## CLI Reference
 
 ### Flags
-- `-mode <auto|validate|split>`: explicit execution mode. If omitted, mode is inferred.
+- `-mode <auto|validate|split|batch>`: explicit execution mode. If omitted, mode is inferred.
 - `-schema <path>`: schema JSON path.
 - `-dir <path>`: directory containing CSV files for validation mode.
-- `-t <n>`: worker count for directory validation (default is ~60% of CPU cores when omitted).
+- `-t <n>`: worker count for directory validation and batch mode (default is ~60% of CPU cores when omitted).
 - `-write-empty-error`: write empty error CSV outputs for valid files (default `false`).
-- `-clear-validation-cache`: clear split/success/error directories before auto-mode run.
+- `-clear-validation-cache`: in auto mode, clears split/success/error/batch_export directories; in batch mode, clears `-batch-export-dir` before batching (default `true` for batch mode unless explicitly set to false).
 - `-success-dir <path>`: Parquet output directory (default `success`).
 - `-error-dir <path>`: error CSV output directory (default `errors`).
 - `-split-input <path>`: input CSV for split-only mode.
@@ -168,6 +188,9 @@ Directory:
 - `-split-primary-key <header>`: header used as split key.
 - `-split-max-open <n>`: max open split file writers (default `256`).
 - `-split-missing-file <name>`: output filename for blank split-key rows (default `missing_keys.csv`).
+- `-batch-size <n>`: parquet files per batch output (default `1000`).
+- `-batch-dir <path>`: parquet input directory for batch mode (in auto mode defaults to `-success-dir`).
+- `-batch-export-dir <path>`: batch output directory (default `batch_export`).
 
 ### Positional Arguments
 - Auto mode:
@@ -176,6 +199,8 @@ Directory:
   - `<input.csv>` for single-file validation, or no positional when `-dir` is used.
 - Split mode:
   - `<input.csv>` when not using `-split-input`.
+- Batch mode:
+  - `<input_dir>` when not using `-batch-dir`.
 
 ### Important Argument Rules
 - Flags can be placed before or after positional args.
