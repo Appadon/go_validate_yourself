@@ -1,10 +1,8 @@
 package main
 
 import (
-	"encoding/csv"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,10 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"go_validate_yourself/internal/batchparquet"
+	"go_validate_yourself/internal/api"
 	"go_validate_yourself/internal/console"
-	"go_validate_yourself/internal/splitcsv"
-	"go_validate_yourself/internal/validator"
+	"go_validate_yourself/internal/service"
 )
 
 /* cliOptions holds parsed command-line flags. */
@@ -39,6 +36,8 @@ type cliOptions struct {
 	batchSize        int
 	batchDir         string
 	batchExportDir   string
+	host             string
+	port             int
 }
 
 var runStartedAt = time.Now()
@@ -48,11 +47,12 @@ const (
 	modeValidate = "validate"
 	modeSplit    = "split"
 	modeBatch    = "batch"
+	modeServer   = "server"
 
 	defaultSchemaPath = "policy_schema.json"
 )
 
-/* main parses arguments and dispatches either split or validation modes. */
+/* main parses arguments and dispatches CLI or server execution modes. */
 func main() {
 	runStartedAt = time.Now()
 	defer logTotalRuntime()
@@ -75,20 +75,22 @@ func main() {
 		runValidationMode(opts, args)
 	case modeBatch:
 		runBatchMode(opts, args)
+	case modeServer:
+		runServerMode(opts)
 	default:
 		exitf("unsupported mode %q", mode)
 	}
 }
 
-/* parseFlags parses CLI flags for both validation and split modes. */
+/* parseFlags parses CLI flags for validation, batch, split, and server modes. */
 func parseFlags() cliOptions {
 	opts := cliOptions{}
 	normalizedArgs := normalizeArgsForFlexibleFlags(os.Args[1:])
 	flag.Usage = printUsage
-	flag.StringVar(&opts.mode, "mode", "", "Execution mode: auto | validate | split | batch (default: inferred)")
+	flag.StringVar(&opts.mode, "mode", "", "Execution mode: auto | validate | split | batch | server (default: inferred)")
 	flag.StringVar(&opts.schemaPath, "schema", "", "Schema JSON file (required)")
 	flag.StringVar(&opts.inputDir, "dir", "", "Directory containing CSV files to validate")
-	flag.IntVar(&opts.threads, "t", defaultThreadCount(), "Number of concurrent workers for -dir mode")
+	flag.IntVar(&opts.threads, "t", service.DefaultThreadCount(), "Number of concurrent workers for -dir mode")
 	flag.BoolVar(&opts.writeEmptyError, "write-empty-error", false, "Write empty error CSV files for fully valid inputs")
 	flag.BoolVar(&opts.clearCache, "clear-validation-cache", false, "Clear split/success/error directories before auto mode run")
 	flag.StringVar(&opts.successDir, "success-dir", "success", "Directory for valid parquet output")
@@ -101,6 +103,8 @@ func parseFlags() cliOptions {
 	flag.IntVar(&opts.batchSize, "batch-size", 1000, "Number of parquet files per output batch")
 	flag.StringVar(&opts.batchDir, "batch-dir", "", "Directory containing parquet files for batch mode (defaults to success-dir in auto mode)")
 	flag.StringVar(&opts.batchExportDir, "batch-export-dir", "batch_export", "Directory for batch mode output parquet files")
+	flag.StringVar(&opts.host, "host", "127.0.0.1", "Host for server mode")
+	flag.IntVar(&opts.port, "port", 8080, "Port for server mode")
 	if err := flag.CommandLine.Parse(normalizedArgs); err != nil {
 		exitWithCode(2)
 	}
@@ -108,7 +112,7 @@ func parseFlags() cliOptions {
 	opts.threadsSpecified = isFlagProvided("t")
 	opts.clearCacheSet = isFlagProvided("clear-validation-cache")
 	if !opts.threadsSpecified {
-		opts.threads = defaultThreadCount()
+		opts.threads = service.DefaultThreadCount()
 	}
 	return opts
 }
@@ -145,6 +149,8 @@ func normalizeArgsForFlexibleFlags(raw []string) []string {
 		"batch-size":             true,
 		"batch-dir":              true,
 		"batch-export-dir":       true,
+		"host":                   true,
+		"port":                   true,
 	}
 
 	for i := 0; i < len(raw); i++ {
@@ -174,7 +180,7 @@ func normalizeArgsForFlexibleFlags(raw []string) []string {
 	return append(flags, positionals...)
 }
 
-/* parseLongFlagName extracts the flag name and reports whether it includes an inline value (e.g. -f=v). */
+/* parseLongFlagName extracts the flag name and reports whether it includes an inline value. */
 func parseLongFlagName(token string) (string, bool) {
 	clean := strings.TrimLeft(token, "-")
 	if eq := strings.Index(clean, "="); eq >= 0 {
@@ -199,15 +205,16 @@ func resolveMode(opts cliOptions, args []string) (string, error) {
 			return modeSplit, nil
 		case modeBatch:
 			return modeBatch, nil
+		case modeServer:
+			return modeServer, nil
 		default:
-			return "", fmt.Errorf("invalid -mode %q (expected: auto | validate | split | batch)", opts.mode)
+			return "", fmt.Errorf("invalid -mode %q (expected: auto | validate | split | batch | server)", opts.mode)
 		}
 	}
 
 	if strings.TrimSpace(opts.inputDir) != "" && looksLikeImplicitAuto(args) {
 		return "", fmt.Errorf("inferred auto mode from <main.csv> <schema.json>, but -dir requires validation mode; use -mode validate -dir <input_dir>")
 	}
-
 	if looksLikeImplicitAuto(args) {
 		return modeAuto, nil
 	}
@@ -223,18 +230,15 @@ func resolveMode(opts cliOptions, args []string) (string, error) {
 	return modeAuto, nil
 }
 
-/* looksLikeImplicitAuto reports whether positional args match inferred auto mode shape (<main.csv> <schema.json> ...). */
+/* looksLikeImplicitAuto reports whether positional args match inferred auto mode shape. */
 func looksLikeImplicitAuto(args []string) bool {
 	if len(args) < 2 {
 		return false
 	}
-	if strings.ToLower(filepath.Ext(args[1])) != ".json" {
-		return false
-	}
-	return true
+	return strings.ToLower(filepath.Ext(args[1])) == ".json"
 }
 
-/* runSplitOnlyMode resolves split inputs and executes split mode with default key detection when needed. */
+/* runSplitOnlyMode resolves split inputs and executes split mode with auto key detection. */
 func runSplitOnlyMode(opts cliOptions, args []string) {
 	input, err := resolveSplitInput(opts, args)
 	if err != nil {
@@ -243,7 +247,7 @@ func runSplitOnlyMode(opts cliOptions, args []string) {
 
 	primaryKey := strings.TrimSpace(opts.splitPrimaryKey)
 	if primaryKey == "" {
-		primaryKey, err = detectPrimaryKey(input)
+		primaryKey, err = service.DetectPrimaryKey(input)
 		if err != nil {
 			exitf("failed detecting split primary key: %v", err)
 		}
@@ -253,7 +257,7 @@ func runSplitOnlyMode(opts cliOptions, args []string) {
 	runSplitMode(input, opts.splitOutputDir, primaryKey, opts.splitMissingFile, opts.splitMaxOpen)
 }
 
-/* resolveSplitInput resolves split input from either -split-input or the single positional argument. */
+/* resolveSplitInput resolves split input from either -split-input or one positional argument. */
 func resolveSplitInput(opts cliOptions, args []string) (string, error) {
 	splitInput := strings.TrimSpace(opts.splitInput)
 	if splitInput == "" {
@@ -265,7 +269,6 @@ func resolveSplitInput(opts cliOptions, args []string) (string, error) {
 		}
 		return args[0], nil
 	}
-
 	if len(args) == 0 {
 		return splitInput, nil
 	}
@@ -278,12 +281,13 @@ func resolveSplitInput(opts cliOptions, args []string) (string, error) {
 	return splitInput, nil
 }
 
-/* runAutoMode splits the main CSV and validates the split directory in one command. */
+/* runAutoMode executes the full split, validate, and batch workflow. */
 func runAutoMode(opts cliOptions, args []string) {
 	mainInput, schemaPath, err := resolveAutoModeInputs(opts, args)
 	if err != nil {
 		exitf("auto mode argument error: %v", err)
 	}
+
 	writeEmptyError := opts.writeEmptyError
 	clearValidationCache := opts.clearCache
 	if !opts.modeSpecified && !opts.clearCacheSet {
@@ -292,7 +296,7 @@ func runAutoMode(opts cliOptions, args []string) {
 
 	primaryKey := strings.TrimSpace(opts.splitPrimaryKey)
 	if primaryKey == "" {
-		primaryKey, err = detectPrimaryKey(mainInput)
+		primaryKey, err = service.DetectPrimaryKey(mainInput)
 		if err != nil {
 			exitf("failed detecting split primary key: %v", err)
 		}
@@ -301,7 +305,7 @@ func runAutoMode(opts cliOptions, args []string) {
 	threads := opts.threads
 	threadSource := "cli"
 	if !opts.threadsSpecified {
-		threads = defaultThreadCount()
+		threads = service.DefaultThreadCount()
 		threadSource = "default(60% cpu)"
 	}
 	primaryKeySource := "cli"
@@ -331,17 +335,25 @@ func runAutoMode(opts cliOptions, args []string) {
 		BatchThreadSource:    threadSource,
 	})
 
-	if clearValidationCache {
-		console.Infof("clearing validation cache directories: %s, %s, %s, %s", opts.splitOutputDir, opts.successDir, opts.errorDir, opts.batchExportDir)
-		console.Infof("this might take a while depending on the size of the cache")
-		clearValidationOutputDirs(opts.splitOutputDir, opts.successDir, opts.errorDir, opts.batchExportDir)
+	_, err = service.New().RunAuto(service.AutoOptions{
+		MainInputCSV:         mainInput,
+		SchemaPath:           schemaPath,
+		SplitOutputDir:       opts.splitOutputDir,
+		SplitPrimaryKey:      primaryKey,
+		SplitMaxOpen:         opts.splitMaxOpen,
+		SplitMissingFile:     opts.splitMissingFile,
+		Threads:              threads,
+		WriteEmptyError:      writeEmptyError,
+		ClearValidationCache: clearValidationCache,
+		SuccessDir:           opts.successDir,
+		ErrorDir:             opts.errorDir,
+		BatchDir:             resolveAutoBatchDir(opts),
+		BatchExportDir:       opts.batchExportDir,
+		BatchSize:            normalizeBatchSize(opts.batchSize),
+	})
+	if err != nil {
+		exitf("%v", err)
 	}
-	runSplitMode(mainInput, opts.splitOutputDir, primaryKey, opts.splitMissingFile, opts.splitMaxOpen)
-
-	createOutputDirs(opts.successDir, opts.errorDir)
-	schema := loadAndValidateSchema(schemaPath)
-	runDirectoryValidation(opts.splitOutputDir, threads, opts.successDir, opts.errorDir, schema, writeEmptyError)
-	runBatchParquetMode(resolveAutoBatchDir(opts), opts.batchExportDir, normalizeBatchSize(opts.batchSize), threads)
 }
 
 /* resolveAutoModeInputs maps supported auto-mode CLI patterns to input and schema paths. */
@@ -362,18 +374,7 @@ func resolveAutoModeInputs(opts cliOptions, args []string) (string, string, erro
 	if len(remaining) > 1 {
 		return "", "", fmt.Errorf("auto mode accepts only <main.csv> plus flags")
 	}
-	mainInput := remaining[0]
-	return mainInput, schemaPath, nil
-}
-
-/* clearValidationOutputDirs removes stale split/success/error/batch artifacts before auto-mode run. */
-func clearValidationOutputDirs(splitOutputDir, successDir, errorDir, batchExportDir string) {
-	dirs := []string{splitOutputDir, successDir, errorDir, batchExportDir}
-	for _, dir := range dirs {
-		if err := os.RemoveAll(dir); err != nil {
-			exitf("failed clearing output dir %q: %v", dir, err)
-		}
-	}
+	return remaining[0], schemaPath, nil
 }
 
 /* runBatchMode resolves batch inputs and executes parquet batching mode. */
@@ -390,21 +391,24 @@ func runBatchMode(opts cliOptions, args []string) {
 	threads := opts.threads
 	threadSource := "cli"
 	if !opts.threadsSpecified {
-		threads = defaultThreadCount()
+		threads = service.DefaultThreadCount()
 		threadSource = "default(60% cpu)"
 	}
+
 	printBatchModeBanner(batchDir, opts.batchExportDir, batchSize, threads, threadSource, clearValidationCache)
-	if clearValidationCache {
-		console.Infof("clearing batch export directory: %s", opts.batchExportDir)
-		console.Infof("this might take a while depending on the size of the cache")
-		if err := os.RemoveAll(opts.batchExportDir); err != nil {
-			exitf("failed clearing batch export dir %q: %v", opts.batchExportDir, err)
-		}
+	_, err = service.New().RunBatch(service.BatchOptions{
+		InputDir:       batchDir,
+		OutputDir:      opts.batchExportDir,
+		BatchSize:      batchSize,
+		Workers:        threads,
+		ClearOutputDir: clearValidationCache,
+	})
+	if err != nil {
+		exitf("%v", err)
 	}
-	runBatchParquetMode(batchDir, opts.batchExportDir, batchSize, threads)
 }
 
-/* resolveBatchInput resolves batch input directory from -batch-dir or a single positional arg. */
+/* resolveBatchInput resolves batch input directory from -batch-dir or one positional arg. */
 func resolveBatchInput(opts cliOptions, args []string) (string, error) {
 	batchDir := strings.TrimSpace(opts.batchDir)
 	if batchDir == "" {
@@ -416,7 +420,6 @@ func resolveBatchInput(opts cliOptions, args []string) (string, error) {
 		}
 		return args[0], nil
 	}
-
 	if len(args) == 0 {
 		return batchDir, nil
 	}
@@ -439,49 +442,10 @@ func normalizeBatchSize(batchSize int) int {
 
 /* resolveAutoBatchDir returns the parquet input directory used during auto mode batch phase. */
 func resolveAutoBatchDir(opts cliOptions) string {
-	batchDir := strings.TrimSpace(opts.batchDir)
-	if batchDir == "" {
+	if strings.TrimSpace(opts.batchDir) == "" {
 		return opts.successDir
 	}
-	return batchDir
-}
-
-/* detectPrimaryKey reads the first CSV header and returns it as split key. */
-func detectPrimaryKey(inputPath string) (string, error) {
-	f, err := os.Open(inputPath)
-	if err != nil {
-		return "", fmt.Errorf("open input: %w", err)
-	}
-	defer f.Close()
-
-	reader := csv.NewReader(f)
-	reader.FieldsPerRecord = -1
-	header, err := reader.Read()
-	if err != nil {
-		if err == io.EOF {
-			return "", fmt.Errorf("input %q is empty", inputPath)
-		}
-		return "", fmt.Errorf("read header: %w", err)
-	}
-	if len(header) == 0 {
-		return "", fmt.Errorf("input %q has no header columns", inputPath)
-	}
-
-	selected := strings.TrimSpace(header[0])
-	if selected == "" {
-		return "", fmt.Errorf("first header column is blank")
-	}
-	return selected, nil
-}
-
-/* defaultThreadCount returns 60 percent of available CPUs, with a minimum of one. */
-func defaultThreadCount() int {
-	cpus := runtime.NumCPU()
-	threads := int(float64(cpus) * 0.6)
-	if threads < 1 {
-		return 1
-	}
-	return threads
+	return opts.batchDir
 }
 
 /* runValidationMode validates CLI arguments and executes single-file or directory processing. */
@@ -491,34 +455,22 @@ func runValidationMode(opts cliOptions, args []string) {
 	if err != nil {
 		exitf("validation mode argument error: %v", err)
 	}
-	writeEmptyError := opts.writeEmptyError
 
-	createOutputDirs(opts.successDir, opts.errorDir)
-	schema := loadAndValidateSchema(schemaPath)
-
-	if opts.inputDir == "" {
-		printValidationBanner(validationBannerConfig{
-			Mode:            "single-file validation",
-			SchemaPath:      schemaPath,
-			Input:           inputCSV,
-			SuccessDir:      opts.successDir,
-			ErrorDir:        opts.errorDir,
-			WriteEmptyError: writeEmptyError,
-			Threads:         1,
-		})
-		runSingleFileValidation(inputCSV, opts.successDir, opts.errorDir, schema, writeEmptyError)
-		return
-	}
 	printValidationBanner(validationBannerConfig{
-		Mode:            "directory validation",
+		Mode:            validationModeLabel(opts),
 		SchemaPath:      schemaPath,
-		Input:           opts.inputDir,
+		Input:           validationInputLabel(opts, inputCSV),
 		SuccessDir:      opts.successDir,
 		ErrorDir:        opts.errorDir,
-		WriteEmptyError: writeEmptyError,
-		Threads:         opts.threads,
+		WriteEmptyError: opts.writeEmptyError,
+		Threads:         validationThreadCount(opts),
 	})
-	runDirectoryValidation(opts.inputDir, opts.threads, opts.successDir, opts.errorDir, schema, writeEmptyError)
+
+	if strings.TrimSpace(opts.inputDir) == "" {
+		runSingleFileValidation(inputCSV, schemaPath, opts.successDir, opts.errorDir, opts.writeEmptyError)
+		return
+	}
+	runDirectoryValidation(opts.inputDir, schemaPath, opts.threads, opts.successDir, opts.errorDir, opts.writeEmptyError)
 }
 
 /* normalizeValidationOptions applies bounds and defaults for validation mode. */
@@ -528,11 +480,10 @@ func normalizeValidationOptions(opts *cliOptions) {
 	}
 }
 
-/* resolveValidationInputs resolves schema and input targets for validation mode and enforces arg rules. */
+/* resolveValidationInputs resolves schema and input targets for validation mode. */
 func resolveValidationInputs(opts cliOptions, args []string) (string, string, error) {
 	remaining := append([]string{}, args...)
 	schemaPath := strings.TrimSpace(opts.schemaPath)
-
 	if schemaPath == "" {
 		idx := indexOfSchemaArg(remaining)
 		if idx >= 0 {
@@ -541,7 +492,7 @@ func resolveValidationInputs(opts cliOptions, args []string) (string, string, er
 		}
 	}
 	if schemaPath == "" {
-		defaulted, err := resolveDefaultSchemaPath()
+		defaulted, err := service.ResolveDefaultSchemaPath()
 		if err != nil {
 			return "", "", err
 		}
@@ -555,24 +506,37 @@ func resolveValidationInputs(opts cliOptions, args []string) (string, string, er
 		}
 		return "", schemaPath, nil
 	}
-
 	if len(remaining) < 1 {
 		return "", "", fmt.Errorf("missing input CSV; use -mode validate <input.csv> [-schema <schema.json>]")
 	}
 	if len(remaining) > 1 {
 		return "", "", fmt.Errorf("single-file validation accepts only <input.csv> plus flags")
 	}
-
-	inputCSV := remaining[0]
-	return inputCSV, schemaPath, nil
+	return remaining[0], schemaPath, nil
 }
 
-/* resolveDefaultSchemaPath returns the default schema path when available. */
-func resolveDefaultSchemaPath() (string, error) {
-	if _, err := os.Stat(defaultSchemaPath); err == nil {
-		return defaultSchemaPath, nil
+/* validationModeLabel returns the label used in the validation banner. */
+func validationModeLabel(opts cliOptions) string {
+	if strings.TrimSpace(opts.inputDir) == "" {
+		return "single-file validation"
 	}
-	return "", fmt.Errorf("missing schema; pass -schema <path> (default %q not found)", defaultSchemaPath)
+	return "directory validation"
+}
+
+/* validationInputLabel returns the input label used in the validation banner. */
+func validationInputLabel(opts cliOptions, inputCSV string) string {
+	if strings.TrimSpace(opts.inputDir) == "" {
+		return inputCSV
+	}
+	return opts.inputDir
+}
+
+/* validationThreadCount returns the effective thread count for the validation banner. */
+func validationThreadCount(opts cliOptions) int {
+	if strings.TrimSpace(opts.inputDir) == "" {
+		return 1
+	}
+	return opts.threads
 }
 
 /* indexOfSchemaArg returns the first positional index that looks like a JSON schema path. */
@@ -599,7 +563,7 @@ func printUsageAndExit(code int) {
 	exitWithCode(code)
 }
 
-/* printUsage writes complete CLI help, including mode-specific positionals and examples. */
+/* printUsage writes complete CLI help, including the new server mode. */
 func printUsage() {
 	out := flag.CommandLine.Output()
 	bin := filepath.Base(os.Args[0])
@@ -611,6 +575,7 @@ func printUsage() {
 	fmt.Fprintf(out, "  %s -mode split <input.csv>\n", bin)
 	fmt.Fprintf(out, "  %s -mode split -split-input <input.csv>\n", bin)
 	fmt.Fprintf(out, "  %s -mode batch -batch-dir <input_dir> [-batch-size <n>] [flags]\n", bin)
+	fmt.Fprintf(out, "  %s -mode server [-host 127.0.0.1] [-port 8080]\n", bin)
 
 	fmt.Fprintf(out, "\nModes:\n")
 	fmt.Fprintf(out, "  auto mode:\n")
@@ -654,6 +619,11 @@ func printUsage() {
 	fmt.Fprintf(out, "    Optional: -batch-export-dir <path> (default batch_export)\n")
 	fmt.Fprintf(out, "    Optional: -clear-validation-cache=true|false (default true in batch mode)\n")
 
+	fmt.Fprintf(out, "  server mode:\n")
+	fmt.Fprintf(out, "    Starts the localhost-only HTTP API.\n")
+	fmt.Fprintf(out, "    Optional: -host <addr> (default 127.0.0.1)\n")
+	fmt.Fprintf(out, "    Optional: -port <n> (default 8080)\n")
+
 	fmt.Fprintf(out, "\nHelp:\n")
 	fmt.Fprintf(out, "  -h, -help\n")
 	fmt.Fprintf(out, "    Show this help message.\n")
@@ -669,78 +639,41 @@ func printUsage() {
 	fmt.Fprintf(out, "  %s -mode split main.csv\n", bin)
 	fmt.Fprintf(out, "  %s -mode split -split-input main.csv -split-primary-key policy_number\n", bin)
 	fmt.Fprintf(out, "  %s -mode batch -batch-size 1000 -batch-dir success/ -batch-export-dir batch_export\n", bin)
+	fmt.Fprintf(out, "  %s -mode server -host 127.0.0.1 -port 8080\n", bin)
 }
 
-/* createOutputDirs ensures output directories exist before validation starts. */
-func createOutputDirs(successDir, errorDir string) {
-	if err := os.MkdirAll(successDir, 0o755); err != nil {
-		exitf("failed creating success dir: %v", err)
-	}
-	if err := os.MkdirAll(errorDir, 0o755); err != nil {
-		exitf("failed creating errors dir: %v", err)
-	}
-}
-
-/* loadAndValidateSchema loads schema JSON and validates it for processing. */
-func loadAndValidateSchema(schemaPath string) validator.SchemaConfig {
-	schema, err := validator.LoadSchema(schemaPath)
+/* runSingleFileValidation delegates single-file validation to the shared service layer. */
+func runSingleFileValidation(input, schemaPath, successDir, errorDir string, writeEmptyError bool) {
+	_, err := service.New().RunValidateFile(service.ValidateOptions{
+		SchemaPath:      schemaPath,
+		InputCSV:        input,
+		WriteEmptyError: writeEmptyError,
+		SuccessDir:      successDir,
+		ErrorDir:        errorDir,
+	})
 	if err != nil {
-		exitf("failed loading schema: %v", err)
+		exitf("%v", err)
 	}
-	if err := validator.ValidateSchema(&schema); err != nil {
-		exitf("invalid schema: %v", err)
-	}
-	return schema
 }
 
-/* runSingleFileValidation processes one CSV file and prints row-level summary metrics. */
-func runSingleFileValidation(input, successDir, errorDir string, schema validator.SchemaConfig, writeEmptyError bool) {
-	parquetPath, errorCSVPath := validator.OutputPaths(input, successDir, errorDir)
-	stats, err := validator.RunValidationAndWriteParquet(input, parquetPath, errorCSVPath, schema, writeEmptyError)
+/* runDirectoryValidation delegates directory validation to the shared service layer. */
+func runDirectoryValidation(inputDir, schemaPath string, threads int, successDir, errorDir string, writeEmptyError bool) {
+	_, err := service.New().RunValidateDir(service.ValidateOptions{
+		SchemaPath:      schemaPath,
+		InputDir:        inputDir,
+		Threads:         threads,
+		WriteEmptyError: writeEmptyError,
+		SuccessDir:      successDir,
+		ErrorDir:        errorDir,
+	})
 	if err != nil {
-		exitf("processing failed: %v", err)
-	}
-	console.Successf("single-file complete total=%d valid=%d invalid=%d written=%s errors=%s", stats.TotalRows, stats.ValidRows, stats.InvalidRows, parquetPath, errorCSVPath)
-}
-
-/* runDirectoryValidation processes all CSV files in a directory with a worker pool. */
-func runDirectoryValidation(inputDir string, threads int, successDir, errorDir string, schema validator.SchemaConfig, writeEmptyError bool) {
-	files, err := validator.ListCSVFiles(inputDir)
-	if err != nil {
-		exitf("failed listing csv files: %v", err)
-	}
-	if len(files) == 0 {
-		exitf("no csv files found in directory: %s", inputDir)
-	}
-
-	console.Infof(
-		"starting directory validation [files %s] [workers %s]",
-		console.GreenValue(strconv.Itoa(len(files))),
-		console.GreenValue(strconv.Itoa(threads)),
-	)
-	summary := validator.ProcessDirectory(files, threads, successDir, errorDir, schema, writeEmptyError)
-	console.Successf("directory complete files=%d failed_files=%d total=%d valid=%d invalid=%d workers=%d", summary.Files, summary.FailedFiles, summary.TotalRows, summary.ValidRows, summary.InvalidRows, threads)
-	if summary.FailedFiles > 0 {
-		exitf("directory validation completed with %d failed file(s)", summary.FailedFiles)
+		exitf("%v", err)
 	}
 }
 
-/* runSplitMode validates split flags and executes split processing. */
+/* runSplitMode delegates split execution to the shared service layer. */
 func runSplitMode(input, outDir, primaryKey, missingFile string, maxOpen int) {
-	if strings.TrimSpace(primaryKey) == "" {
-		exitf("missing required -split-primary-key <header_name>")
-	}
-	if maxOpen < 1 {
-		maxOpen = 1
-	}
-	console.Infof(
-		"starting split phase [input %s] [output_dir %s] [primary_key %s]",
-		console.GreenValue(input),
-		console.GreenValue(outDir),
-		console.GreenValue(fmt.Sprintf("%q", primaryKey)),
-	)
-
-	summary, err := splitcsv.SplitByPrimaryKey(splitcsv.Config{
+	_, err := service.New().RunSplit(service.SplitOptions{
 		InputPath:       input,
 		OutputDir:       outDir,
 		PrimaryKey:      primaryKey,
@@ -748,32 +681,51 @@ func runSplitMode(input, outDir, primaryKey, missingFile string, maxOpen int) {
 		MissingKeysFile: missingFile,
 	})
 	if err != nil {
-		exitf("split failed: %v", err)
+		exitf("%v", err)
 	}
-	console.Successf(
-		"split complete [total %s] [missing_key_rows %s] [files %s] [out_dir %s]",
-		console.GreenValue(strconv.Itoa(summary.TotalRows)),
-		console.GreenValue(strconv.Itoa(summary.MissingKeyRows)),
-		console.GreenValue(strconv.Itoa(summary.OutputFiles)),
-		console.GreenValue(outDir),
-	)
 }
 
-/* runBatchParquetMode batches parquet files from one directory into grouped parquet outputs. */
+/* runBatchParquetMode delegates batch execution to the shared service layer. */
 func runBatchParquetMode(batchDir, batchExportDir string, batchSize, workers int) {
-	summary, err := batchparquet.BatchDirectory(batchDir, batchExportDir, batchSize, workers)
+	_, err := service.New().RunBatch(service.BatchOptions{
+		InputDir:  batchDir,
+		OutputDir: batchExportDir,
+		BatchSize: batchSize,
+		Workers:   workers,
+	})
 	if err != nil {
-		exitf("batch phase failed: %v", err)
+		exitf("%v", err)
 	}
-	console.Successf(
-		"batch complete files=%d batches=%d total_rows=%d batch_size=%d workers=%d out_dir=%s",
-		summary.InputFiles,
-		summary.Batches,
-		summary.TotalRows,
-		summary.BatchSize,
-		summary.Workers,
-		summary.OutputDir,
-	)
+}
+
+/* runServerMode starts the localhost-only HTTP server. */
+func runServerMode(opts cliOptions) {
+	if strings.TrimSpace(opts.host) == "" {
+		opts.host = "127.0.0.1"
+	}
+	if opts.port < 1 {
+		exitf("invalid port %d", opts.port)
+	}
+	if !isLoopbackHost(opts.host) {
+		exitf("server mode only supports loopback hosts; got %q", opts.host)
+	}
+
+	console.Infof("starting server mode on %s:%d", console.GreenValue(opts.host), opts.port)
+	server := api.NewServer(opts.host, opts.port, service.New())
+	if err := server.ListenAndServe(); err != nil {
+		exitf("server failed: %v", err)
+	}
+}
+
+/* isLoopbackHost reports whether the provided bind host is loopback-safe. */
+func isLoopbackHost(host string) bool {
+	trimmed := strings.TrimSpace(host)
+	switch trimmed {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
 }
 
 /* exitf writes an error message to stderr and exits the process. */
