@@ -124,7 +124,7 @@ class Gvy:
                 self.settings.host,
                 "-port",
                 str(self.settings.port),
-            ]
+            ],
             cwd=str(binary_path.parent),
         )
         return self._process
