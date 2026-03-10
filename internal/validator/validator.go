@@ -39,6 +39,7 @@ type FieldRule struct {
 	AllowedValues       []string          `json:"allowed_values"`
 	InlineReplace       map[string]string `json:"inline_replace"`
 	Default             interface{}       `json:"default"`
+	Override            interface{}       `json:"override"`
 	NonZero             bool              `json:"non_zero"`
 	DateFormats         []string          `json:"date_formats"`
 	parsedAllowed       map[string]struct{}
@@ -255,7 +256,7 @@ func openCSVWithHeaderIndex(input string) (*os.File, *csv.Reader, []string, map[
 /* validateSchemaFieldsAgainstHeader verifies required/defaulted schema fields exist in the input header. */
 func validateSchemaFieldsAgainstHeader(schema SchemaConfig, headerIdx map[string]int) error {
 	for _, field := range schema.Fields {
-		if _, ok := headerIdx[field.Name]; !ok && (field.Required || field.Default != nil) {
+		if _, ok := headerIdx[field.Name]; !ok && field.Override == nil && (field.Required || field.Default != nil) {
 			return fmt.Errorf("required schema field %q not found in CSV header", field.Name)
 		}
 	}
@@ -545,7 +546,9 @@ func validateRow(rowNum int, record []string, headerIdx map[string]int, schema S
 	for _, field := range schema.Fields {
 		idx, hasCol := headerIdx[field.Name]
 		raw := ""
-		if hasCol && idx < len(record) {
+		if field.Override != nil {
+			raw = fmt.Sprint(field.Override)
+		} else if hasCol && idx < len(record) {
 			raw = strings.TrimSpace(record[idx])
 		}
 

@@ -235,6 +235,7 @@ Example:
       "parquet_name": "collection_method",
       "type": "string",
       "required": false,
+      "override": "card",
       "default": "unknown",
       "lower": true,
       "inline_replace": {
@@ -262,6 +263,7 @@ Example:
 - `lower`: lowercase string normalization
 - `allowed_values`: allowed set for string values
 - `inline_replace`: exact replacements before validation
+- `override`: replace every input value for the field before validation
 - `default`: fallback value
 - `non_zero`: reject zero for integer fields
 - `date_formats`: custom parse layouts for date fields
