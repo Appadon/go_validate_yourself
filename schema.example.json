@@ -12,6 +12,7 @@
       "parquet_name": "customer_id",
       "type": "string",
       "required": true,
+      "override": "default_text",
       "min_length": 1
     },
     {
