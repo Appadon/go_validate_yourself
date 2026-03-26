@@ -256,7 +256,7 @@ Example:
 
 - `name`: source CSV header name
 - `parquet_name`: Parquet column name, optional
-- `type`: `string`, `float`, `int`, or `date`
+- `type`: `string`, `float`, `int`, `date`, or `datetime`
 - `required`: reject missing values
 - `exclude_if_missing`: reject immediately if missing
 - `min_length`: minimum string length
@@ -267,6 +267,7 @@ Example:
 - `default`: fallback value
 - `non_zero`: reject zero for integer fields
 - `date_formats`: custom parse layouts for date fields
+- `datetime_formats`: custom parse layouts for datetime fields
 
 ### Missing values
 

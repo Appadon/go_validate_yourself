@@ -42,6 +42,7 @@ type FieldRule struct {
 	Override            interface{}       `json:"override"`
 	NonZero             bool              `json:"non_zero"`
 	DateFormats         []string          `json:"date_formats"`
+	DatetimeFormats     []string          `json:"datetime_formats"`
 	parsedAllowed       map[string]struct{}
 	parsedInlineReplace map[string]string
 }
@@ -91,6 +92,15 @@ var defaultDateFormats = []string{
 	time.RFC3339,
 }
 
+var defaultDatetimeFormats = []string{
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04:05.999999",
+	"2006-01-02T15:04:05",
+	"2006-01-02T15:04:05.999999",
+	time.RFC3339,
+	time.RFC3339Nano,
+}
+
 /* LoadSchema reads schema configuration from JSON. */
 func LoadSchema(path string) (SchemaConfig, error) {
 	data, err := os.ReadFile(path)
@@ -134,7 +144,7 @@ func ValidateSchema(cfg *SchemaConfig) error {
 		seenParquet[f.ParquetName] = struct{}{}
 
 		switch f.Type {
-		case "string", "float", "int", "date":
+		case "string", "float", "int", "date", "datetime":
 		default:
 			return fmt.Errorf("field %q has unsupported type %q", f.Name, f.Type)
 		}
@@ -142,6 +152,11 @@ func ValidateSchema(cfg *SchemaConfig) error {
 		if f.Type == "date" {
 			if len(f.DateFormats) == 0 {
 				f.DateFormats = append([]string{}, defaultDateFormats...)
+			}
+		}
+		if f.Type == "datetime" {
+			if len(f.DatetimeFormats) == 0 {
+				f.DatetimeFormats = append([]string{}, defaultDatetimeFormats...)
 			}
 		}
 
@@ -641,6 +656,15 @@ func normalizeAndValidateValue(raw string, field FieldRule) (*string, error) {
 		}
 		return nil, fmt.Errorf("invalid date: %q", raw)
 
+	case "datetime":
+		for _, layout := range field.DatetimeFormats {
+			t, err := time.Parse(layout, raw)
+			if err == nil {
+				return stringPtr(strconv.FormatInt(t.UTC().UnixMicro(), 10)), nil
+			}
+		}
+		return nil, fmt.Errorf("invalid datetime: %q", raw)
+
 	default:
 		return nil, fmt.Errorf("unsupported type: %s", field.Type)
 	}
@@ -666,6 +690,8 @@ func buildParquetSchemaMetadata(cfg SchemaConfig) ([]string, error) {
 			tagParts = append(tagParts, "type=INT64")
 		case "date":
 			tagParts = append(tagParts, "type=INT32", "convertedtype=DATE")
+		case "datetime":
+			tagParts = append(tagParts, "type=INT64", "convertedtype=TIMESTAMP_MICROS", "logicaltype=TIMESTAMP", "logicaltype.isadjustedtoutc=true", "logicaltype.unit=MICROS")
 		default:
 			return nil, fmt.Errorf("unsupported type in parquet schema: %s", f.Type)
 		}
