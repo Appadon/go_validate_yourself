@@ -23,6 +23,13 @@
       "date_formats": ["2006-01-02", "2006-01-02 15:04:05"]
     },
     {
+      "name": "created_at",
+      "parquet_name": "created_at",
+      "type": "datetime",
+      "required": false,
+      "datetime_formats": ["2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02T15:04:05Z07:00"]
+    },
+    {
       "name": "status",
       "parquet_name": "status",
       "type": "string",

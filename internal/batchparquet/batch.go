@@ -207,6 +207,10 @@ func writeBatchParquet(batchFiles []string, outputPath string, onFileDone func()
 	}()
 
 	for _, filePath := range batchFiles {
+		if err := validateBatchInputFile(filePath); err != nil {
+			return totalRows, err
+		}
+
 		inFile, err := local.NewLocalFileReader(filePath)
 		if err != nil {
 			return totalRows, fmt.Errorf("open input parquet %q: %w", filePath, err)
@@ -288,6 +292,24 @@ func writeBatchParquet(batchFiles []string, outputPath string, onFileDone func()
 	}
 	writeComplete = true
 	return totalRows, nil
+}
+
+/* validateBatchInputFile ensures batch inputs are normal seekable parquet files. */
+func validateBatchInputFile(filePath string) error {
+	info, err := os.Lstat(filePath)
+	if err != nil {
+		return fmt.Errorf("stat input parquet %q: %w", filePath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("input parquet %q is a symlink, not a regular file", filePath)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("input parquet %q is not a regular file (mode=%s)", filePath, info.Mode().String())
+	}
+	if info.Size() < 8 {
+		return fmt.Errorf("input parquet %q is too small to contain a parquet footer (size=%d)", filePath, info.Size())
+	}
+	return nil
 }
 
 /* schemaFingerprint creates a stable schema identity for schema-compat checks. */
@@ -376,10 +398,11 @@ func batchETA(remaining int, rate float64) string {
 
 /* printBatchFinalProgress prints a terminal 100% progress snapshot. */
 func printBatchFinalProgress(completed int64, total int) {
+	pct := batchPercent(completed, total)
 	console.Progressf(console.ProgressSnapshot{
 		Segments: []string{
 			fmt.Sprintf("%d/%d files", completed, total),
-			"100.00%",
+			fmt.Sprintf("%.2f%%", pct),
 			"0.00 files/s",
 			"eta 0s",
 			"elapsed done",
