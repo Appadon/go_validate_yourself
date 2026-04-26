@@ -1,8 +1,11 @@
 package runs
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -42,7 +45,8 @@ type Snapshot struct {
 }
 
 type runRecord struct {
-	snapshot Snapshot
+	snapshot    Snapshot
+	subscribers map[int]chan progress.Event
 }
 
 /* Manager tracks one active run plus recent in-memory run state. */
@@ -53,6 +57,7 @@ type Manager struct {
 	activeRun  string
 	latestRun  string
 	runs       map[string]*runRecord
+	nextSubID  int
 }
 
 /* NewManager returns the smallest in-memory manager needed for Stage 3. */
@@ -86,10 +91,19 @@ func (m *Manager) Create(runID string, ws *workspace.RunWorkspace) (Snapshot, er
 			CreatedAt: m.now(),
 			Workspace: cloneWorkspace(ws),
 		},
+		subscribers: make(map[int]chan progress.Event),
 	}
 	m.runs[runID] = record
 	m.activeRun = runID
 	m.latestRun = runID
+	if err := persistSnapshot(record.snapshot); err != nil {
+		delete(m.runs, runID)
+		m.activeRun = ""
+		if m.latestRun == runID {
+			m.latestRun = ""
+		}
+		return Snapshot{}, err
+	}
 	return cloneSnapshot(record.snapshot), nil
 }
 
@@ -110,6 +124,12 @@ func (m *Manager) Start(runID string) (Snapshot, error) {
 	record.snapshot.State = StateRunning
 	record.snapshot.StartedAt = &startedAt
 	m.latestRun = runID
+	if err := persistSnapshot(record.snapshot); err != nil {
+		m.latestRun = runID
+		record.snapshot.State = StateQueued
+		record.snapshot.StartedAt = nil
+		return Snapshot{}, err
+	}
 	return cloneSnapshot(record.snapshot), nil
 }
 
@@ -126,6 +146,7 @@ func (m *Manager) Complete(runID string, result any) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("%w: cannot complete from %s", ErrInvalidTransition, record.snapshot.State)
 	}
 
+	previousState := record.snapshot.State
 	finishedAt := m.now()
 	record.snapshot.State = StateCompleted
 	record.snapshot.FinishedAt = &finishedAt
@@ -135,6 +156,15 @@ func (m *Manager) Complete(runID string, result any) (Snapshot, error) {
 		m.activeRun = ""
 	}
 	m.latestRun = runID
+	if err := persistSnapshot(record.snapshot); err != nil {
+		record.snapshot.State = previousState
+		record.snapshot.FinishedAt = nil
+		record.snapshot.FinalResult = nil
+		record.snapshot.FinalError = ""
+		m.activeRun = runID
+		return Snapshot{}, err
+	}
+	closeSubscribers(record.subscribers)
 	return cloneSnapshot(record.snapshot), nil
 }
 
@@ -151,6 +181,7 @@ func (m *Manager) Fail(runID string, runErr error) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("%w: cannot fail from %s", ErrInvalidTransition, record.snapshot.State)
 	}
 
+	previousState := record.snapshot.State
 	finishedAt := m.now()
 	record.snapshot.State = StateFailed
 	record.snapshot.FinishedAt = &finishedAt
@@ -164,6 +195,14 @@ func (m *Manager) Fail(runID string, runErr error) (Snapshot, error) {
 		m.activeRun = ""
 	}
 	m.latestRun = runID
+	if err := persistSnapshot(record.snapshot); err != nil {
+		record.snapshot.State = previousState
+		record.snapshot.FinishedAt = nil
+		record.snapshot.FinalError = ""
+		m.activeRun = runID
+		return Snapshot{}, err
+	}
+	closeSubscribers(record.subscribers)
 	return cloneSnapshot(record.snapshot), nil
 }
 
@@ -184,6 +223,15 @@ func (m *Manager) AppendEvent(runID string, event progress.Event) (Snapshot, err
 		record.snapshot.Events = append([]progress.Event(nil), record.snapshot.Events[len(record.snapshot.Events)-m.eventLimit:]...)
 	}
 	m.latestRun = runID
+	if err := persistSnapshot(record.snapshot); err != nil {
+		return Snapshot{}, err
+	}
+	for _, subscriber := range record.subscribers {
+		select {
+		case subscriber <- cloneEvent(cloned):
+		default:
+		}
+	}
 	return cloneSnapshot(record.snapshot), nil
 }
 
@@ -243,6 +291,47 @@ func (m *Manager) Snapshot(runID string) (Snapshot, bool) {
 	return cloneSnapshot(record.snapshot), true
 }
 
+/* Subscribe returns a snapshot plus a live event stream for one running run. */
+func (m *Manager) Subscribe(runID string) (Snapshot, <-chan progress.Event, func(), error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	record, err := m.lookup(runID)
+	if err != nil {
+		return Snapshot{}, nil, nil, err
+	}
+
+	snapshot := cloneSnapshot(record.snapshot)
+	if snapshot.State == StateCompleted || snapshot.State == StateFailed {
+		ch := make(chan progress.Event)
+		close(ch)
+		return snapshot, ch, func() {}, nil
+	}
+
+	subID := m.nextSubID
+	m.nextSubID++
+	ch := make(chan progress.Event, 32)
+	record.subscribers[subID] = ch
+
+	cancel := func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		current := m.runs[runID]
+		if current == nil {
+			return
+		}
+		subscriber := current.subscribers[subID]
+		if subscriber == nil {
+			return
+		}
+		delete(current.subscribers, subID)
+		close(subscriber)
+	}
+
+	return snapshot, ch, cancel, nil
+}
+
 func (m *Manager) lookup(runID string) (*runRecord, error) {
 	record := m.runs[runID]
 	if record == nil {
@@ -296,4 +385,28 @@ func cloneEvent(event progress.Event) progress.Event {
 		}
 	}
 	return cloned
+}
+
+func persistSnapshot(snapshot Snapshot) error {
+	if snapshot.Workspace == nil || snapshot.Workspace.MetadataPath == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal run metadata: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(snapshot.Workspace.MetadataPath), 0o755); err != nil {
+		return fmt.Errorf("create run metadata directory: %w", err)
+	}
+	if err := os.WriteFile(snapshot.Workspace.MetadataPath, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write run metadata %q: %w", snapshot.Workspace.MetadataPath, err)
+	}
+	return nil
+}
+
+func closeSubscribers(subscribers map[int]chan progress.Event) {
+	for id, ch := range subscribers {
+		close(ch)
+		delete(subscribers, id)
+	}
 }
