@@ -351,6 +351,7 @@ func runAutoMode(opts cliOptions, args []string) {
 		BatchDir:             resolveAutoBatchDir(opts),
 		BatchExportDir:       opts.batchExportDir,
 		BatchSize:            normalizeBatchSize(opts.batchSize),
+		Reporter:             console.NewProgressReporter(),
 	})
 	if err != nil {
 		exitf("%v", err)
@@ -403,6 +404,7 @@ func runBatchMode(opts cliOptions, args []string) {
 		BatchSize:      batchSize,
 		Workers:        threads,
 		ClearOutputDir: clearValidationCache,
+		Reporter:       console.NewProgressReporter(),
 	})
 	if err != nil {
 		exitf("%v", err)
@@ -652,6 +654,7 @@ func runSingleFileValidation(input, schemaPath, successDir, errorDir string, wri
 		WriteEmptyError: writeEmptyError,
 		SuccessDir:      successDir,
 		ErrorDir:        errorDir,
+		Reporter:        console.NewProgressReporter(),
 	})
 	if err != nil {
 		exitf("%v", err)
@@ -667,6 +670,7 @@ func runDirectoryValidation(inputDir, schemaPath string, threads int, successDir
 		WriteEmptyError: writeEmptyError,
 		SuccessDir:      successDir,
 		ErrorDir:        errorDir,
+		Reporter:        console.NewProgressReporter(),
 	})
 	if err != nil {
 		exitf("%v", err)
@@ -681,6 +685,7 @@ func runSplitMode(input, outDir, primaryKey, missingFile string, maxOpen int) {
 		PrimaryKey:      primaryKey,
 		MaxOpenWriters:  maxOpen,
 		MissingKeysFile: missingFile,
+		Reporter:        console.NewProgressReporter(),
 	})
 	if err != nil {
 		exitf("%v", err)
@@ -694,6 +699,7 @@ func runBatchParquetMode(batchDir, batchExportDir string, batchSize, workers int
 		OutputDir: batchExportDir,
 		BatchSize: batchSize,
 		Workers:   workers,
+		Reporter:  console.NewProgressReporter(),
 	})
 	if err != nil {
 		exitf("%v", err)

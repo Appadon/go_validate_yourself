@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"go_validate_yourself/internal/batchparquet"
-	"go_validate_yourself/internal/console"
+	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/splitcsv"
 	"go_validate_yourself/internal/validator"
 )
@@ -30,6 +30,8 @@ type SplitOptions struct {
 	PrimaryKey      string
 	MaxOpenWriters  int
 	MissingKeysFile string
+	RunID           string
+	Reporter        progress.Reporter
 }
 
 /* ValidateOptions defines inputs for single-file or directory validation. */
@@ -41,6 +43,8 @@ type ValidateOptions struct {
 	WriteEmptyError bool
 	SuccessDir      string
 	ErrorDir        string
+	RunID           string
+	Reporter        progress.Reporter
 }
 
 /* BatchOptions defines inputs for parquet batch export. */
@@ -50,6 +54,8 @@ type BatchOptions struct {
 	BatchSize      int
 	Workers        int
 	ClearOutputDir bool
+	RunID          string
+	Reporter       progress.Reporter
 }
 
 /* AutoOptions defines the full split + validate + batch workflow. */
@@ -68,6 +74,8 @@ type AutoOptions struct {
 	BatchDir             string
 	BatchExportDir       string
 	BatchSize            int
+	RunID                string
+	Reporter             progress.Reporter
 }
 
 /* ValidationResult captures outputs for one validated file. */
@@ -164,6 +172,27 @@ func LoadSchema(schemaPath string) (validator.SchemaConfig, error) {
 /* RunSplit executes split mode and returns split metrics. */
 func (Service) RunSplit(ctx context.Context, opts SplitOptions) (splitcsv.Summary, error) {
 	ctx = ensureContext(ctx)
+	emitter := progress.NewEmitter(opts.RunID, opts.Reporter)
+	emitter.Started(progress.PhaseRun, "validation run started", map[string]any{
+		"mode":  "split",
+		"phase": progress.PhaseSplit,
+	})
+	summary, err := runSplitPhase(ctx, opts, emitter)
+	if err != nil {
+		emitter.Failed(progress.PhaseRun, err.Error(), map[string]any{
+			"mode":  "split",
+			"phase": progress.PhaseSplit,
+		})
+		return splitcsv.Summary{}, err
+	}
+	emitter.Completed(progress.PhaseRun, "validation run complete", map[string]any{
+		"mode":  "split",
+		"phase": progress.PhaseSplit,
+	})
+	return summary, nil
+}
+
+func runSplitPhase(ctx context.Context, opts SplitOptions, emitter progress.Emitter) (splitcsv.Summary, error) {
 	primaryKey := strings.TrimSpace(opts.PrimaryKey)
 	if primaryKey == "" {
 		return splitcsv.Summary{}, fmt.Errorf("missing split primary key")
@@ -173,12 +202,13 @@ func (Service) RunSplit(ctx context.Context, opts SplitOptions) (splitcsv.Summar
 		maxOpen = 1
 	}
 
-	console.Infof(
-		"starting split phase [input %s] [output_dir %s] [primary_key %s]",
-		console.GreenValue(opts.InputPath),
-		console.GreenValue(opts.OutputDir),
-		console.GreenValue(fmt.Sprintf("%q", primaryKey)),
-	)
+	emitter.Started(progress.PhaseSplit, fmt.Sprintf("starting split phase [input %s] [output_dir %s] [primary_key %q]", opts.InputPath, opts.OutputDir, primaryKey), map[string]any{
+		"input_path":        opts.InputPath,
+		"output_dir":        opts.OutputDir,
+		"primary_key":       primaryKey,
+		"max_open_writers":  maxOpen,
+		"missing_keys_file": opts.MissingKeysFile,
+	})
 
 	if err := ctx.Err(); err != nil {
 		return splitcsv.Summary{}, err
@@ -190,24 +220,50 @@ func (Service) RunSplit(ctx context.Context, opts SplitOptions) (splitcsv.Summar
 		PrimaryKey:      primaryKey,
 		MaxOpenWriters:  maxOpen,
 		MissingKeysFile: opts.MissingKeysFile,
+		Progress:        emitter,
 	})
 	if err != nil {
+		emitter.Failed(progress.PhaseSplit, fmt.Sprintf("split failed: %v", err), map[string]any{
+			"input_path": opts.InputPath,
+			"output_dir": opts.OutputDir,
+		})
 		return splitcsv.Summary{}, fmt.Errorf("split failed: %w", err)
 	}
 
-	console.Successf(
-		"split complete [total %s] [missing_key_rows %s] [files %s] [out_dir %s]",
-		console.GreenValue(fmt.Sprintf("%d", summary.TotalRows)),
-		console.GreenValue(fmt.Sprintf("%d", summary.MissingKeyRows)),
-		console.GreenValue(fmt.Sprintf("%d", summary.OutputFiles)),
-		console.GreenValue(opts.OutputDir),
-	)
+	emitter.Completed(progress.PhaseSplit, fmt.Sprintf("split complete [total %d] [missing_key_rows %d] [files %d] [out_dir %s]", summary.TotalRows, summary.MissingKeyRows, summary.OutputFiles, opts.OutputDir), map[string]any{
+		"total_rows":       summary.TotalRows,
+		"split_rows":       summary.SplitRows,
+		"missing_key_rows": summary.MissingKeyRows,
+		"output_files":     summary.OutputFiles,
+		"output_dir":       opts.OutputDir,
+	})
 	return summary, nil
 }
 
 /* RunValidateFile validates one CSV file and writes parquet and error outputs. */
 func (Service) RunValidateFile(ctx context.Context, opts ValidateOptions) (ValidationResult, error) {
 	ctx = ensureContext(ctx)
+	emitter := progress.NewEmitter(opts.RunID, opts.Reporter)
+	emitter.Started(progress.PhaseRun, "validation run started", map[string]any{
+		"mode":  "validate-file",
+		"phase": progress.PhaseValidate,
+	})
+	result, err := runValidateFilePhase(ctx, opts, emitter)
+	if err != nil {
+		emitter.Failed(progress.PhaseRun, err.Error(), map[string]any{
+			"mode":  "validate-file",
+			"phase": progress.PhaseValidate,
+		})
+		return ValidationResult{}, err
+	}
+	emitter.Completed(progress.PhaseRun, "validation run complete", map[string]any{
+		"mode":  "validate-file",
+		"phase": progress.PhaseValidate,
+	})
+	return result, nil
+}
+
+func runValidateFilePhase(ctx context.Context, opts ValidateOptions, emitter progress.Emitter) (ValidationResult, error) {
 	if err := createOutputDirs(opts.SuccessDir, opts.ErrorDir); err != nil {
 		return ValidationResult{}, err
 	}
@@ -219,20 +275,38 @@ func (Service) RunValidateFile(ctx context.Context, opts ValidateOptions) (Valid
 		return ValidationResult{}, err
 	}
 
+	emitter.Started(progress.PhaseValidate, fmt.Sprintf("starting single-file validation [input %s] [schema %s]", opts.InputCSV, opts.SchemaPath), map[string]any{
+		"input_path":        opts.InputCSV,
+		"schema_path":       opts.SchemaPath,
+		"success_dir":       opts.SuccessDir,
+		"error_dir":         opts.ErrorDir,
+		"write_empty_error": opts.WriteEmptyError,
+	})
+
 	parquetPath, errorCSVPath := validator.OutputPaths(opts.InputCSV, opts.SuccessDir, opts.ErrorDir)
 	stats, err := validator.RunValidationAndWriteParquet(ctx, opts.InputCSV, parquetPath, errorCSVPath, schema, opts.WriteEmptyError)
 	if err != nil {
+		emitter.Failed(progress.PhaseValidate, fmt.Sprintf("single-file validation failed: %v", err), map[string]any{
+			"input_path": opts.InputCSV,
+		})
 		return ValidationResult{}, fmt.Errorf("processing failed: %w", err)
 	}
 
-	console.Successf(
-		"single-file complete total=%d valid=%d invalid=%d written=%s errors=%s",
+	emitter.Completed(progress.PhaseValidate, fmt.Sprintf("single-file complete total=%d valid=%d invalid=%d written=%s errors=%s",
 		stats.TotalRows,
 		stats.ValidRows,
 		stats.InvalidRows,
 		parquetPath,
 		errorCSVPath,
-	)
+	), map[string]any{
+		"input_path":      opts.InputCSV,
+		"parquet_path":    parquetPath,
+		"error_csv_path":  errorCSVPath,
+		"total_rows":      stats.TotalRows,
+		"valid_rows":      stats.ValidRows,
+		"invalid_rows":    stats.InvalidRows,
+		"write_empty_err": opts.WriteEmptyError,
+	})
 
 	return ValidationResult{
 		InputPath:    opts.InputCSV,
@@ -245,6 +319,27 @@ func (Service) RunValidateFile(ctx context.Context, opts ValidateOptions) (Valid
 /* RunValidateDir validates all CSV files in a directory using a worker pool. */
 func (Service) RunValidateDir(ctx context.Context, opts ValidateOptions) (DirectoryValidationResult, error) {
 	ctx = ensureContext(ctx)
+	emitter := progress.NewEmitter(opts.RunID, opts.Reporter)
+	emitter.Started(progress.PhaseRun, "validation run started", map[string]any{
+		"mode":  "validate-dir",
+		"phase": progress.PhaseValidate,
+	})
+	result, err := runValidateDirPhase(ctx, opts, emitter)
+	if err != nil {
+		emitter.Failed(progress.PhaseRun, err.Error(), map[string]any{
+			"mode":  "validate-dir",
+			"phase": progress.PhaseValidate,
+		})
+		return result, err
+	}
+	emitter.Completed(progress.PhaseRun, "validation run complete", map[string]any{
+		"mode":  "validate-dir",
+		"phase": progress.PhaseValidate,
+	})
+	return result, nil
+}
+
+func runValidateDirPhase(ctx context.Context, opts ValidateOptions, emitter progress.Emitter) (DirectoryValidationResult, error) {
 	if err := createOutputDirs(opts.SuccessDir, opts.ErrorDir); err != nil {
 		return DirectoryValidationResult{}, err
 	}
@@ -269,14 +364,26 @@ func (Service) RunValidateDir(ctx context.Context, opts ValidateOptions) (Direct
 		return DirectoryValidationResult{}, fmt.Errorf("no csv files found in directory: %s", opts.InputDir)
 	}
 
-	console.Infof(
-		"starting directory validation [files %s] [workers %s]",
-		console.GreenValue(fmt.Sprintf("%d", len(files))),
-		console.GreenValue(fmt.Sprintf("%d", workers)),
-	)
+	emitter.Started(progress.PhaseValidate, fmt.Sprintf("starting directory validation [files %d] [workers %d]", len(files), workers), map[string]any{
+		"input_dir":         opts.InputDir,
+		"schema_path":       opts.SchemaPath,
+		"files_total":       len(files),
+		"workers":           workers,
+		"success_dir":       opts.SuccessDir,
+		"error_dir":         opts.ErrorDir,
+		"write_empty_error": opts.WriteEmptyError,
+	})
 
-	summary, err := validator.ProcessDirectory(ctx, files, workers, opts.SuccessDir, opts.ErrorDir, schema, opts.WriteEmptyError)
+	summary, err := validator.ProcessDirectory(ctx, files, workers, opts.SuccessDir, opts.ErrorDir, schema, opts.WriteEmptyError, emitter)
 	if err != nil {
+		emitter.Failed(progress.PhaseValidate, fmt.Sprintf("directory validation failed: %v", err), map[string]any{
+			"input_dir":    opts.InputDir,
+			"files_total":  len(files),
+			"failed_files": summary.FailedFiles,
+			"total_rows":   summary.TotalRows,
+			"valid_rows":   summary.ValidRows,
+			"invalid_rows": summary.InvalidRows,
+		})
 		return DirectoryValidationResult{
 			InputDir:   opts.InputDir,
 			FileCount:  len(files),
@@ -285,15 +392,22 @@ func (Service) RunValidateDir(ctx context.Context, opts ValidateOptions) (Direct
 			ErrorDir:   opts.ErrorDir,
 		}, err
 	}
-	console.Successf(
-		"directory complete files=%d failed_files=%d total=%d valid=%d invalid=%d workers=%d",
+	emitter.Completed(progress.PhaseValidate, fmt.Sprintf("directory complete files=%d failed_files=%d total=%d valid=%d invalid=%d workers=%d",
 		summary.Files,
 		summary.FailedFiles,
 		summary.TotalRows,
 		summary.ValidRows,
 		summary.InvalidRows,
 		workers,
-	)
+	), map[string]any{
+		"input_dir":    opts.InputDir,
+		"files":        summary.Files,
+		"failed_files": summary.FailedFiles,
+		"total_rows":   summary.TotalRows,
+		"valid_rows":   summary.ValidRows,
+		"invalid_rows": summary.InvalidRows,
+		"workers":      workers,
+	})
 	if summary.FailedFiles > 0 {
 		return DirectoryValidationResult{
 			InputDir:   opts.InputDir,
@@ -316,9 +430,32 @@ func (Service) RunValidateDir(ctx context.Context, opts ValidateOptions) (Direct
 /* RunBatch exports parquet files into fixed-size parquet batches. */
 func (Service) RunBatch(ctx context.Context, opts BatchOptions) (batchparquet.Summary, error) {
 	ctx = ensureContext(ctx)
+	emitter := progress.NewEmitter(opts.RunID, opts.Reporter)
+	emitter.Started(progress.PhaseRun, "validation run started", map[string]any{
+		"mode":  "batch",
+		"phase": progress.PhaseBatch,
+	})
+	summary, err := runBatchPhase(ctx, opts, emitter)
+	if err != nil {
+		emitter.Failed(progress.PhaseRun, err.Error(), map[string]any{
+			"mode":  "batch",
+			"phase": progress.PhaseBatch,
+		})
+		return batchparquet.Summary{}, err
+	}
+	emitter.Completed(progress.PhaseRun, "validation run complete", map[string]any{
+		"mode":  "batch",
+		"phase": progress.PhaseBatch,
+	})
+	return summary, nil
+}
+
+func runBatchPhase(ctx context.Context, opts BatchOptions, emitter progress.Emitter) (batchparquet.Summary, error) {
 	if opts.ClearOutputDir {
-		console.Infof("clearing batch export directory: %s", opts.OutputDir)
-		console.Infof("this might take a while depending on the size of the cache")
+		emitter.Log(progress.PhaseRun, fmt.Sprintf("clearing batch export directory: %s", opts.OutputDir), map[string]any{
+			"output_dir": opts.OutputDir,
+		})
+		emitter.Log(progress.PhaseRun, "this might take a while depending on the size of the cache", nil)
 		if err := os.RemoveAll(opts.OutputDir); err != nil {
 			return batchparquet.Summary{}, fmt.Errorf("failed clearing batch export dir %q: %w", opts.OutputDir, err)
 		}
@@ -327,39 +464,61 @@ func (Service) RunBatch(ctx context.Context, opts BatchOptions) (batchparquet.Su
 		return batchparquet.Summary{}, err
 	}
 
-	summary, err := batchparquet.BatchDirectory(ctx, opts.InputDir, opts.OutputDir, normalizeBatchSize(opts.BatchSize), normalizeWorkers(opts.Workers))
+	summary, err := batchparquet.BatchDirectory(ctx, opts.InputDir, opts.OutputDir, normalizeBatchSize(opts.BatchSize), normalizeWorkers(opts.Workers), emitter)
 	if err != nil {
+		emitter.Failed(progress.PhaseBatch, fmt.Sprintf("batch phase failed: %v", err), map[string]any{
+			"input_dir":  opts.InputDir,
+			"output_dir": opts.OutputDir,
+		})
 		return batchparquet.Summary{}, fmt.Errorf("batch phase failed: %w", err)
 	}
 
-	console.Successf(
-		"batch complete files=%d batches=%d total_rows=%d batch_size=%d workers=%d out_dir=%s",
+	emitter.Completed(progress.PhaseBatch, fmt.Sprintf("batch complete files=%d batches=%d total_rows=%d batch_size=%d workers=%d out_dir=%s",
 		summary.InputFiles,
 		summary.Batches,
 		summary.TotalRows,
 		summary.BatchSize,
 		summary.Workers,
 		summary.OutputDir,
-	)
+	), map[string]any{
+		"input_files": summary.InputFiles,
+		"batches":     summary.Batches,
+		"total_rows":  summary.TotalRows,
+		"batch_size":  summary.BatchSize,
+		"workers":     summary.Workers,
+		"output_dir":  summary.OutputDir,
+	})
 	return summary, nil
 }
 
 /* RunAuto executes split, directory validation, and batch export in sequence. */
 func (s Service) RunAuto(ctx context.Context, opts AutoOptions) (AutoResult, error) {
 	ctx = ensureContext(ctx)
+	emitter := progress.NewEmitter(opts.RunID, opts.Reporter)
+	emitter.Started(progress.PhaseRun, "validation run started", map[string]any{
+		"mode": "auto",
+	})
 	if opts.ClearValidationCache {
-		console.Infof(
-			"clearing validation cache directories: %s, %s, %s",
-			opts.SuccessDir,
-			opts.ErrorDir,
-			opts.BatchExportDir,
+		emitter.Log(
+			progress.PhaseRun,
+			fmt.Sprintf("clearing validation cache directories: %s, %s, %s",
+				opts.SuccessDir,
+				opts.ErrorDir,
+				opts.BatchExportDir,
+			), map[string]any{
+				"success_dir":      opts.SuccessDir,
+				"error_dir":        opts.ErrorDir,
+				"batch_export_dir": opts.BatchExportDir,
+			},
 		)
-		console.Infof("this might take a while depending on the size of the cache")
+		emitter.Log(progress.PhaseRun, "this might take a while depending on the size of the cache", nil)
 		if err := clearValidationOutputDirs(opts.SuccessDir, opts.ErrorDir, opts.BatchExportDir); err != nil {
+			emitter.Failed(progress.PhaseRun, err.Error(), nil)
 			return AutoResult{}, err
 		}
 	}
 	if err := ctx.Err(); err != nil {
+		emitter.Failed(progress.PhaseRun, err.Error(), nil)
 		return AutoResult{}, err
 	}
 
@@ -367,25 +526,28 @@ func (s Service) RunAuto(ctx context.Context, opts AutoOptions) (AutoResult, err
 	if primaryKey == "" {
 		detected, err := DetectPrimaryKey(opts.MainInputCSV)
 		if err != nil {
+			emitter.Failed(progress.PhaseRun, fmt.Sprintf("failed detecting split primary key: %v", err), nil)
 			return AutoResult{}, fmt.Errorf("failed detecting split primary key: %w", err)
 		}
 		primaryKey = detected
 	}
 
-	splitSummary, splitReused, err := s.prepareAutoSplit(ctx, opts, primaryKey)
+	splitSummary, splitReused, err := s.prepareAutoSplit(ctx, opts, primaryKey, emitter)
 	if err != nil {
+		emitter.Failed(progress.PhaseRun, err.Error(), nil)
 		return AutoResult{}, err
 	}
 
-	validationResult, err := s.RunValidateDir(ctx, ValidateOptions{
+	validationResult, err := runValidateDirPhase(ctx, ValidateOptions{
 		SchemaPath:      opts.SchemaPath,
 		InputDir:        opts.SplitOutputDir,
 		Threads:         normalizeWorkers(opts.Threads),
 		WriteEmptyError: opts.WriteEmptyError,
 		SuccessDir:      opts.SuccessDir,
 		ErrorDir:        opts.ErrorDir,
-	})
+	}, emitter)
 	if err != nil {
+		emitter.Failed(progress.PhaseRun, err.Error(), nil)
 		return AutoResult{
 			MainInputCSV:    opts.MainInputCSV,
 			SchemaPath:      opts.SchemaPath,
@@ -397,14 +559,15 @@ func (s Service) RunAuto(ctx context.Context, opts AutoOptions) (AutoResult, err
 	}
 
 	batchInputDir := resolveAutoBatchDir(opts)
-	batchSummary, err := s.RunBatch(ctx, BatchOptions{
+	batchSummary, err := runBatchPhase(ctx, BatchOptions{
 		InputDir:       batchInputDir,
 		OutputDir:      opts.BatchExportDir,
 		BatchSize:      opts.BatchSize,
 		Workers:        normalizeWorkers(opts.Threads),
 		ClearOutputDir: false,
-	})
+	}, emitter)
 	if err != nil {
+		emitter.Failed(progress.PhaseRun, err.Error(), nil)
 		return AutoResult{
 			MainInputCSV:    opts.MainInputCSV,
 			SchemaPath:      opts.SchemaPath,
@@ -415,7 +578,7 @@ func (s Service) RunAuto(ctx context.Context, opts AutoOptions) (AutoResult, err
 		}, err
 	}
 
-	return AutoResult{
+	result := AutoResult{
 		MainInputCSV:    opts.MainInputCSV,
 		SchemaPath:      opts.SchemaPath,
 		SplitPrimaryKey: primaryKey,
@@ -423,11 +586,20 @@ func (s Service) RunAuto(ctx context.Context, opts AutoOptions) (AutoResult, err
 		SplitSummary:    splitSummary,
 		Validation:      validationResult,
 		BatchSummary:    batchSummary,
-	}, nil
+	}
+	emitter.Completed(progress.PhaseRun, "validation run complete", map[string]any{
+		"mode":          "auto",
+		"split_reused":  splitReused,
+		"split_rows":    splitSummary.TotalRows,
+		"validated":     validationResult.Summary.Files,
+		"batch_files":   batchSummary.InputFiles,
+		"batch_outputs": batchSummary.Batches,
+	})
+	return result, nil
 }
 
 /* prepareAutoSplit reuses an existing split directory when the input hash matches. */
-func (s Service) prepareAutoSplit(ctx context.Context, opts AutoOptions, primaryKey string) (splitcsv.Summary, bool, error) {
+func (s Service) prepareAutoSplit(ctx context.Context, opts AutoOptions, primaryKey string, emitter progress.Emitter) (splitcsv.Summary, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return splitcsv.Summary{}, false, err
 	}
@@ -440,41 +612,39 @@ func (s Service) prepareAutoSplit(ctx context.Context, opts AutoOptions, primary
 	switch {
 	case err == nil:
 		if meta.Matches(inputHash, primaryKey, opts.SplitMissingFile) {
-			console.Infof(
-				"reusing split cache [output_dir %s] [input_hash %s]",
-				console.GreenValue(opts.SplitOutputDir),
-				console.GreenValue(inputHash[:12]),
-			)
+			emitter.Log(progress.PhaseRun, fmt.Sprintf("reusing split cache [output_dir %s] [input_hash %s]", opts.SplitOutputDir, inputHash[:12]), map[string]any{
+				"output_dir": opts.SplitOutputDir,
+				"input_hash": inputHash,
+			})
 			return splitcsv.Summary{}, true, nil
 		}
-		console.Infof(
-			"split cache miss [output_dir %s] [reason input or split settings changed]",
-			console.GreenValue(opts.SplitOutputDir),
-		)
+		emitter.Log(progress.PhaseRun, fmt.Sprintf("split cache miss [output_dir %s] [reason input or split settings changed]", opts.SplitOutputDir), map[string]any{
+			"output_dir": opts.SplitOutputDir,
+			"reason":     "input or split settings changed",
+		})
 	case errors.Is(err, os.ErrNotExist):
-		console.Infof(
-			"split cache miss [output_dir %s] [reason no cache metadata found]",
-			console.GreenValue(opts.SplitOutputDir),
-		)
+		emitter.Log(progress.PhaseRun, fmt.Sprintf("split cache miss [output_dir %s] [reason no cache metadata found]", opts.SplitOutputDir), map[string]any{
+			"output_dir": opts.SplitOutputDir,
+			"reason":     "no cache metadata found",
+		})
 	default:
-		console.Infof(
-			"split cache metadata unreadable, rebuilding split output [output_dir %s] [error %s]",
-			console.GreenValue(opts.SplitOutputDir),
-			err,
-		)
+		emitter.Log(progress.PhaseRun, fmt.Sprintf("split cache metadata unreadable, rebuilding split output [output_dir %s] [error %s]", opts.SplitOutputDir, err), map[string]any{
+			"output_dir": opts.SplitOutputDir,
+			"error":      err.Error(),
+		})
 	}
 
 	if err := os.RemoveAll(opts.SplitOutputDir); err != nil {
 		return splitcsv.Summary{}, false, fmt.Errorf("failed clearing split output dir %q: %w", opts.SplitOutputDir, err)
 	}
 
-	summary, err := s.RunSplit(ctx, SplitOptions{
+	summary, err := runSplitPhase(ctx, SplitOptions{
 		InputPath:       opts.MainInputCSV,
 		OutputDir:       opts.SplitOutputDir,
 		PrimaryKey:      primaryKey,
 		MaxOpenWriters:  opts.SplitMaxOpen,
 		MissingKeysFile: opts.SplitMissingFile,
-	})
+	}, emitter)
 	if err != nil {
 		return splitcsv.Summary{}, false, err
 	}

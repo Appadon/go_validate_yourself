@@ -7,12 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"go_validate_yourself/internal/console"
+	"go_validate_yourself/internal/progress"
 
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/common"
@@ -55,7 +54,7 @@ func ListParquetFiles(dir string) ([]string, error) {
 }
 
 /* BatchDirectory combines parquet files into fixed-size file batches. */
-func BatchDirectory(ctx context.Context, inputDir, outputDir string, batchSize int, workers int) (Summary, error) {
+func BatchDirectory(ctx context.Context, inputDir, outputDir string, batchSize int, workers int, emitter progress.Emitter) (Summary, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -96,19 +95,19 @@ func BatchDirectory(ctx context.Context, inputDir, outputDir string, batchSize i
 	}
 
 	totalBatches := (len(files) + batchSize - 1) / batchSize
-	console.Infof(
-		"starting batch phase [files %s] [batch_size %s] [workers %s] [expected_batches %s] [input_dir %s] [output_dir %s]",
-		console.GreenValue(strconv.Itoa(len(files))),
-		console.GreenValue(strconv.Itoa(batchSize)),
-		console.GreenValue(strconv.Itoa(workers)),
-		console.GreenValue(strconv.Itoa(totalBatches)),
-		console.GreenValue(inputDir),
-		console.GreenValue(outputDir),
-	)
-
+	emitter.Started(progress.PhaseBatch, fmt.Sprintf("starting batch phase [files %d] [batch_size %d] [workers %d] [expected_batches %d] [input_dir %s] [output_dir %s]", len(files), batchSize, workers, totalBatches, inputDir, outputDir), map[string]any{
+		"files_total":      len(files),
+		"batch_size":       batchSize,
+		"workers":          workers,
+		"expected_batches": totalBatches,
+		"input_dir":        inputDir,
+		"output_dir":       outputDir,
+	})
 	var completedFiles atomic.Int64
+	var completedBatches atomic.Int64
+	var totalRowsWritten atomic.Int64
 	startedAt := time.Now()
-	doneProgress := startBatchProgressReporter(ctx, &completedFiles, len(files), startedAt)
+	doneProgress := startBatchProgressReporter(ctx, &completedFiles, &completedBatches, &totalRowsWritten, len(files), totalBatches, startedAt, emitter)
 	defer close(doneProgress)
 
 	summary := Summary{
@@ -165,11 +164,13 @@ func BatchDirectory(ctx context.Context, inputDir, outputDir string, batchSize i
 				continue
 			}
 			summary.TotalRows += r.rowsWritten
+			totalRowsWritten.Add(r.rowsWritten)
 			summary.Batches++
+			completedBatches.Add(1)
 		}
 	}
 
-	printBatchFinalProgress(completedFiles.Load(), len(files))
+	printBatchFinalProgress(completedFiles.Load(), len(files), completedBatches.Load(), totalBatches, totalRowsWritten.Load(), startedAt, emitter)
 	if firstErr != nil {
 		return summary, firstErr
 	}
@@ -367,32 +368,32 @@ func schemaWithExternalNames(schemaList []*parquet.SchemaElement, infos []*commo
 }
 
 /* startBatchProgressReporter launches periodic batch progress logging. */
-func startBatchProgressReporter(ctx context.Context, completed *atomic.Int64, total int, startedAt time.Time) chan struct{} {
+func startBatchProgressReporter(ctx context.Context, completedFiles, completedBatches, rowsWritten *atomic.Int64, totalFiles, totalBatches int, startedAt time.Time, emitter progress.Emitter) chan struct{} {
 	done := make(chan struct{})
-	go reportBatchProgress(ctx, done, completed, total, startedAt)
+	go reportBatchProgress(ctx, done, completedFiles, completedBatches, rowsWritten, totalFiles, totalBatches, startedAt, emitter)
 	return done
 }
 
 /* reportBatchProgress prints standardized progress snapshots until done is closed. */
-func reportBatchProgress(ctx context.Context, done <-chan struct{}, completed *atomic.Int64, total int, startedAt time.Time) {
+func reportBatchProgress(ctx context.Context, done <-chan struct{}, completedFiles, completedBatches, rowsWritten *atomic.Int64, totalFiles, totalBatches int, startedAt time.Time, emitter progress.Emitter) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			finished := completed.Load()
-			pct := batchPercent(finished, total)
+			finished := completedFiles.Load()
+			pct := batchPercent(finished, totalFiles)
 			elapsed := time.Since(startedAt)
 			rate := batchRate(finished, elapsed)
-			eta := batchETA(total-int(finished), rate)
-			console.Progressf(console.ProgressSnapshot{
-				Segments: []string{
-					fmt.Sprintf("%d/%d files", finished, total),
-					fmt.Sprintf("%.2f%%", pct),
-					fmt.Sprintf("%.2f files/s", rate),
-					fmt.Sprintf("eta %s", eta),
-					fmt.Sprintf("elapsed %s", console.FormatDuration(elapsed)),
-				},
+			emitter.Progress(progress.PhaseBatch, pct, map[string]any{
+				"files_completed":   finished,
+				"files_total":       totalFiles,
+				"files_per_sec":     rate,
+				"batches_completed": completedBatches.Load(),
+				"batches_total":     totalBatches,
+				"rows_written":      rowsWritten.Load(),
+				"eta_seconds":       batchETASeconds(totalFiles-int(finished), rate),
+				"elapsed_seconds":   elapsed.Seconds(),
 			})
 		case <-done:
 			return
@@ -419,23 +420,23 @@ func batchRate(completed int64, elapsed time.Duration) float64 {
 }
 
 /* batchETA estimates remaining batch duration from progress rate. */
-func batchETA(remaining int, rate float64) string {
+func batchETASeconds(remaining int, rate float64) float64 {
 	if rate <= 0 || remaining < 0 {
-		return "unknown"
+		return -1
 	}
-	return console.FormatDuration(time.Duration(float64(remaining)/rate) * time.Second)
+	return float64(remaining) / rate
 }
 
 /* printBatchFinalProgress prints a terminal 100% progress snapshot. */
-func printBatchFinalProgress(completed int64, total int) {
-	pct := batchPercent(completed, total)
-	console.Progressf(console.ProgressSnapshot{
-		Segments: []string{
-			fmt.Sprintf("%d/%d files", completed, total),
-			fmt.Sprintf("%.2f%%", pct),
-			"0.00 files/s",
-			"eta 0s",
-			"elapsed done",
-		},
+func printBatchFinalProgress(completedFiles int64, totalFiles int, completedBatches int64, totalBatches int, rowsWritten int64, startedAt time.Time, emitter progress.Emitter) {
+	emitter.Progress(progress.PhaseBatch, batchPercent(completedFiles, totalFiles), map[string]any{
+		"files_completed":   completedFiles,
+		"files_total":       totalFiles,
+		"files_per_sec":     0.0,
+		"batches_completed": completedBatches,
+		"batches_total":     totalBatches,
+		"rows_written":      rowsWritten,
+		"eta_seconds":       0.0,
+		"elapsed_seconds":   time.Since(startedAt).Seconds(),
 	})
 }

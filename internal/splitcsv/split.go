@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go_validate_yourself/internal/console"
+	"go_validate_yourself/internal/progress"
 )
 
 const cacheMetadataFileName = ".gvy-split-cache.json"
@@ -29,6 +29,7 @@ type Config struct {
 	PrimaryKey      string
 	MaxOpenWriters  int
 	MissingKeysFile string
+	Progress        progress.Emitter
 }
 
 /* Summary captures split run metrics. */
@@ -94,7 +95,7 @@ func SplitByPrimaryKey(ctx context.Context, cfg Config) (Summary, error) {
 	var totalRows atomic.Int64
 	var missingRows atomic.Int64
 	startedAt := time.Now()
-	doneProgress := startSplitProgressReporter(ctx, &totalRows, &missingRows, counter, inputSize, startedAt)
+	doneProgress := startSplitProgressReporter(ctx, &totalRows, &missingRows, counter, inputSize, startedAt, cfg.Progress)
 	defer close(doneProgress)
 
 	missing := newMissingRowWriter(cfg.OutputDir, cfg.MissingKeysFile, header)
@@ -112,7 +113,7 @@ func SplitByPrimaryKey(ctx context.Context, cfg Config) (Summary, error) {
 	}
 
 	summary.OutputFiles = cache.createdFiles
-	printSplitFinalProgress(totalRows.Load(), missingRows.Load(), counter.bytesRead.Load(), startedAt)
+	printSplitFinalProgress(totalRows.Load(), missingRows.Load(), counter.bytesRead.Load(), inputSize, startedAt, cfg.Progress)
 	return summary, nil
 }
 
@@ -251,14 +252,14 @@ func newWriterCache(cfg Config, header []string) *writerCache {
 }
 
 /* startSplitProgressReporter starts periodic progress logs for split mode. */
-func startSplitProgressReporter(ctx context.Context, totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time) chan struct{} {
+func startSplitProgressReporter(ctx context.Context, totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time, emitter progress.Emitter) chan struct{} {
 	done := make(chan struct{})
-	go reportSplitProgress(ctx, done, totalRows, missingRows, counter, inputSize, startedAt)
+	go reportSplitProgress(ctx, done, totalRows, missingRows, counter, inputSize, startedAt, emitter)
 	return done
 }
 
 /* reportSplitProgress emits split progress snapshots until done is closed. */
-func reportSplitProgress(ctx context.Context, done <-chan struct{}, totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time) {
+func reportSplitProgress(ctx context.Context, done <-chan struct{}, totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time, emitter progress.Emitter) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -270,21 +271,20 @@ func reportSplitProgress(ctx context.Context, done <-chan struct{}, totalRows, m
 			pct := splitReadPercent(readBytes, inputSize)
 			elapsed := time.Since(startedAt)
 			rowRate, byteRate := splitRates(rows, readBytes, elapsed)
-			eta := splitETA(readBytes, inputSize, byteRate)
 			estimatedTotalRows := estimateTotalRows(rows, pct)
 			readMB := bytesToMiB(readBytes)
 			totalMB := bytesToMiB(inputSize)
-			console.Progressf(console.ProgressSnapshot{
-				Segments: []string{
-					fmt.Sprintf("%.2f/%.2f mb", readMB, totalMB),
-					fmt.Sprintf("%d/%s rows", rows, estimatedTotalRows),
-					fmt.Sprintf("%.2f%%", pct),
-					fmt.Sprintf("%.2f rows/s", rowRate),
-					fmt.Sprintf("read=%s io=%.2f MiB", console.FormatBytes(readBytes), byteRate/(1024*1024)),
-					fmt.Sprintf("%d missing", missing),
-					fmt.Sprintf("eta %s", eta),
-					fmt.Sprintf("elapsed %s", console.FormatDuration(elapsed)),
-				},
+			emitter.Progress(progress.PhaseSplit, pct, map[string]any{
+				"read_mib":        readMB,
+				"input_mib":       totalMB,
+				"rows_total":      rows,
+				"rows_estimated":  estimatedTotalRows,
+				"rows_per_sec":    rowRate,
+				"read_bytes":      readBytes,
+				"io_mib_per_sec":  byteRate / (1024 * 1024),
+				"missing_rows":    missing,
+				"eta_seconds":     splitETASeconds(readBytes, inputSize, byteRate),
+				"elapsed_seconds": elapsed.Seconds(),
 			})
 		case <-done:
 			return
@@ -315,31 +315,31 @@ func splitRates(rows, readBytes int64, elapsed time.Duration) (float64, float64)
 	return float64(rows) / seconds, float64(readBytes) / seconds
 }
 
-/* splitETA estimates remaining time from current byte throughput. */
-func splitETA(readBytes, inputSize int64, byteRate float64) string {
+/* splitETASeconds estimates remaining time from current byte throughput. */
+func splitETASeconds(readBytes, inputSize int64, byteRate float64) float64 {
 	if byteRate <= 0 || inputSize <= 0 || readBytes > inputSize {
-		return "unknown"
+		return -1
 	}
-	etaSeconds := float64(inputSize-readBytes) / byteRate
-	return console.FormatDuration(time.Duration(etaSeconds) * time.Second)
+	return float64(inputSize-readBytes) / byteRate
 }
 
 /* printSplitFinalProgress logs one final completed progress line. */
-func printSplitFinalProgress(rows, missing, readBytes int64, startedAt time.Time) {
+func printSplitFinalProgress(rows, missing, readBytes, inputSize int64, startedAt time.Time, emitter progress.Emitter) {
 	elapsed := time.Since(startedAt)
 	rowRate, byteRate := splitRates(rows, readBytes, elapsed)
 	readMB := bytesToMiB(readBytes)
-	console.Progressf(console.ProgressSnapshot{
-		Segments: []string{
-			fmt.Sprintf("%.2f/%.2f mb", readMB, readMB),
-			fmt.Sprintf("%d/%d rows", rows, rows),
-			"100.00%",
-			fmt.Sprintf("%.2f rows/s", rowRate),
-			fmt.Sprintf("read=%s io=%.2f MiB", console.FormatBytes(readBytes), byteRate/(1024*1024)),
-			fmt.Sprintf("%d missing", missing),
-			"eta 0s",
-			fmt.Sprintf("elapsed %s", console.FormatDuration(elapsed)),
-		},
+	totalMB := bytesToMiB(inputSize)
+	emitter.Progress(progress.PhaseSplit, 100, map[string]any{
+		"read_mib":        readMB,
+		"input_mib":       totalMB,
+		"rows_total":      rows,
+		"rows_estimated":  fmt.Sprintf("%d", rows),
+		"rows_per_sec":    rowRate,
+		"read_bytes":      readBytes,
+		"io_mib_per_sec":  byteRate / (1024 * 1024),
+		"missing_rows":    missing,
+		"eta_seconds":     0.0,
+		"elapsed_seconds": elapsed.Seconds(),
 	})
 }
 
