@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="/static/css/app.css?v={{.Version}}">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="topbar__copy">
+          <p class="eyebrow">GVY Built-In UI</p>
+          <h1>Validation Console</h1>
+          <p class="lede">
+            Select an existing CSV and schema from the server working directory, start one validation run, and follow live progress through the existing snapshot and SSE APIs.
+          </p>
+        </div>
+        <div class="topbar__status">
+          <section class="status-card">
+            <span class="status-card__label">Server status</span>
+            <strong id="server-status-text">{{if .ServerBusy}}Busy{{else}}Idle{{end}}</strong>
+            <span id="server-status-badge" class="badge {{if .ServerBusy}}badge--warn{{else}}badge--ok{{end}}">
+              {{if .ServerBusy}}Single run occupied{{else}}Ready for a new run{{end}}
+            </span>
+          </section>
+          <section class="status-card">
+            <span class="status-card__label">Working directory</span>
+            <strong class="status-card__path">{{.WorkingRoot}}</strong>
+            <span class="status-card__hint">File access is limited to this directory tree.</span>
+          </section>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel panel--selector" aria-labelledby="selection-title">
+          <div class="panel__head">
+            <div>
+              <p class="eyebrow">Stage 5</p>
+              <h2 id="selection-title">Start a validation run</h2>
+            </div>
+            <button id="refresh-files-button" class="button button--secondary" type="button">Refresh file lists</button>
+          </div>
+
+          <div class="root-banner">
+            <span class="root-banner__label">Server root</span>
+            <code id="working-root-value">{{.WorkingRoot}}</code>
+          </div>
+
+          <form id="run-form" class="selection-form" novalidate>
+            <section class="selector-group" aria-labelledby="csv-group-title">
+              <div class="selector-group__head">
+                <div>
+                  <h3 id="csv-group-title">CSV input</h3>
+                  <p>Choose one CSV file under the working directory.</p>
+                </div>
+                <span id="csv-count" class="badge badge--muted">Loading…</span>
+              </div>
+              <label class="filter-field" for="csv-filter-input">
+                <span>Filter files</span>
+                <input id="csv-filter-input" type="search" placeholder="Filter by filename or folder" autocomplete="off">
+              </label>
+              <select id="csv-select" class="file-select" size="9" aria-describedby="csv-selection-summary"></select>
+              <p id="csv-selection-summary" class="selection-summary">No CSV selected.</p>
+            </section>
+
+            <section class="selector-group" aria-labelledby="schema-group-title">
+              <div class="selector-group__head">
+                <div>
+                  <h3 id="schema-group-title">Schema JSON</h3>
+                  <p>Choose one schema file under the working directory.</p>
+                </div>
+                <span id="schema-count" class="badge badge--muted">Loading…</span>
+              </div>
+              <label class="filter-field" for="schema-filter-input">
+                <span>Filter files</span>
+                <input id="schema-filter-input" type="search" placeholder="Filter by filename or folder" autocomplete="off">
+              </label>
+              <select id="schema-select" class="file-select" size="9" aria-describedby="schema-selection-summary"></select>
+              <p id="schema-selection-summary" class="selection-summary">No schema selected.</p>
+            </section>
+
+            <div class="chosen-grid">
+              <div class="chosen-item">
+                <span class="chosen-item__label">Selected CSV</span>
+                <code id="selected-csv-value">Not selected</code>
+              </div>
+              <div class="chosen-item">
+                <span class="chosen-item__label">Selected schema</span>
+                <code id="selected-schema-value">Not selected</code>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button id="submit-button" class="button button--primary" type="submit">Start validation</button>
+              <button id="refresh-button" class="button button--secondary" type="button">Refresh run state</button>
+            </div>
+
+            <p class="form-note">
+              GVY uses server-side file selection for V1. Multipart upload remains available at the API level, but this UI only starts runs from files already present under the server root.
+            </p>
+            <p id="form-message" class="form-message" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section class="panel panel--run" aria-labelledby="run-title">
+          <div class="panel__head">
+            <div>
+              <p class="eyebrow">Run State</p>
+              <h2 id="run-title">Live validation status</h2>
+            </div>
+            <span id="run-state-badge" class="badge badge--muted">No run selected</span>
+          </div>
+
+          <dl class="facts">
+            <div class="fact">
+              <dt>Run ID</dt>
+              <dd id="run-id-value">{{if .LatestRunID}}{{.LatestRunID}}{{else}}Waiting for submission{{end}}</dd>
+            </div>
+            <div class="fact">
+              <dt>Phase</dt>
+              <dd id="run-phase-value">{{if .LatestRunState}}{{.LatestRunState}}{{else}}Idle{{end}}</dd>
+            </div>
+            <div class="fact">
+              <dt>Progress</dt>
+              <dd id="run-progress-value">Not started</dd>
+            </div>
+            <div class="fact">
+              <dt>Workspace</dt>
+              <dd id="workspace-value">No workspace yet</dd>
+            </div>
+          </dl>
+
+          <div class="progress-card" aria-live="polite">
+            <div class="progress-card__topline">
+              <strong id="phase-heading">Ready</strong>
+              <span id="phase-detail">No active run.</span>
+            </div>
+            <div class="progress-bar" aria-hidden="true">
+              <span id="progress-fill" class="progress-bar__fill"></span>
+            </div>
+          </div>
+
+          <div id="summary-cards" class="summary-cards"></div>
+        </section>
+
+        <section class="panel panel--activity" aria-labelledby="activity-title">
+          <div class="panel__head">
+            <div>
+              <p class="eyebrow">Recent Events</p>
+              <h2 id="activity-title">Progress stream</h2>
+            </div>
+          </div>
+          <ol id="event-log" class="event-log" aria-live="polite">
+            <li class="event-log__empty">Progress events will appear here once a validation starts.</li>
+          </ol>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
+    </script>
+    <script src="/static/js/app.js?v={{.Version}}" defer></script>
+  </body>
+</html>

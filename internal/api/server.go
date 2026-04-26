@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +22,7 @@ import (
 	"go_validate_yourself/internal/runs"
 	"go_validate_yourself/internal/service"
 	"go_validate_yourself/internal/workspace"
+	"go_validate_yourself/web"
 )
 
 const version = "v1"
@@ -30,7 +34,10 @@ type Server struct {
 	port             int
 	service          service.Service
 	runManager       *runs.Manager
+	workingRoot      string
+	workingRootReal  string
 	workspaceBaseDir string
+	templates        *template.Template
 	runAuto          func(context.Context, service.AutoOptions) (service.AutoResult, error)
 	detectPrimaryKey func(string) (string, error)
 	httpServer       *http.Server
@@ -39,9 +46,12 @@ type Server struct {
 
 /* HealthResponse reports server status and execution availability. */
 type HealthResponse struct {
-	Status  string `json:"status"`
-	Busy    bool   `json:"busy"`
-	Version string `json:"version"`
+	Status         string     `json:"status"`
+	Busy           bool       `json:"busy"`
+	Version        string     `json:"version"`
+	WorkingRoot    string     `json:"working_root,omitempty"`
+	LatestRunID    string     `json:"latest_run_id,omitempty"`
+	LatestRunState runs.State `json:"latest_run_state,omitempty"`
 }
 
 /* ErrorResponse is the shared structured error body for API failures. */
@@ -93,6 +103,42 @@ type RunCreateResponse struct {
 	Run runs.Snapshot `json:"run"`
 }
 
+/* FileSelectionRunRequest defines JSON inputs for server-side file selection runs. */
+type FileSelectionRunRequest struct {
+	CSVPath    string `json:"csv_path"`
+	SchemaPath string `json:"schema_path"`
+}
+
+/* FileListEntry exposes one selectable file under the server working root. */
+type FileListEntry struct {
+	Name         string `json:"name"`
+	RelativePath string `json:"relative_path"`
+	SizeBytes    int64  `json:"size_bytes"`
+}
+
+/* FileListResponse returns eligible files scoped to the server working root. */
+type FileListResponse struct {
+	OK          bool            `json:"ok"`
+	Kind        string          `json:"kind"`
+	WorkingRoot string          `json:"working_root"`
+	Files       []FileListEntry `json:"files"`
+}
+
+type uiPageData struct {
+	Title          string
+	Version        string
+	ServerBusy     bool
+	WorkingRoot    string
+	LatestRunID    string
+	LatestRunState runs.State
+	BootstrapJSON  template.JS
+}
+
+type uiBootstrap struct {
+	Server      HealthResponse `json:"server"`
+	LatestRunID string         `json:"latest_run_id,omitempty"`
+}
+
 /* RunSnapshotResponse returns the current snapshot for one run. */
 type RunSnapshotResponse struct {
 	OK  bool          `json:"ok"`
@@ -110,20 +156,35 @@ type RunResultResponse struct {
 
 /* NewServer constructs a localhost-only API server instance. */
 func NewServer(host string, port int, svc service.Service) *Server {
+	workingRoot := mustAbsDir(".")
+	workingRootReal := resolveRealPath(workingRoot)
+	if workingRootReal == "" {
+		workingRootReal = workingRoot
+	}
+	workspaceBaseDir := filepath.Join(workingRoot, ".gvy", "runs")
+	templates := template.Must(template.ParseFS(web.Files, "templates/*.html"))
+	staticFiles := mustSubFS(web.Files, "static")
+
 	server := &Server{
 		host:             host,
 		port:             port,
 		service:          svc,
 		runManager:       runs.NewManager(),
-		workspaceBaseDir: workspace.DefaultBaseDir,
+		workingRoot:      workingRoot,
+		workingRootReal:  workingRootReal,
+		workspaceBaseDir: workspaceBaseDir,
+		templates:        templates,
 	}
 	server.runAuto = server.service.RunAuto
 	server.detectPrimaryKey = service.DetectPrimaryKey
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", server.handleUI)
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
 	mux.HandleFunc("/health", server.handleHealth)
 	mux.HandleFunc("/shutdown", server.handleShutdown)
 	mux.HandleFunc("/run/validate-auto", server.handleValidateAuto)
+	mux.HandleFunc("/api/files", server.handleFileList)
 	mux.HandleFunc("/api/runs", server.handleRuns)
 	mux.HandleFunc("/api/runs/", server.handleRunByID)
 
@@ -149,11 +210,45 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if !s.allowMethod(w, r, http.MethodGet) || !s.requireLoopback(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, HealthResponse{
-		Status:  "ok",
-		Busy:    s.runManager.HasActive(),
-		Version: version,
+	writeJSON(w, http.StatusOK, s.currentHealth())
+}
+
+/* handleUI renders the Stage 5 browser UI. */
+func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	health := s.currentHealth()
+	bootstrap, err := json.Marshal(uiBootstrap{
+		Server:      health,
+		LatestRunID: health.LatestRunID,
 	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_BOOTSTRAP_FAILED", err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "index.html", uiPageData{
+		Title:          "GVY Validation Console",
+		Version:        version,
+		ServerBusy:     health.Busy,
+		WorkingRoot:    s.workingRoot,
+		LatestRunID:    health.LatestRunID,
+		LatestRunState: health.LatestRunState,
+		BootstrapJSON:  template.JS(bootstrap),
+	}); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_RENDER_FAILED", err.Error())
+		return
+	}
 }
 
 /* handleShutdown accepts a localhost shutdown request and stops the server. */
@@ -251,6 +346,39 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	s.handleCreateRun(w, r)
 }
 
+/* handleFileList returns eligible selectable files under the server working root. */
+func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/api/files" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	ext := extForKind(kind)
+	if ext == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_KIND", "kind must be csv or schema")
+		return
+	}
+
+	files, err := s.listWorkingRootFiles(ext)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "FILE_LIST_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, FileListResponse{
+		OK:          true,
+		Kind:        kind,
+		WorkingRoot: s.workingRoot,
+		Files:       files,
+	})
+}
+
 /* handleRunByID dispatches run snapshot, result, and SSE routes. */
 func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoopback(w, r) {
@@ -285,6 +413,11 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 
 /* handleCreateRun accepts upload-driven browser requests and starts a background run. */
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		s.handleCreateRunFromSelection(w, r)
+		return
+	}
+
 	runID := progress.NewRunID()
 	ws, err := workspace.NewUnder(s.workspaceBaseDir, runID)
 	if err != nil {
@@ -321,6 +454,64 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go s.executeUploadRun(runID, ws)
+
+	w.Header().Set("Location", "/api/runs/"+runID)
+	writeJSON(w, http.StatusCreated, RunCreateResponse{
+		OK:  true,
+		Run: snapshot,
+	})
+}
+
+/* handleCreateRunFromSelection resolves working-root-scoped file selections and starts a background run. */
+func (s *Server) handleCreateRunFromSelection(w http.ResponseWriter, r *http.Request) {
+	req, err := decodeFileSelectionRunRequest(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+
+	inputCSVPath, err := s.resolveSelectedFile(req.CSVPath, ".csv", "csv_path")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	schemaPath, err := s.resolveSelectedFile(req.SchemaPath, ".json", "schema_path")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+
+	runID := progress.NewRunID()
+	ws, err := workspace.NewUnder(s.workspaceBaseDir, runID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "WORKSPACE_INIT_FAILED", err.Error())
+		return
+	}
+	ws.InputCSVPath = inputCSVPath
+	ws.SchemaPath = schemaPath
+	if err := ws.Prepare(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "WORKSPACE_INIT_FAILED", err.Error())
+		return
+	}
+
+	snapshot, err := s.runManager.Create(runID, &ws)
+	if err != nil {
+		_ = os.RemoveAll(ws.RootDir)
+		if errors.Is(err, runs.ErrActiveRunExists) {
+			writeAPIError(w, http.StatusConflict, "BUSY", "another run is already active")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "RUN_INIT_FAILED", err.Error())
+		return
+	}
+	snapshot, err = s.runManager.Start(runID)
+	if err != nil {
+		_ = os.RemoveAll(ws.RootDir)
+		writeAPIError(w, http.StatusInternalServerError, "RUN_START_FAILED", err.Error())
+		return
+	}
+
+	go s.executeWorkspaceRun(runID, ws)
 
 	w.Header().Set("Location", "/api/runs/"+runID)
 	writeJSON(w, http.StatusCreated, RunCreateResponse{
@@ -448,6 +639,11 @@ func (s *Server) decodeRunUploads(w http.ResponseWriter, r *http.Request, ws wor
 
 /* executeUploadRun maps a prepared workspace into auto-run options and completes the run asynchronously. */
 func (s *Server) executeUploadRun(runID string, ws workspace.RunWorkspace) {
+	s.executeWorkspaceRun(runID, ws)
+}
+
+/* executeWorkspaceRun maps a prepared workspace into auto-run options and completes the run asynchronously. */
+func (s *Server) executeWorkspaceRun(runID string, ws workspace.RunWorkspace) {
 	reporter := s.runManager.Reporter(runID)
 	primaryKey, err := s.detectPrimaryKey(ws.InputCSVPath)
 	if err != nil {
@@ -624,6 +820,22 @@ func decodeValidateAutoRequest(r *http.Request) (ValidateAutoRequest, error) {
 	return req, nil
 }
 
+/* decodeFileSelectionRunRequest decodes the JSON request body for a UI-selected run. */
+func decodeFileSelectionRunRequest(r *http.Request) (FileSelectionRunRequest, error) {
+	defer r.Body.Close()
+
+	var req FileSelectionRunRequest
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		return FileSelectionRunRequest{}, err
+	}
+	if err := decoder.Decode(new(struct{})); err != io.EOF {
+		return FileSelectionRunRequest{}, fmt.Errorf("request body must contain a single JSON object")
+	}
+	return req, nil
+}
+
 /* parseRunRoute extracts a run id and supported sub-route suffix from /api/runs paths. */
 func parseRunRoute(path string) (string, string, bool) {
 	trimmed := strings.TrimPrefix(path, "/api/runs/")
@@ -757,6 +969,143 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func (s *Server) currentHealth() HealthResponse {
+	response := HealthResponse{
+		Status:      "ok",
+		Busy:        s.runManager.HasActive(),
+		Version:     version,
+		WorkingRoot: s.workingRoot,
+	}
+	if latest, ok := s.runManager.LatestSnapshot(); ok {
+		response.LatestRunID = latest.RunID
+		response.LatestRunState = latest.State
+	}
+	return response
+}
+
+func (s *Server) listWorkingRootFiles(ext string) ([]FileListEntry, error) {
+	files := make([]FileListEntry, 0, 32)
+	err := filepath.WalkDir(s.workingRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == s.workspaceBaseDir && entry.IsDir() {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(entry.Name()), ext) {
+			return nil
+		}
+		resolved := resolveRealPath(path)
+		if resolved == "" || !isWithinRoot(s.workingRootReal, resolved) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		relativePath, err := filepath.Rel(s.workingRoot, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, FileListEntry{
+			Name:         entry.Name(),
+			RelativePath: filepath.ToSlash(relativePath),
+			SizeBytes:    info.Size(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].RelativePath) < strings.ToLower(files[j].RelativePath)
+	})
+	return files, nil
+}
+
+func (s *Server) resolveSelectedFile(rawPath, expectedExt, field string) (string, error) {
+	clean := strings.TrimSpace(rawPath)
+	if clean == "" {
+		return "", fmt.Errorf("%s is required", field)
+	}
+
+	candidate := clean
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(s.workingRoot, filepath.FromSlash(clean))
+	}
+	absolutePath, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("%s must resolve to a valid path", field)
+	}
+	if !strings.EqualFold(filepath.Ext(absolutePath), expectedExt) {
+		return "", fmt.Errorf("%s must use %s extension", field, expectedExt)
+	}
+
+	info, err := os.Stat(absolutePath)
+	if err != nil {
+		return "", fmt.Errorf("%s does not exist", field)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s must be a file", field)
+	}
+
+	resolved := resolveRealPath(absolutePath)
+	if resolved == "" || !isWithinRoot(s.workingRootReal, resolved) {
+		return "", fmt.Errorf("%s must stay within the server working directory", field)
+	}
+	return absolutePath, nil
+}
+
+func extForKind(kind string) string {
+	switch kind {
+	case "csv":
+		return ".csv"
+	case "schema":
+		return ".json"
+	default:
+		return ""
+	}
+}
+
+func isWithinRoot(root, candidate string) bool {
+	relativePath, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	return relativePath == "." || (relativePath != ".." && !strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)))
+}
+
+func resolveRealPath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ""
+	}
+	absolutePath, err := filepath.Abs(resolved)
+	if err != nil {
+		return ""
+	}
+	return absolutePath
+}
+
+func mustAbsDir(path string) string {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		panic(err)
+	}
+	return absolutePath
+}
+
+func mustSubFS(source fs.FS, dir string) fs.FS {
+	sub, err := fs.Sub(source, dir)
+	if err != nil {
+		panic(err)
+	}
+	return sub
 }
 
 /* writeMultipartFile copies one uploaded multipart file into the workspace after extension checks. */

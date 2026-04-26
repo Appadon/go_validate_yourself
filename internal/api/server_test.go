@@ -117,6 +117,133 @@ func TestBuildAutoOptionsDefaults(t *testing.T) {
 	}
 }
 
+func TestHandleUIRendersWorkingRootPage(t *testing.T) {
+	server := newSelectionTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleUI(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if contentType := recorder.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
+		t.Fatalf("Content-Type = %q", contentType)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "Validation Console") {
+		t.Fatalf("body missing UI heading: %s", body)
+	}
+	if !strings.Contains(body, server.workingRoot) {
+		t.Fatalf("body missing working root %q: %s", server.workingRoot, body)
+	}
+}
+
+func TestHandleFileListReturnsEligibleWorkingRootFiles(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workingRoot, "incoming", "alpha.csv"), "Record ID\n1\n")
+	writeTestFile(t, filepath.Join(server.workingRoot, "schemas", "policy.json"), `{"fields":[]}`)
+	writeTestFile(t, filepath.Join(server.workspaceBaseDir, "run-old", "run.json"), `{"ok":true}`)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/files?kind=csv", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleFileList(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response FileListResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Files) != 1 {
+		t.Fatalf("expected 1 csv file, got %d", len(response.Files))
+	}
+	if response.Files[0].RelativePath != "incoming/alpha.csv" {
+		t.Fatalf("relative path = %q", response.Files[0].RelativePath)
+	}
+}
+
+func TestHandleCreateRunFromSelectionSuccessAndInspectability(t *testing.T) {
+	server := newSelectionTestServer(t)
+	csvPath := filepath.Join(server.workingRoot, "incoming", "input.csv")
+	schemaPath := filepath.Join(server.workingRoot, "schemas", "schema.json")
+	writeTestFile(t, csvPath, "Record ID,Amount\n1,10\n2,20\n")
+	writeTestFile(t, schemaPath, `{"fields":[{"name":"Record ID","type":"string","required":true},{"name":"Amount","type":"int","required":true}]}`)
+
+	requestBody, err := json.Marshal(FileSelectionRunRequest{
+		CSVPath:    "incoming/input.csv",
+		SchemaPath: "schemas/schema.json",
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", bytes.NewReader(requestBody))
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleRuns(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	response := decodeCreatedRun(t, recorder.Body.Bytes())
+	if response.Run.Workspace == nil {
+		t.Fatal("expected workspace in create response")
+	}
+	if response.Run.Workspace.InputCSVPath != csvPath {
+		t.Fatalf("input csv = %q, want %q", response.Run.Workspace.InputCSVPath, csvPath)
+	}
+	if response.Run.Workspace.SchemaPath != schemaPath {
+		t.Fatalf("schema path = %q, want %q", response.Run.Workspace.SchemaPath, schemaPath)
+	}
+
+	finalSnapshot := waitForRunState(t, server.runManager, response.Run.RunID, runs.StateCompleted)
+	if finalSnapshot.FinalResult == nil {
+		t.Fatal("expected final result")
+	}
+
+	resultRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+response.Run.RunID+"/result", nil)
+	resultRequest.RemoteAddr = "127.0.0.1:12345"
+	resultRecorder := httptest.NewRecorder()
+	server.handleRunByID(resultRecorder, resultRequest)
+	if resultRecorder.Code != http.StatusOK {
+		t.Fatalf("result status = %d, want %d", resultRecorder.Code, http.StatusOK)
+	}
+}
+
+func TestHandleCreateRunFromSelectionRejectsOutOfRootPath(t *testing.T) {
+	server := newSelectionTestServer(t)
+	outsideDir := t.TempDir()
+	writeTestFile(t, filepath.Join(outsideDir, "escape.csv"), "Record ID\n1\n")
+	writeTestFile(t, filepath.Join(server.workingRoot, "schemas", "schema.json"), `{"fields":[]}`)
+
+	requestBody, err := json.Marshal(FileSelectionRunRequest{
+		CSVPath:    filepath.Join(outsideDir, "escape.csv"),
+		SchemaPath: "schemas/schema.json",
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", bytes.NewReader(requestBody))
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleRuns(recorder, request)
+
+	assertAPIErrorCode(t, recorder, http.StatusBadRequest, "INVALID_REQUEST")
+	if !strings.Contains(recorder.Body.String(), "server working directory") {
+		t.Fatalf("expected out-of-root error, got %s", recorder.Body.String())
+	}
+}
+
 func TestHandleCreateRunRejectsInvalidMultipart(t *testing.T) {
 	server := newUploadTestServer(t)
 	request := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader("not multipart"))
@@ -448,6 +575,17 @@ func newUploadTestServer(t *testing.T) *Server {
 	t.Helper()
 	server := NewServer("127.0.0.1", 8080, service.New())
 	server.workspaceBaseDir = t.TempDir()
+	server.runAuto = server.service.RunAuto
+	server.detectPrimaryKey = service.DetectPrimaryKey
+	return server
+}
+
+func newSelectionTestServer(t *testing.T) *Server {
+	t.Helper()
+	server := NewServer("127.0.0.1", 8080, service.New())
+	server.workingRoot = t.TempDir()
+	server.workingRootReal = resolveRealPath(server.workingRoot)
+	server.workspaceBaseDir = filepath.Join(server.workingRoot, ".gvy", "runs")
 	server.runAuto = server.service.RunAuto
 	server.detectPrimaryKey = service.DetectPrimaryKey
 	return server
