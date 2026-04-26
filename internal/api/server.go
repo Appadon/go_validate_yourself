@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"go_validate_yourself/internal/progress"
+	"go_validate_yourself/internal/runs"
 	"go_validate_yourself/internal/service"
 )
 
@@ -24,8 +26,8 @@ type Server struct {
 	host         string
 	port         int
 	service      service.Service
+	runManager   *runs.Manager
 	httpServer   *http.Server
-	executionSem chan struct{}
 	shutdownOnce sync.Once
 }
 
@@ -82,10 +84,10 @@ type ValidateAutoOutput struct {
 /* NewServer constructs a localhost-only API server instance. */
 func NewServer(host string, port int, svc service.Service) *Server {
 	server := &Server{
-		host:         host,
-		port:         port,
-		service:      svc,
-		executionSem: make(chan struct{}, 1),
+		host:       host,
+		port:       port,
+		service:    svc,
+		runManager: runs.NewManager(),
 	}
 
 	mux := http.NewServeMux()
@@ -117,7 +119,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, HealthResponse{
 		Status:  "ok",
-		Busy:    s.isBusy(),
+		Busy:    s.runManager.HasActive(),
 		Version: version,
 	})
 }
@@ -147,12 +149,6 @@ func (s *Server) handleValidateAuto(w http.ResponseWriter, r *http.Request) {
 	if !s.allowMethod(w, r, http.MethodPost) || !s.requireLoopback(w, r) {
 		return
 	}
-	if !s.tryAcquireExecution() {
-		writeAPIError(w, http.StatusConflict, "BUSY", "another run is already active")
-		return
-	}
-	defer s.releaseExecution()
-
 	req, err := decodeValidateAutoRequest(r)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
@@ -165,8 +161,26 @@ func (s *Server) handleValidateAuto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	runID := progress.NewRunID()
+	if _, err := s.runManager.Create(runID, nil); err != nil {
+		if errors.Is(err, runs.ErrActiveRunExists) {
+			writeAPIError(w, http.StatusConflict, "BUSY", "another run is already active")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "RUN_INIT_FAILED", err.Error())
+		return
+	}
+	if _, err := s.runManager.Start(runID); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "RUN_START_FAILED", err.Error())
+		return
+	}
+
+	opts.RunID = runID
+	opts.Reporter = progress.Combine(opts.Reporter, s.runManager.Reporter(runID))
+
 	result, err := s.service.RunAuto(r.Context(), opts)
 	if err != nil {
+		_, _ = s.runManager.Fail(runID, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			writeAPIError(w, http.StatusRequestTimeout, "REQUEST_CANCELED", err.Error())
 			return
@@ -174,6 +188,7 @@ func (s *Server) handleValidateAuto(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "VALIDATION_FAILED", err.Error())
 		return
 	}
+	_, _ = s.runManager.Complete(runID, result)
 
 	writeJSON(w, http.StatusOK, ValidateAutoSuccessResponse{
 		OK:   true,
@@ -308,29 +323,6 @@ func (s *Server) requireLoopback(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
-}
-
-/* tryAcquireExecution reserves the single active run slot for a request. */
-func (s *Server) tryAcquireExecution() bool {
-	select {
-	case s.executionSem <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
-/* releaseExecution frees the active run slot after a request finishes. */
-func (s *Server) releaseExecution() {
-	select {
-	case <-s.executionSem:
-	default:
-	}
-}
-
-/* isBusy reports whether a run is currently executing. */
-func (s *Server) isBusy() bool {
-	return len(s.executionSem) > 0
 }
 
 /* decodeValidateAutoRequest decodes the JSON request body for auto mode. */
