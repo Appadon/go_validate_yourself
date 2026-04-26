@@ -113,6 +113,7 @@ type FileSelectionRunRequest struct {
 type FileListEntry struct {
 	Name         string `json:"name"`
 	RelativePath string `json:"relative_path"`
+	IsDir        bool   `json:"is_dir"`
 	SizeBytes    int64  `json:"size_bytes"`
 }
 
@@ -121,7 +122,9 @@ type FileListResponse struct {
 	OK          bool            `json:"ok"`
 	Kind        string          `json:"kind"`
 	WorkingRoot string          `json:"working_root"`
-	Files       []FileListEntry `json:"files"`
+	CurrentPath string          `json:"current_path"`
+	ParentPath  string          `json:"parent_path,omitempty"`
+	Entries     []FileListEntry `json:"entries"`
 }
 
 type uiPageData struct {
@@ -366,7 +369,7 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files, err := s.listWorkingRootFiles(ext)
+	currentPath, parentPath, entries, err := s.listWorkingRootEntries(strings.TrimSpace(r.URL.Query().Get("path")), ext)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "FILE_LIST_FAILED", err.Error())
 		return
@@ -375,7 +378,9 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 		OK:          true,
 		Kind:        kind,
 		WorkingRoot: s.workingRoot,
-		Files:       files,
+		CurrentPath: currentPath,
+		ParentPath:  parentPath,
+		Entries:     entries,
 	})
 }
 
@@ -985,47 +990,110 @@ func (s *Server) currentHealth() HealthResponse {
 	return response
 }
 
-func (s *Server) listWorkingRootFiles(ext string) ([]FileListEntry, error) {
-	files := make([]FileListEntry, 0, 32)
-	err := filepath.WalkDir(s.workingRoot, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == s.workspaceBaseDir && entry.IsDir() {
-			return filepath.SkipDir
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if !strings.EqualFold(filepath.Ext(entry.Name()), ext) {
-			return nil
-		}
-		resolved := resolveRealPath(path)
+func (s *Server) listWorkingRootEntries(rawPath, ext string) (string, string, []FileListEntry, error) {
+	currentDir, currentRelativePath, err := s.resolveBrowseDirectory(rawPath)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	items, err := os.ReadDir(currentDir)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	entries := make([]FileListEntry, 0, len(items))
+	for _, item := range items {
+		absolutePath := filepath.Join(currentDir, item.Name())
+		resolved := resolveRealPath(absolutePath)
 		if resolved == "" || !isWithinRoot(s.workingRootReal, resolved) {
-			return nil
+			continue
 		}
-		info, err := entry.Info()
+
+		relativePath, err := filepath.Rel(s.workingRoot, absolutePath)
 		if err != nil {
-			return err
+			return "", "", nil, err
 		}
-		relativePath, err := filepath.Rel(s.workingRoot, path)
+		if item.IsDir() {
+			if s.shouldHideBrowsePath(absolutePath) {
+				continue
+			}
+			entries = append(entries, FileListEntry{
+				Name:         item.Name(),
+				RelativePath: filepath.ToSlash(relativePath),
+				IsDir:        true,
+			})
+			continue
+		}
+
+		if !strings.EqualFold(filepath.Ext(item.Name()), ext) {
+			continue
+		}
+		info, err := item.Info()
 		if err != nil {
-			return err
+			return "", "", nil, err
 		}
-		files = append(files, FileListEntry{
-			Name:         entry.Name(),
+		entries = append(entries, FileListEntry{
+			Name:         item.Name(),
 			RelativePath: filepath.ToSlash(relativePath),
+			IsDir:        false,
 			SizeBytes:    info.Size(),
 		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
-	sort.Slice(files, func(i, j int) bool {
-		return strings.ToLower(files[i].RelativePath) < strings.ToLower(files[j].RelativePath)
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].IsDir != entries[j].IsDir {
+			return entries[i].IsDir
+		}
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
 	})
-	return files, nil
+
+	parentPath := ""
+	if currentRelativePath != "." {
+		parentPath = filepath.ToSlash(filepath.Dir(currentRelativePath))
+		if parentPath == "." {
+			parentPath = ""
+		}
+	}
+
+	displayPath := ""
+	if currentRelativePath != "." {
+		displayPath = filepath.ToSlash(currentRelativePath)
+	}
+	return displayPath, parentPath, entries, nil
+}
+
+func (s *Server) shouldHideBrowsePath(absolutePath string) bool {
+	internalRoot := filepath.Dir(s.workspaceBaseDir)
+	return samePath(absolutePath, s.workspaceBaseDir) || samePath(absolutePath, internalRoot)
+}
+
+func (s *Server) resolveBrowseDirectory(rawPath string) (string, string, error) {
+	clean := strings.TrimSpace(rawPath)
+	if clean == "" {
+		return s.workingRoot, ".", nil
+	}
+
+	candidate := filepath.Join(s.workingRoot, filepath.FromSlash(clean))
+	absolutePath, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", "", fmt.Errorf("path must resolve to a valid directory")
+	}
+	info, err := os.Stat(absolutePath)
+	if err != nil {
+		return "", "", fmt.Errorf("path does not exist")
+	}
+	if !info.IsDir() {
+		return "", "", fmt.Errorf("path must be a directory")
+	}
+	resolved := resolveRealPath(absolutePath)
+	if resolved == "" || !isWithinRoot(s.workingRootReal, resolved) {
+		return "", "", fmt.Errorf("path must stay within the server working directory")
+	}
+	relativePath, err := filepath.Rel(s.workingRoot, absolutePath)
+	if err != nil {
+		return "", "", err
+	}
+	return absolutePath, relativePath, nil
 }
 
 func (s *Server) resolveSelectedFile(rawPath, expectedExt, field string) (string, error) {

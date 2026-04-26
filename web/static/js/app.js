@@ -7,9 +7,18 @@
     runId: bootstrap.latest_run_id || "",
     snapshot: null,
     result: null,
-    files: {
-      csv: [],
-      schema: [],
+    browser: {
+      activeKind: "",
+      csv: {
+        currentPath: "",
+        parentPath: "",
+        entries: [],
+      },
+      schema: {
+        currentPath: "",
+        parentPath: "",
+        entries: [],
+      },
     },
     filters: {
       csv: "",
@@ -28,16 +37,12 @@
   const els = {
     form: document.getElementById("run-form"),
     refreshFilesButton: document.getElementById("refresh-files-button"),
-    csvFilterInput: document.getElementById("csv-filter-input"),
-    schemaFilterInput: document.getElementById("schema-filter-input"),
-    csvSelect: document.getElementById("csv-select"),
-    schemaSelect: document.getElementById("schema-select"),
+    csvOpenButton: document.getElementById("csv-open-button"),
+    schemaOpenButton: document.getElementById("schema-open-button"),
     csvCount: document.getElementById("csv-count"),
     schemaCount: document.getElementById("schema-count"),
     csvSelectionSummary: document.getElementById("csv-selection-summary"),
     schemaSelectionSummary: document.getElementById("schema-selection-summary"),
-    selectedCSVValue: document.getElementById("selected-csv-value"),
-    selectedSchemaValue: document.getElementById("selected-schema-value"),
     submitButton: document.getElementById("submit-button"),
     refreshButton: document.getElementById("refresh-button"),
     formMessage: document.getElementById("form-message"),
@@ -45,14 +50,26 @@
     serverStatusBadge: document.getElementById("server-status-badge"),
     runStateBadge: document.getElementById("run-state-badge"),
     runIDValue: document.getElementById("run-id-value"),
-    runPhaseValue: document.getElementById("run-phase-value"),
+    runStageValue: document.getElementById("run-stage-value"),
     runProgressValue: document.getElementById("run-progress-value"),
-    workspaceValue: document.getElementById("workspace-value"),
+    stageDetail: document.getElementById("stage-detail"),
     phaseHeading: document.getElementById("phase-heading"),
     phaseDetail: document.getElementById("phase-detail"),
     progressFill: document.getElementById("progress-fill"),
     summaryCards: document.getElementById("summary-cards"),
     eventLog: document.getElementById("event-log"),
+    pickerModal: document.getElementById("picker-modal"),
+    pickerBackdrop: document.getElementById("picker-backdrop"),
+    pickerTitle: document.getElementById("picker-title"),
+    pickerSubtitle: document.getElementById("picker-subtitle"),
+    pickerCloseButton: document.getElementById("picker-close-button"),
+    pickerFilterInput: document.getElementById("picker-filter-input"),
+    pickerPathValue: document.getElementById("picker-path-value"),
+    pickerUpButton: document.getElementById("picker-up-button"),
+    pickerDirectories: document.getElementById("picker-directories"),
+    pickerSelect: document.getElementById("picker-select"),
+    pickerSelectionSummary: document.getElementById("picker-selection-summary"),
+    pickerChooseButton: document.getElementById("picker-choose-button"),
   };
 
   function init() {
@@ -70,26 +87,36 @@
       refreshFileLists();
     });
 
-    els.csvFilterInput.addEventListener("input", function () {
-      state.filters.csv = els.csvFilterInput.value.trim().toLowerCase();
-      renderFileSelect("csv");
+    els.csvOpenButton.addEventListener("click", function () {
+      openPicker("csv");
     });
 
-    els.schemaFilterInput.addEventListener("input", function () {
-      state.filters.schema = els.schemaFilterInput.value.trim().toLowerCase();
-      renderFileSelect("schema");
+    els.schemaOpenButton.addEventListener("click", function () {
+      openPicker("schema");
     });
 
-    els.csvSelect.addEventListener("change", function () {
-      state.selected.csv = els.csvSelect.value;
-      clearFormMessage();
-      render();
+    els.pickerFilterInput.addEventListener("input", function () {
+      const kind = state.browser.activeKind;
+      if (!kind) {
+        return;
+      }
+      state.filters[kind] = els.pickerFilterInput.value.trim().toLowerCase();
+      renderPicker();
     });
 
-    els.schemaSelect.addEventListener("change", function () {
-      state.selected.schema = els.schemaSelect.value;
-      clearFormMessage();
-      render();
+    els.pickerSelect.addEventListener("change", function () {
+      renderPicker();
+    });
+
+    els.pickerSelect.addEventListener("dblclick", function () {
+      commitPickerSelection();
+    });
+
+    els.pickerUpButton.addEventListener("click", function () {
+      const kind = state.browser.activeKind;
+      if (kind) {
+        browseUp(kind);
+      }
     });
 
     els.refreshButton.addEventListener("click", function () {
@@ -103,30 +130,46 @@
       event.preventDefault();
       submitRun();
     });
+
+    els.pickerChooseButton.addEventListener("click", function () {
+      commitPickerSelection();
+    });
+
+    els.pickerCloseButton.addEventListener("click", closePicker);
+    els.pickerBackdrop.addEventListener("click", closePicker);
   }
 
   async function refreshFileLists() {
     clearFormMessage();
-    await Promise.all([loadFileList("csv"), loadFileList("schema")]);
+    await Promise.all([loadFileList("csv", state.browser.csv.currentPath), loadFileList("schema", state.browser.schema.currentPath)]);
     render();
   }
 
-  async function loadFileList(kind) {
+  async function loadFileList(kind, path) {
     updateFileCount(kind, "Loading…");
     try {
-      const response = await fetch("/api/files?kind=" + encodeURIComponent(kind));
+      const params = new URLSearchParams();
+      params.set("kind", kind);
+      if (path) {
+        params.set("path", path);
+      }
+      const response = await fetch("/api/files?" + params.toString());
       const payload = await parseJSON(response);
       if (!response.ok) {
         throw new Error(payload && payload.message ? payload.message : "Could not load " + kind + " files");
       }
-      state.files[kind] = payload.files || [];
+      state.browser[kind].currentPath = payload.current_path || "";
+      state.browser[kind].parentPath = payload.parent_path || "";
+      state.browser[kind].entries = payload.entries || [];
       if (!hasRelativePath(kind, state.selected[kind])) {
         state.selected[kind] = "";
       }
-      renderFileSelect(kind);
+      renderPicker();
+      renderSelectionSummary(kind);
     } catch (error) {
-      state.files[kind] = [];
-      renderFileSelect(kind);
+      state.browser[kind].entries = [];
+      renderPicker();
+      renderSelectionSummary(kind);
       setFormMessage(error.message || "Could not load file lists", "error");
     }
   }
@@ -357,13 +400,13 @@
 
   function render() {
     renderServerState();
-    renderFileSelect("csv");
-    renderFileSelect("schema");
-    renderSelections();
+    renderSelectionSummary("csv");
+    renderSelectionSummary("schema");
     renderRunState();
     renderSummary();
     renderEvents();
     updateSubmitState();
+    renderPicker();
   }
 
   function renderServerState() {
@@ -372,48 +415,75 @@
     setBadge(els.serverStatusBadge, busy ? "Single run occupied" : "Ready for a new run", busy ? "warn" : "ok");
   }
 
-  function renderFileSelect(kind) {
-    const select = kind === "csv" ? els.csvSelect : els.schemaSelect;
+  function renderSelectionSummary(kind) {
     const summary = kind === "csv" ? els.csvSelectionSummary : els.schemaSelectionSummary;
+    summary.textContent = state.selected[kind] ? displayFileName(state.selected[kind]) : "No " + kind + " selected";
+  }
+
+  function renderPicker() {
+    const kind = state.browser.activeKind;
+    els.pickerModal.hidden = !kind;
+    if (!kind) {
+      return;
+    }
+
+    const select = els.pickerSelect;
     const files = filteredFiles(kind);
+    const directories = filteredDirectories(kind);
+    const currentPath = state.browser[kind].currentPath || "";
+
+    els.pickerTitle.textContent = kind === "csv" ? "Select CSV file" : "Select schema file";
+    els.pickerSubtitle.textContent = kind === "csv" ? "Browse the working directory and choose one CSV file." : "Browse the working directory and choose one schema JSON file.";
+    els.pickerFilterInput.value = state.filters[kind] || "";
+    els.pickerPathValue.textContent = "/" + currentPath;
+    els.pickerUpButton.disabled = !state.browser[kind].parentPath && !currentPath;
+
+    if (!directories.length) {
+      els.pickerDirectories.innerHTML = '<span class="directory-empty">No subdirectories here.</span>';
+    } else {
+      els.pickerDirectories.innerHTML = directories.map(function (entry) {
+        return '<button class="directory-chip" type="button" data-kind="' + kind + '" data-path="' + escapeHTML(entry.relative_path) + '">/' + escapeHTML(entry.name) + '</button>';
+      }).join("");
+      els.pickerDirectories.querySelectorAll("[data-path]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          loadFileList(kind, button.getAttribute("data-path"));
+        });
+      });
+    }
 
     select.innerHTML = "";
     if (!files.length) {
       const option = document.createElement("option");
       option.disabled = true;
-      option.textContent = state.files[kind].length ? "No files match the current filter" : "No eligible files found";
+      option.textContent = hasFileEntries(kind) ? "No files match the current filter" : "No matching files in this directory";
       select.appendChild(option);
     } else {
       files.forEach(function (entry) {
         const option = document.createElement("option");
         option.value = entry.relative_path;
-        option.textContent = entry.relative_path;
-        if (entry.relative_path === state.selected[kind]) {
+        option.textContent = entry.name;
+        if (entry.relative_path === currentPickerValue()) {
           option.selected = true;
         }
         select.appendChild(option);
       });
-      if (!state.selected[kind] && files.length) {
+      if (!currentPickerValue() && files.length) {
         select.selectedIndex = -1;
       }
     }
 
-    summary.textContent = state.selected[kind] ? state.selected[kind] : "No " + kind + " selected.";
-    updateFileCount(kind, state.files[kind].length + " files");
-  }
-
-  function renderSelections() {
-    els.selectedCSVValue.textContent = state.selected.csv || "Not selected";
-    els.selectedSchemaValue.textContent = state.selected.schema || "Not selected";
+    updateFileCount(kind, directories.length + " dirs · " + fileEntries(kind).length + " files");
+    els.pickerSelectionSummary.textContent = currentPickerValue() ? currentPickerValue() : "No file selected.";
+    els.pickerChooseButton.disabled = !currentPickerValue();
   }
 
   function renderRunState() {
     const snapshot = state.snapshot;
     if (!snapshot) {
       els.runIDValue.textContent = state.runId || "Waiting for submission";
-      els.runPhaseValue.textContent = "Idle";
+      els.runStageValue.textContent = state.health.busy ? "Attached elsewhere" : "Idle";
       els.runProgressValue.textContent = "Not started";
-      els.workspaceValue.textContent = "No workspace yet";
+      els.stageDetail.textContent = state.health.busy ? "Run in progress" : "Preparing";
       els.phaseHeading.textContent = state.health.busy ? "Server busy" : "Ready";
       els.phaseDetail.textContent = state.health.busy ? "A run exists, but this page has not attached to its snapshot yet." : "No active run.";
       els.progressFill.style.width = "0%";
@@ -423,13 +493,14 @@
 
     const latestEvent = snapshot.latest_event || newestEvent();
     const progressPercent = getProgressPercent(snapshot, latestEvent);
+    const stageInfo = getStageInfo(snapshot, latestEvent);
     const phaseText = latestEvent ? formatPhase(latestEvent.phase) : formatState(snapshot.state);
     const detail = latestEvent && latestEvent.message ? latestEvent.message : describeState(snapshot.state);
 
     els.runIDValue.textContent = snapshot.run_id;
-    els.runPhaseValue.textContent = phaseText;
+    els.runStageValue.textContent = stageInfo.label;
     els.runProgressValue.textContent = progressPercent == null ? describeState(snapshot.state) : progressPercent + "%";
-    els.workspaceValue.textContent = snapshot.workspace && snapshot.workspace.root_dir ? snapshot.workspace.root_dir : "Workspace unavailable";
+    els.stageDetail.textContent = stageInfo.label;
     els.phaseHeading.textContent = phaseText;
     els.phaseDetail.textContent = detail;
     els.progressFill.style.width = (progressPercent == null ? 0 : progressPercent) + "%";
@@ -449,12 +520,9 @@
     cards.push(cardHTML("Inputs", [
       rowHTML("CSV", valueText((workspace && workspace.input_csv_path) || state.selected.csv)),
       rowHTML("Schema", valueText((workspace && workspace.schema_path) || state.selected.schema)),
-      rowHTML("Working root", valueText(state.health.working_root)),
     ]));
 
-    cards.push(cardHTML("Workspace", [
-      rowHTML("Root", valueText(workspace && workspace.root_dir)),
-      rowHTML("Metadata", valueText(workspace && workspace.metadata_path)),
+    cards.push(cardHTML("Outputs", [
       rowHTML("Success", valueText(workspace && workspace.success_dir)),
       rowHTML("Errors", valueText(workspace && workspace.error_dir)),
       rowHTML("Batch export", valueText(workspace && workspace.batch_export_dir)),
@@ -498,6 +566,14 @@
       ]));
     }
 
+    if (!result && snapshot && snapshot.state === "running") {
+      cards.push(cardHTML("Outputs", [
+        rowHTML("Success", valueText(workspace && workspace.success_dir)),
+        rowHTML("Errors", valueText(workspace && workspace.error_dir)),
+        rowHTML("Batch export", valueText(workspace && workspace.batch_export_dir)),
+      ]));
+    }
+
     els.summaryCards.innerHTML = cards.join("");
   }
 
@@ -534,21 +610,83 @@
 
   function filteredFiles(kind) {
     const filter = state.filters[kind];
+    const files = fileEntries(kind);
     if (!filter) {
-      return state.files[kind];
+      return files;
     }
-    return state.files[kind].filter(function (entry) {
+    return files.filter(function (entry) {
       return entry.relative_path.toLowerCase().indexOf(filter) >= 0;
     });
+  }
+
+  function filteredDirectories(kind) {
+    const filter = state.filters[kind];
+    const directories = directoryEntries(kind);
+    if (!filter) {
+      return directories;
+    }
+    return directories.filter(function (entry) {
+      return entry.relative_path.toLowerCase().indexOf(filter) >= 0;
+    });
+  }
+
+  function fileEntries(kind) {
+    return (state.browser[kind].entries || []).filter(function (entry) {
+      return !entry.is_dir;
+    });
+  }
+
+  function directoryEntries(kind) {
+    return (state.browser[kind].entries || []).filter(function (entry) {
+      return entry.is_dir;
+    });
+  }
+
+  function hasFileEntries(kind) {
+    return fileEntries(kind).length > 0;
   }
 
   function hasRelativePath(kind, relativePath) {
     if (!relativePath) {
       return false;
     }
-    return state.files[kind].some(function (entry) {
+    return fileEntries(kind).some(function (entry) {
       return entry.relative_path === relativePath;
     });
+  }
+
+  function browseUp(kind) {
+    const targetPath = state.browser[kind].parentPath || "";
+    loadFileList(kind, targetPath);
+  }
+
+  function openPicker(kind) {
+    state.browser.activeKind = kind;
+    if (!state.browser[kind].entries.length) {
+      loadFileList(kind, state.browser[kind].currentPath);
+    }
+    renderPicker();
+  }
+
+  function closePicker() {
+    state.browser.activeKind = "";
+    renderPicker();
+  }
+
+  function currentPickerValue() {
+    return els.pickerSelect.value || "";
+  }
+
+  function commitPickerSelection() {
+    const kind = state.browser.activeKind;
+    const value = currentPickerValue();
+    if (!kind || !value) {
+      return;
+    }
+    state.selected[kind] = value;
+    clearFormMessage();
+    closePicker();
+    render();
   }
 
   function updateFileCount(kind, text) {
@@ -598,6 +736,30 @@
       return 100;
     }
     return null;
+  }
+
+  function getStageInfo(snapshot, latestEvent) {
+    if (!snapshot) {
+      return { label: "Preparing" };
+    }
+    if (snapshot.state === "completed") {
+      return { label: "Stage 3 of 3" };
+    }
+
+    const phase = latestEvent && latestEvent.phase ? latestEvent.phase : "";
+    switch (phase) {
+      case "split":
+        return { label: "Stage 1 of 3" };
+      case "validate":
+        return { label: "Stage 2 of 3" };
+      case "batch":
+        return { label: "Stage 3 of 3" };
+      default:
+        if (snapshot.state === "failed") {
+          return { label: "Preparation" };
+        }
+        return { label: "Preparing" };
+    }
   }
 
   function formatPhase(phase) {
@@ -692,6 +854,14 @@
       return "Not available";
     }
     return String(value);
+  }
+
+  function displayFileName(relativePath) {
+    if (!relativePath) {
+      return "";
+    }
+    const segments = String(relativePath).split("/");
+    return segments[segments.length - 1] || relativePath;
   }
 
   function cardHTML(title, rows) {

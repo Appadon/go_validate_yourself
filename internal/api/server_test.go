@@ -143,6 +143,7 @@ func TestHandleUIRendersWorkingRootPage(t *testing.T) {
 func TestHandleFileListReturnsEligibleWorkingRootFiles(t *testing.T) {
 	server := newSelectionTestServer(t)
 	writeTestFile(t, filepath.Join(server.workingRoot, "incoming", "alpha.csv"), "Record ID\n1\n")
+	writeTestFile(t, filepath.Join(server.workingRoot, "incoming", "nested", "beta.csv"), "Record ID\n2\n")
 	writeTestFile(t, filepath.Join(server.workingRoot, "schemas", "policy.json"), `{"fields":[]}`)
 	writeTestFile(t, filepath.Join(server.workspaceBaseDir, "run-old", "run.json"), `{"ok":true}`)
 
@@ -159,11 +160,52 @@ func TestHandleFileListReturnsEligibleWorkingRootFiles(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(response.Files) != 1 {
-		t.Fatalf("expected 1 csv file, got %d", len(response.Files))
+	if response.CurrentPath != "" {
+		t.Fatalf("current path = %q, want root", response.CurrentPath)
 	}
-	if response.Files[0].RelativePath != "incoming/alpha.csv" {
-		t.Fatalf("relative path = %q", response.Files[0].RelativePath)
+	if len(response.Entries) != 2 {
+		t.Fatalf("expected 2 root entries, got %d", len(response.Entries))
+	}
+	if !response.Entries[0].IsDir || response.Entries[0].RelativePath != "incoming" {
+		t.Fatalf("first entry = %+v", response.Entries[0])
+	}
+	if !response.Entries[1].IsDir || response.Entries[1].RelativePath != "schemas" {
+		t.Fatalf("second entry = %+v", response.Entries[1])
+	}
+}
+
+func TestHandleFileListBrowsesCurrentDirectoryOnly(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workingRoot, "incoming", "alpha.csv"), "Record ID\n1\n")
+	writeTestFile(t, filepath.Join(server.workingRoot, "incoming", "nested", "beta.csv"), "Record ID\n2\n")
+
+	request := httptest.NewRequest(http.MethodGet, "/api/files?kind=csv&path=incoming", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleFileList(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response FileListResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.CurrentPath != "incoming" {
+		t.Fatalf("current path = %q", response.CurrentPath)
+	}
+	if response.ParentPath != "" {
+		t.Fatalf("parent path = %q, want root parent", response.ParentPath)
+	}
+	if len(response.Entries) != 2 {
+		t.Fatalf("expected 2 incoming entries, got %d", len(response.Entries))
+	}
+	if !response.Entries[0].IsDir || response.Entries[0].RelativePath != "incoming/nested" {
+		t.Fatalf("nested dir entry = %+v", response.Entries[0])
+	}
+	if response.Entries[1].IsDir || response.Entries[1].RelativePath != "incoming/alpha.csv" {
+		t.Fatalf("file entry = %+v", response.Entries[1])
 	}
 }
 
