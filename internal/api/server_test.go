@@ -37,6 +37,32 @@ func TestHandleHealthReturnsIdleStatus(t *testing.T) {
 	}
 }
 
+/* TestHandleHealthReturnsBusyStatus verifies health reflects the active run manager state. */
+func TestHandleHealthReturnsBusyStatus(t *testing.T) {
+	server := NewServer("127.0.0.1", 8080, service.New())
+	if _, err := server.runManager.Create("run-busy", nil); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleHealth(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, recorder.Code)
+	}
+
+	var response HealthResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.Busy {
+		t.Fatalf("expected busy server")
+	}
+}
+
 /* TestHandleValidateAutoRejectsNonLoopback verifies loopback enforcement on run endpoints. */
 func TestHandleValidateAutoRejectsNonLoopback(t *testing.T) {
 	server := NewServer("127.0.0.1", 8080, service.New())
