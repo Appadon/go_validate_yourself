@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go_validate_yourself/internal/console"
+	"go_validate_yourself/internal/progress"
 
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/writer"
@@ -386,7 +386,7 @@ func ListCSVFiles(dir string) ([]string, error) {
 }
 
 /* ProcessDirectory runs parallel file validation using a worker pool. */
-func ProcessDirectory(ctx context.Context, files []string, workers int, successDir, errorDir string, schema SchemaConfig, writeEmptyError bool) (DirectorySummary, error) {
+func ProcessDirectory(ctx context.Context, files []string, workers int, successDir, errorDir string, schema SchemaConfig, writeEmptyError bool, emitter progress.Emitter) (DirectorySummary, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -408,7 +408,7 @@ func ProcessDirectory(ctx context.Context, files []string, workers int, successD
 
 	var received atomic.Int64
 	startedAt := time.Now()
-	doneProgress := startDirectoryProgressReporter(ctx, &received, total, startedAt)
+	doneProgress := startDirectoryProgressReporter(ctx, &received, total, startedAt, emitter)
 
 	summary := DirectorySummary{Files: len(files)}
 	var cancellationErr error
@@ -422,7 +422,11 @@ func ProcessDirectory(ctx context.Context, files []string, workers int, successD
 				continue
 			}
 			summary.FailedFiles++
-			console.Errorf("file=%s status=failed error=%v", r.Input, r.Err)
+			emitter.Log(progress.PhaseValidate, fmt.Sprintf("file=%s status=failed error=%v", r.Input, r.Err), map[string]any{
+				"file_path": r.Input,
+				"status":    "failed",
+				"error":     r.Err.Error(),
+			})
 			continue
 		}
 		summary.TotalRows += r.Stats.TotalRows
@@ -430,7 +434,7 @@ func ProcessDirectory(ctx context.Context, files []string, workers int, successD
 		summary.InvalidRows += r.Stats.InvalidRows
 	}
 	close(doneProgress)
-	printDirectoryFinalProgress(received.Load(), total)
+	printDirectoryFinalProgress(received.Load(), total, startedAt, emitter)
 	if cancellationErr != nil {
 		return summary, cancellationErr
 	}
@@ -479,14 +483,14 @@ func closeResultsOnWorkersDone(results chan<- FileResult, wg *sync.WaitGroup) {
 }
 
 /* startDirectoryProgressReporter starts periodic progress logs for directory mode. */
-func startDirectoryProgressReporter(ctx context.Context, received *atomic.Int64, total int, startedAt time.Time) chan struct{} {
+func startDirectoryProgressReporter(ctx context.Context, received *atomic.Int64, total int, startedAt time.Time, emitter progress.Emitter) chan struct{} {
 	done := make(chan struct{})
-	go reportDirectoryProgress(ctx, done, received, total, startedAt)
+	go reportDirectoryProgress(ctx, done, received, total, startedAt, emitter)
 	return done
 }
 
 /* reportDirectoryProgress emits progress snapshots until done is closed. */
-func reportDirectoryProgress(ctx context.Context, done <-chan struct{}, received *atomic.Int64, total int, startedAt time.Time) {
+func reportDirectoryProgress(ctx context.Context, done <-chan struct{}, received *atomic.Int64, total int, startedAt time.Time, emitter progress.Emitter) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -496,15 +500,12 @@ func reportDirectoryProgress(ctx context.Context, done <-chan struct{}, received
 			pct := directoryPercent(completed, total)
 			elapsed := time.Since(startedAt)
 			rate := directoryRate(completed, elapsed)
-			eta := directoryETA(total-int(completed), rate)
-			console.Progressf(console.ProgressSnapshot{
-				Segments: []string{
-					fmt.Sprintf("%d/%d files", completed, total),
-					fmt.Sprintf("%.2f%%", pct),
-					fmt.Sprintf("%.2f files/s", rate),
-					fmt.Sprintf("eta %s", eta),
-					fmt.Sprintf("elapsed %s", console.FormatDuration(elapsed)),
-				},
+			emitter.Progress(progress.PhaseValidate, pct, map[string]any{
+				"files_completed": completed,
+				"files_total":     total,
+				"files_per_sec":   rate,
+				"eta_seconds":     directoryETASeconds(total-int(completed), rate),
+				"elapsed_seconds": elapsed.Seconds(),
 			})
 		case <-done:
 			return
@@ -531,23 +532,21 @@ func directoryRate(completed int64, elapsed time.Duration) float64 {
 }
 
 /* directoryETA estimates remaining duration from completion rate. */
-func directoryETA(remaining int, rate float64) string {
+func directoryETASeconds(remaining int, rate float64) float64 {
 	if rate <= 0 || remaining < 0 {
-		return "unknown"
+		return -1
 	}
-	return console.FormatDuration(time.Duration(float64(remaining)/rate) * time.Second)
+	return float64(remaining) / rate
 }
 
 /* printDirectoryFinalProgress logs one final completed progress line. */
-func printDirectoryFinalProgress(completed int64, total int) {
-	console.Progressf(console.ProgressSnapshot{
-		Segments: []string{
-			fmt.Sprintf("%d/%d files", completed, total),
-			"100.00%",
-			"0.00 files/s",
-			"eta 0s",
-			"elapsed done",
-		},
+func printDirectoryFinalProgress(completed int64, total int, startedAt time.Time, emitter progress.Emitter) {
+	emitter.Progress(progress.PhaseValidate, 100, map[string]any{
+		"files_completed": completed,
+		"files_total":     total,
+		"files_per_sec":   0.0,
+		"eta_seconds":     0.0,
+		"elapsed_seconds": time.Since(startedAt).Seconds(),
 	})
 }
 
