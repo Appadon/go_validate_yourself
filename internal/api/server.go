@@ -283,6 +283,7 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+/* handleCreateRun accepts upload-driven browser requests and starts a background run. */
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	runID := progress.NewRunID()
 	ws, err := workspace.NewUnder(s.workspaceBaseDir, runID)
@@ -328,6 +329,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+/* handleGetRun returns the latest in-memory snapshot for the requested run id. */
 func (s *Server) handleGetRun(w http.ResponseWriter, _ *http.Request, runID string) {
 	snapshot, ok := s.runManager.Snapshot(runID)
 	if !ok {
@@ -340,6 +342,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, _ *http.Request, runID stri
 	})
 }
 
+/* handleGetRunResult returns the stored terminal result or final error for a finished run. */
 func (s *Server) handleGetRunResult(w http.ResponseWriter, _ *http.Request, runID string) {
 	snapshot, ok := s.runManager.Snapshot(runID)
 	if !ok {
@@ -359,6 +362,7 @@ func (s *Server) handleGetRunResult(w http.ResponseWriter, _ *http.Request, runI
 	})
 }
 
+/* handleRunEvents replays retained events and then streams live progress over SSE. */
 func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID string) {
 	snapshot, events, cancel, err := s.runManager.Subscribe(runID)
 	if err != nil {
@@ -421,6 +425,7 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 	}
 }
 
+/* decodeRunUploads validates and stores multipart browser uploads inside the run workspace. */
 func (s *Server) decodeRunUploads(w http.ResponseWriter, r *http.Request, ws workspace.RunWorkspace) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBodyBytes)
 	if err := r.ParseMultipartForm(maxUploadBodyBytes); err != nil {
@@ -441,6 +446,7 @@ func (s *Server) decodeRunUploads(w http.ResponseWriter, r *http.Request, ws wor
 	return nil
 }
 
+/* executeUploadRun maps a prepared workspace into auto-run options and completes the run asynchronously. */
 func (s *Server) executeUploadRun(runID string, ws workspace.RunWorkspace) {
 	reporter := s.runManager.Reporter(runID)
 	primaryKey, err := s.detectPrimaryKey(ws.InputCSVPath)
@@ -618,6 +624,7 @@ func decodeValidateAutoRequest(r *http.Request) (ValidateAutoRequest, error) {
 	return req, nil
 }
 
+/* parseRunRoute extracts a run id and supported sub-route suffix from /api/runs paths. */
 func parseRunRoute(path string) (string, string, bool) {
 	trimmed := strings.TrimPrefix(path, "/api/runs/")
 	if trimmed == path || trimmed == "" {
@@ -644,6 +651,7 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+/* writeSSEEvent serializes one SSE frame with a JSON payload body. */
 func writeSSEEvent(w io.Writer, eventType, id string, payload any) error {
 	if id != "" {
 		if _, err := fmt.Fprintf(w, "id: %s\n", id); err != nil {
@@ -751,6 +759,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+/* writeMultipartFile copies one uploaded multipart file into the workspace after extension checks. */
 func writeMultipartFile(r *http.Request, field, ext, destination string) error {
 	file, header, err := r.FormFile(field)
 	if err != nil {
@@ -790,6 +799,7 @@ func writeMultipartFile(r *http.Request, field, ext, destination string) error {
 	return nil
 }
 
+/* classifyUploadError maps upload parsing and validation failures into stable API error codes. */
 func classifyUploadError(err error) (int, string) {
 	message := err.Error()
 	switch {

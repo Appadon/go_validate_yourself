@@ -332,6 +332,7 @@ func (m *Manager) Subscribe(runID string) (Snapshot, <-chan progress.Event, func
 	return snapshot, ch, cancel, nil
 }
 
+/* lookup returns the mutable record for a run id or ErrRunNotFound when absent. */
 func (m *Manager) lookup(runID string) (*runRecord, error) {
 	record := m.runs[runID]
 	if record == nil {
@@ -340,6 +341,7 @@ func (m *Manager) lookup(runID string) (*runRecord, error) {
 	return record, nil
 }
 
+/* cloneSnapshot deep-copies mutable snapshot fields before returning them to callers. */
 func cloneSnapshot(snapshot Snapshot) Snapshot {
 	cloned := snapshot
 	cloned.Workspace = cloneWorkspace(snapshot.Workspace)
@@ -364,6 +366,7 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 	return cloned
 }
 
+/* cloneWorkspace copies workspace metadata so callers cannot mutate manager state. */
 func cloneWorkspace(ws *workspace.RunWorkspace) *workspace.RunWorkspace {
 	if ws == nil {
 		return nil
@@ -372,6 +375,7 @@ func cloneWorkspace(ws *workspace.RunWorkspace) *workspace.RunWorkspace {
 	return &cloned
 }
 
+/* cloneEvent deep-copies optional progress fields for safe snapshot retention and fanout. */
 func cloneEvent(event progress.Event) progress.Event {
 	cloned := event
 	if event.Percent != nil {
@@ -387,6 +391,7 @@ func cloneEvent(event progress.Event) progress.Event {
 	return cloned
 }
 
+/* persistSnapshot writes the latest run snapshot into the workspace metadata file when configured. */
 func persistSnapshot(snapshot Snapshot) error {
 	if snapshot.Workspace == nil || snapshot.Workspace.MetadataPath == "" {
 		return nil
@@ -404,6 +409,7 @@ func persistSnapshot(snapshot Snapshot) error {
 	return nil
 }
 
+/* closeSubscribers closes and removes all live event subscribers for a finished run. */
 func closeSubscribers(subscribers map[int]chan progress.Event) {
 	for id, ch := range subscribers {
 		close(ch)
