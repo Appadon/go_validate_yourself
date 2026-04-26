@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -92,7 +93,7 @@ func parseFlags() cliOptions {
 	flag.StringVar(&opts.inputDir, "dir", "", "Directory containing CSV files to validate")
 	flag.IntVar(&opts.threads, "t", service.DefaultThreadCount(), "Number of concurrent workers for -dir mode")
 	flag.BoolVar(&opts.writeEmptyError, "write-empty-error", false, "Write empty error CSV files for fully valid inputs")
-	flag.BoolVar(&opts.clearCache, "clear-validation-cache", false, "Clear split/success/error directories before auto mode run")
+	flag.BoolVar(&opts.clearCache, "clear-validation-cache", false, "Clear success/error/batch directories before auto mode run")
 	flag.StringVar(&opts.successDir, "success-dir", "success", "Directory for valid parquet output")
 	flag.StringVar(&opts.errorDir, "error-dir", "errors", "Directory for validation error CSV output")
 	flag.StringVar(&opts.splitInput, "split-input", "", "Input CSV file to split by primary key")
@@ -335,7 +336,7 @@ func runAutoMode(opts cliOptions, args []string) {
 		BatchThreadSource:    threadSource,
 	})
 
-	_, err = service.New().RunAuto(service.AutoOptions{
+	_, err = service.New().RunAuto(context.Background(), service.AutoOptions{
 		MainInputCSV:         mainInput,
 		SchemaPath:           schemaPath,
 		SplitOutputDir:       opts.splitOutputDir,
@@ -396,7 +397,7 @@ func runBatchMode(opts cliOptions, args []string) {
 	}
 
 	printBatchModeBanner(batchDir, opts.batchExportDir, batchSize, threads, threadSource, clearValidationCache)
-	_, err = service.New().RunBatch(service.BatchOptions{
+	_, err = service.New().RunBatch(context.Background(), service.BatchOptions{
 		InputDir:       batchDir,
 		OutputDir:      opts.batchExportDir,
 		BatchSize:      batchSize,
@@ -591,6 +592,7 @@ func printUsage() {
 	fmt.Fprintf(out, "      -batch-export-dir=<path> (default batch_export)\n")
 	fmt.Fprintf(out, "    Notes:\n")
 	fmt.Fprintf(out, "      - If -split-primary-key is omitted, the first CSV header is used.\n")
+	fmt.Fprintf(out, "      - Split output is reused automatically when the input hash and split settings match.\n")
 
 	fmt.Fprintf(out, "  single-file validation mode:\n")
 	fmt.Fprintf(out, "    Validates one CSV using a schema.\n")
@@ -644,7 +646,7 @@ func printUsage() {
 
 /* runSingleFileValidation delegates single-file validation to the shared service layer. */
 func runSingleFileValidation(input, schemaPath, successDir, errorDir string, writeEmptyError bool) {
-	_, err := service.New().RunValidateFile(service.ValidateOptions{
+	_, err := service.New().RunValidateFile(context.Background(), service.ValidateOptions{
 		SchemaPath:      schemaPath,
 		InputCSV:        input,
 		WriteEmptyError: writeEmptyError,
@@ -658,7 +660,7 @@ func runSingleFileValidation(input, schemaPath, successDir, errorDir string, wri
 
 /* runDirectoryValidation delegates directory validation to the shared service layer. */
 func runDirectoryValidation(inputDir, schemaPath string, threads int, successDir, errorDir string, writeEmptyError bool) {
-	_, err := service.New().RunValidateDir(service.ValidateOptions{
+	_, err := service.New().RunValidateDir(context.Background(), service.ValidateOptions{
 		SchemaPath:      schemaPath,
 		InputDir:        inputDir,
 		Threads:         threads,
@@ -673,7 +675,7 @@ func runDirectoryValidation(inputDir, schemaPath string, threads int, successDir
 
 /* runSplitMode delegates split execution to the shared service layer. */
 func runSplitMode(input, outDir, primaryKey, missingFile string, maxOpen int) {
-	_, err := service.New().RunSplit(service.SplitOptions{
+	_, err := service.New().RunSplit(context.Background(), service.SplitOptions{
 		InputPath:       input,
 		OutputDir:       outDir,
 		PrimaryKey:      primaryKey,
@@ -687,7 +689,7 @@ func runSplitMode(input, outDir, primaryKey, missingFile string, maxOpen int) {
 
 /* runBatchParquetMode delegates batch execution to the shared service layer. */
 func runBatchParquetMode(batchDir, batchExportDir string, batchSize, workers int) {
-	_, err := service.New().RunBatch(service.BatchOptions{
+	_, err := service.New().RunBatch(context.Background(), service.BatchOptions{
 		InputDir:  batchDir,
 		OutputDir: batchExportDir,
 		BatchSize: batchSize,

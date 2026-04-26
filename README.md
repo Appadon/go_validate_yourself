@@ -129,11 +129,13 @@ Implicit:
 Behavior:
 
 - runs split, then directory validation, then batch export
+- reuses the existing `split/` output automatically when the input hash and split settings match
 - uses the first CSV header as the split key if `-split-primary-key` is omitted
 - defaults worker count to roughly 60 percent of CPU cores
 - defaults `-batch-size` to `1000`
 - defaults `-batch-dir` to `-success-dir`
 - defaults `-clear-validation-cache` to `true` only when auto mode is inferred without `-mode`
+- `-clear-validation-cache` clears validation and batch outputs, but keeps reusable split output cache
 
 ### Validate mode
 

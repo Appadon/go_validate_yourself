@@ -165,8 +165,12 @@ func (s *Server) handleValidateAuto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.service.RunAuto(opts)
+	result, err := s.service.RunAuto(r.Context(), opts)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			writeAPIError(w, http.StatusRequestTimeout, "REQUEST_CANCELED", err.Error())
+			return
+		}
 		writeAPIError(w, http.StatusInternalServerError, "VALIDATION_FAILED", err.Error())
 		return
 	}

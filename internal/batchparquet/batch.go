@@ -1,6 +1,7 @@
 package batchparquet
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -54,7 +55,10 @@ func ListParquetFiles(dir string) ([]string, error) {
 }
 
 /* BatchDirectory combines parquet files into fixed-size file batches. */
-func BatchDirectory(inputDir, outputDir string, batchSize int, workers int) (Summary, error) {
+func BatchDirectory(ctx context.Context, inputDir, outputDir string, batchSize int, workers int) (Summary, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if strings.TrimSpace(inputDir) == "" {
 		return Summary{}, fmt.Errorf("missing batch input directory")
 	}
@@ -104,7 +108,7 @@ func BatchDirectory(inputDir, outputDir string, batchSize int, workers int) (Sum
 
 	var completedFiles atomic.Int64
 	startedAt := time.Now()
-	doneProgress := startBatchProgressReporter(&completedFiles, len(files), startedAt)
+	doneProgress := startBatchProgressReporter(ctx, &completedFiles, len(files), startedAt)
 	defer close(doneProgress)
 
 	summary := Summary{
@@ -117,7 +121,7 @@ func BatchDirectory(inputDir, outputDir string, batchSize int, workers int) (Sum
 	jobs := make(chan batchJob)
 	results := make(chan batchResult, workers*2)
 	for i := 0; i < workers; i++ {
-		go batchWorker(jobs, results, func() {
+		go batchWorker(ctx, jobs, results, func() {
 			completedFiles.Add(1)
 		})
 	}
@@ -138,23 +142,31 @@ func BatchDirectory(inputDir, outputDir string, batchSize int, workers int) (Sum
 	}
 	expected := len(batchJobs)
 	go func() {
+		defer close(jobs)
 		for _, job := range batchJobs {
-			jobs <- job
+			select {
+			case <-ctx.Done():
+				return
+			case jobs <- job:
+			}
 		}
-		close(jobs)
 	}()
 
 	var firstErr error
 	for i := 0; i < expected; i++ {
-		r := <-results
-		if r.err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("write batch %d: %w", r.number, r.err)
+		select {
+		case <-ctx.Done():
+			return summary, ctx.Err()
+		case r := <-results:
+			if r.err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("write batch %d: %w", r.number, r.err)
+			}
+			if r.err != nil {
+				continue
+			}
+			summary.TotalRows += r.rowsWritten
+			summary.Batches++
 		}
-		if r.err != nil {
-			continue
-		}
-		summary.TotalRows += r.rowsWritten
-		summary.Batches++
 	}
 
 	printBatchFinalProgress(completedFiles.Load(), len(files))
@@ -178,9 +190,9 @@ type batchResult struct {
 }
 
 /* batchWorker processes one batch job at a time and returns write results. */
-func batchWorker(jobs <-chan batchJob, results chan<- batchResult, onFileDone func()) {
+func batchWorker(ctx context.Context, jobs <-chan batchJob, results chan<- batchResult, onFileDone func()) {
 	for job := range jobs {
-		rowsWritten, err := writeBatchParquet(job.files, job.outputPath, onFileDone)
+		rowsWritten, err := writeBatchParquet(ctx, job.files, job.outputPath, onFileDone)
 		results <- batchResult{
 			number:      job.number,
 			rowsWritten: rowsWritten,
@@ -190,7 +202,7 @@ func batchWorker(jobs <-chan batchJob, results chan<- batchResult, onFileDone fu
 }
 
 /* writeBatchParquet merges a set of parquet files into one output parquet file. */
-func writeBatchParquet(batchFiles []string, outputPath string, onFileDone func()) (int64, error) {
+func writeBatchParquet(ctx context.Context, batchFiles []string, outputPath string, onFileDone func()) (int64, error) {
 	var totalRows int64
 	var outWriter *writer.ParquetWriter
 	var outFile source.ParquetFile
@@ -207,6 +219,9 @@ func writeBatchParquet(batchFiles []string, outputPath string, onFileDone func()
 	}()
 
 	for _, filePath := range batchFiles {
+		if err := ctx.Err(); err != nil {
+			return totalRows, err
+		}
 		if err := validateBatchInputFile(filePath); err != nil {
 			return totalRows, err
 		}
@@ -253,6 +268,11 @@ func writeBatchParquet(batchFiles []string, outputPath string, onFileDone func()
 
 		remaining := inReader.GetNumRows()
 		for remaining > 0 {
+			if err := ctx.Err(); err != nil {
+				inReader.ReadStop()
+				_ = inFile.Close()
+				return totalRows, err
+			}
 			toRead := readChunkSize
 			if int64(toRead) > remaining {
 				toRead = int(remaining)
@@ -267,6 +287,11 @@ func writeBatchParquet(batchFiles []string, outputPath string, onFileDone func()
 				break
 			}
 			for _, row := range rows {
+				if err := ctx.Err(); err != nil {
+					inReader.ReadStop()
+					_ = inFile.Close()
+					return totalRows, err
+				}
 				if err := outWriter.Write(row); err != nil {
 					inReader.ReadStop()
 					_ = inFile.Close()
@@ -286,6 +311,9 @@ func writeBatchParquet(batchFiles []string, outputPath string, onFileDone func()
 
 	if outWriter == nil {
 		return 0, fmt.Errorf("no parquet data found in batch")
+	}
+	if err := ctx.Err(); err != nil {
+		return totalRows, err
 	}
 	if err := outWriter.WriteStop(); err != nil {
 		return totalRows, fmt.Errorf("finalize batch parquet: %w", err)
@@ -339,14 +367,14 @@ func schemaWithExternalNames(schemaList []*parquet.SchemaElement, infos []*commo
 }
 
 /* startBatchProgressReporter launches periodic batch progress logging. */
-func startBatchProgressReporter(completed *atomic.Int64, total int, startedAt time.Time) chan struct{} {
+func startBatchProgressReporter(ctx context.Context, completed *atomic.Int64, total int, startedAt time.Time) chan struct{} {
 	done := make(chan struct{})
-	go reportBatchProgress(done, completed, total, startedAt)
+	go reportBatchProgress(ctx, done, completed, total, startedAt)
 	return done
 }
 
 /* reportBatchProgress prints standardized progress snapshots until done is closed. */
-func reportBatchProgress(done <-chan struct{}, completed *atomic.Int64, total int, startedAt time.Time) {
+func reportBatchProgress(ctx context.Context, done <-chan struct{}, completed *atomic.Int64, total int, startedAt time.Time) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -367,6 +395,8 @@ func reportBatchProgress(done <-chan struct{}, completed *atomic.Int64, total in
 				},
 			})
 		case <-done:
+			return
+		case <-ctx.Done():
 			return
 		}
 	}

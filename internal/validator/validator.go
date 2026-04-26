@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -191,7 +192,10 @@ func ValidateSchema(cfg *SchemaConfig) error {
 }
 
 /* RunValidationAndWriteParquet validates one CSV and writes parquet + error CSV outputs. */
-func RunValidationAndWriteParquet(input, successOutput, errorOutput string, schema SchemaConfig, writeEmptyError bool) (Stats, error) {
+func RunValidationAndWriteParquet(ctx context.Context, input, successOutput, errorOutput string, schema SchemaConfig, writeEmptyError bool) (Stats, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	state := &validationOutputState{
 		successOutput: successOutput,
 		errorOutput:   errorOutput,
@@ -214,11 +218,14 @@ func RunValidationAndWriteParquet(input, successOutput, errorOutput string, sche
 	}
 	defer parquetFile.Close()
 
-	stats, invalidRows, err := validateAndWriteRows(reader, headerIdx, schema, pWriter)
+	stats, invalidRows, err := validateAndWriteRows(ctx, reader, headerIdx, schema, pWriter)
 	if err != nil {
 		return stats, err
 	}
 
+	if err := ctx.Err(); err != nil {
+		return stats, err
+	}
 	if err := pWriter.WriteStop(); err != nil {
 		return stats, fmt.Errorf("close parquet writer: %w", err)
 	}
@@ -301,12 +308,15 @@ func openParquetWriter(successOutput string, schema SchemaConfig) (*writer.CSVWr
 }
 
 /* validateAndWriteRows validates each CSV row, writes valid rows to parquet, and captures invalid rows. */
-func validateAndWriteRows(reader *csv.Reader, headerIdx map[string]int, schema SchemaConfig, pWriter *writer.CSVWriter) (Stats, []InvalidRow, error) {
+func validateAndWriteRows(ctx context.Context, reader *csv.Reader, headerIdx map[string]int, schema SchemaConfig, pWriter *writer.CSVWriter) (Stats, []InvalidRow, error) {
 	stats := Stats{}
 	invalidRows := make([]InvalidRow, 0)
 	rowNum := 1
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return stats, invalidRows, err
+		}
 		rowNum++
 		record, err := reader.Read()
 		if errors.Is(err, io.EOF) {
@@ -376,7 +386,10 @@ func ListCSVFiles(dir string) ([]string, error) {
 }
 
 /* ProcessDirectory runs parallel file validation using a worker pool. */
-func ProcessDirectory(files []string, workers int, successDir, errorDir string, schema SchemaConfig, writeEmptyError bool) DirectorySummary {
+func ProcessDirectory(ctx context.Context, files []string, workers int, successDir, errorDir string, schema SchemaConfig, writeEmptyError bool) (DirectorySummary, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if workers < 1 {
 		workers = 1
 	}
@@ -387,20 +400,27 @@ func ProcessDirectory(files []string, workers int, successDir, errorDir string, 
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go directoryWorker(jobs, results, successDir, errorDir, schema, writeEmptyError, &wg)
+		go directoryWorker(ctx, jobs, results, successDir, errorDir, schema, writeEmptyError, &wg)
 	}
 
-	go dispatchValidationJobs(files, jobs)
+	go dispatchValidationJobs(ctx, files, jobs)
 	go closeResultsOnWorkersDone(results, &wg)
 
 	var received atomic.Int64
 	startedAt := time.Now()
-	doneProgress := startDirectoryProgressReporter(&received, total, startedAt)
+	doneProgress := startDirectoryProgressReporter(ctx, &received, total, startedAt)
 
 	summary := DirectorySummary{Files: len(files)}
+	var cancellationErr error
 	for r := range results {
+		if (errors.Is(r.Err, context.Canceled) || errors.Is(r.Err, context.DeadlineExceeded)) && cancellationErr == nil {
+			cancellationErr = r.Err
+		}
 		received.Add(1)
 		if r.Err != nil {
+			if cancellationErr != nil {
+				continue
+			}
 			summary.FailedFiles++
 			console.Errorf("file=%s status=failed error=%v", r.Input, r.Err)
 			continue
@@ -411,15 +431,25 @@ func ProcessDirectory(files []string, workers int, successDir, errorDir string, 
 	}
 	close(doneProgress)
 	printDirectoryFinalProgress(received.Load(), total)
-	return summary
+	if cancellationErr != nil {
+		return summary, cancellationErr
+	}
+	if err := ctx.Err(); err != nil {
+		return summary, err
+	}
+	return summary, nil
 }
 
 /* directoryWorker processes input files from jobs and sends one result per file. */
-func directoryWorker(jobs <-chan string, results chan<- FileResult, successDir, errorDir string, schema SchemaConfig, writeEmptyError bool, wg *sync.WaitGroup) {
+func directoryWorker(ctx context.Context, jobs <-chan string, results chan<- FileResult, successDir, errorDir string, schema SchemaConfig, writeEmptyError bool, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for input := range jobs {
+		if err := ctx.Err(); err != nil {
+			results <- FileResult{Input: input, Err: err}
+			return
+		}
 		parquetPath, errorPath := OutputPaths(input, successDir, errorDir)
-		stats, err := RunValidationAndWriteParquet(input, parquetPath, errorPath, schema, writeEmptyError)
+		stats, err := RunValidationAndWriteParquet(ctx, input, parquetPath, errorPath, schema, writeEmptyError)
 		results <- FileResult{
 			Input:       input,
 			ParquetPath: parquetPath,
@@ -431,11 +461,15 @@ func directoryWorker(jobs <-chan string, results chan<- FileResult, successDir, 
 }
 
 /* dispatchValidationJobs enqueues all files and closes jobs when dispatch is complete. */
-func dispatchValidationJobs(files []string, jobs chan<- string) {
+func dispatchValidationJobs(ctx context.Context, files []string, jobs chan<- string) {
+	defer close(jobs)
 	for _, f := range files {
-		jobs <- f
+		select {
+		case <-ctx.Done():
+			return
+		case jobs <- f:
+		}
 	}
-	close(jobs)
 }
 
 /* closeResultsOnWorkersDone closes results after all workers finish. */
@@ -445,14 +479,14 @@ func closeResultsOnWorkersDone(results chan<- FileResult, wg *sync.WaitGroup) {
 }
 
 /* startDirectoryProgressReporter starts periodic progress logs for directory mode. */
-func startDirectoryProgressReporter(received *atomic.Int64, total int, startedAt time.Time) chan struct{} {
+func startDirectoryProgressReporter(ctx context.Context, received *atomic.Int64, total int, startedAt time.Time) chan struct{} {
 	done := make(chan struct{})
-	go reportDirectoryProgress(done, received, total, startedAt)
+	go reportDirectoryProgress(ctx, done, received, total, startedAt)
 	return done
 }
 
 /* reportDirectoryProgress emits progress snapshots until done is closed. */
-func reportDirectoryProgress(done <-chan struct{}, received *atomic.Int64, total int, startedAt time.Time) {
+func reportDirectoryProgress(ctx context.Context, done <-chan struct{}, received *atomic.Int64, total int, startedAt time.Time) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -473,6 +507,8 @@ func reportDirectoryProgress(done <-chan struct{}, received *atomic.Int64, total
 				},
 			})
 		case <-done:
+			return
+		case <-ctx.Done():
 			return
 		}
 	}

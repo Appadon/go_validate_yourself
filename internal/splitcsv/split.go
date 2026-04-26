@@ -2,7 +2,11 @@ package splitcsv
 
 import (
 	"container/list"
+	"context"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +19,8 @@ import (
 
 	"go_validate_yourself/internal/console"
 )
+
+const cacheMetadataFileName = ".gvy-split-cache.json"
 
 /* Config defines behavior for splitting one CSV into many files by key. */
 type Config struct {
@@ -31,6 +37,15 @@ type Summary struct {
 	SplitRows      int
 	MissingKeyRows int
 	OutputFiles    int
+}
+
+/* CacheMetadata captures the input signature for a reusable split directory. */
+type CacheMetadata struct {
+	InputPath       string    `json:"input_path"`
+	InputHash       string    `json:"input_hash"`
+	PrimaryKey      string    `json:"primary_key"`
+	MissingKeysFile string    `json:"missing_keys_file"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type writerEntry struct {
@@ -50,7 +65,10 @@ type writerCache struct {
 }
 
 /* SplitByPrimaryKey streams one CSV and writes each row to one output file per primary-key value. */
-func SplitByPrimaryKey(cfg Config) (Summary, error) {
+func SplitByPrimaryKey(ctx context.Context, cfg Config) (Summary, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cfg, err := normalizeSplitConfig(cfg)
 	if err != nil {
 		return Summary{}, err
@@ -76,13 +94,13 @@ func SplitByPrimaryKey(cfg Config) (Summary, error) {
 	var totalRows atomic.Int64
 	var missingRows atomic.Int64
 	startedAt := time.Now()
-	doneProgress := startSplitProgressReporter(&totalRows, &missingRows, counter, inputSize, startedAt)
+	doneProgress := startSplitProgressReporter(ctx, &totalRows, &missingRows, counter, inputSize, startedAt)
 	defer close(doneProgress)
 
 	missing := newMissingRowWriter(cfg.OutputDir, cfg.MissingKeysFile, header)
 	defer missing.Close()
 
-	summary, err := processSplitRows(reader, header, keyIdx, cache, missing, &totalRows, &missingRows)
+	summary, err := processSplitRows(ctx, reader, header, keyIdx, cache, missing, &totalRows, &missingRows)
 	if err != nil {
 		return summary, err
 	}
@@ -96,6 +114,71 @@ func SplitByPrimaryKey(cfg Config) (Summary, error) {
 	summary.OutputFiles = cache.createdFiles
 	printSplitFinalProgress(totalRows.Load(), missingRows.Load(), counter.bytesRead.Load(), startedAt)
 	return summary, nil
+}
+
+/* HashFile returns a stable SHA-256 hash for one input file. */
+func HashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open input for hashing: %w", err)
+	}
+	defer f.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", fmt.Errorf("hash input: %w", err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+/* CacheMetadataPath returns the metadata file path stored in a split output directory. */
+func CacheMetadataPath(outputDir string) string {
+	return filepath.Join(outputDir, cacheMetadataFileName)
+}
+
+/* ReadCacheMetadata loads split cache metadata from the output directory. */
+func ReadCacheMetadata(outputDir string) (CacheMetadata, error) {
+	data, err := os.ReadFile(CacheMetadataPath(outputDir))
+	if err != nil {
+		return CacheMetadata{}, err
+	}
+
+	var meta CacheMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return CacheMetadata{}, fmt.Errorf("decode split cache metadata: %w", err)
+	}
+	return meta, nil
+}
+
+/* WriteCacheMetadata persists split cache metadata into the output directory. */
+func WriteCacheMetadata(outputDir string, meta CacheMetadata) error {
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("create split output dir for cache metadata: %w", err)
+	}
+
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode split cache metadata: %w", err)
+	}
+	data = append(data, '\n')
+
+	path := CacheMetadataPath(outputDir)
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
+		return fmt.Errorf("write split cache metadata temp file: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("commit split cache metadata: %w", err)
+	}
+	return nil
+}
+
+/* Matches reports whether metadata matches the current split-relevant inputs. */
+func (m CacheMetadata) Matches(inputHash, primaryKey, missingKeysFile string) bool {
+	return strings.TrimSpace(m.InputHash) == strings.TrimSpace(inputHash) &&
+		strings.TrimSpace(m.PrimaryKey) == strings.TrimSpace(primaryKey) &&
+		strings.TrimSpace(m.MissingKeysFile) == strings.TrimSpace(missingKeysFile)
 }
 
 /* normalizeSplitConfig validates mandatory options and fills default values. */
@@ -168,14 +251,14 @@ func newWriterCache(cfg Config, header []string) *writerCache {
 }
 
 /* startSplitProgressReporter starts periodic progress logs for split mode. */
-func startSplitProgressReporter(totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time) chan struct{} {
+func startSplitProgressReporter(ctx context.Context, totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time) chan struct{} {
 	done := make(chan struct{})
-	go reportSplitProgress(done, totalRows, missingRows, counter, inputSize, startedAt)
+	go reportSplitProgress(ctx, done, totalRows, missingRows, counter, inputSize, startedAt)
 	return done
 }
 
 /* reportSplitProgress emits split progress snapshots until done is closed. */
-func reportSplitProgress(done <-chan struct{}, totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time) {
+func reportSplitProgress(ctx context.Context, done <-chan struct{}, totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -204,6 +287,8 @@ func reportSplitProgress(done <-chan struct{}, totalRows, missingRows *atomic.In
 				},
 			})
 		case <-done:
+			return
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -259,9 +344,12 @@ func printSplitFinalProgress(rows, missing, readBytes int64, startedAt time.Time
 }
 
 /* processSplitRows performs the input streaming loop and dispatches records by key. */
-func processSplitRows(reader *csv.Reader, header []string, keyIdx int, cache *writerCache, missing *missingRowWriter, totalRows, missingRows *atomic.Int64) (Summary, error) {
+func processSplitRows(ctx context.Context, reader *csv.Reader, header []string, keyIdx int, cache *writerCache, missing *missingRowWriter, totalRows, missingRows *atomic.Int64) (Summary, error) {
 	summary := Summary{}
 	for {
+		if err := ctx.Err(); err != nil {
+			return summary, err
+		}
 		record, err := reader.Read()
 		if errors.Is(err, io.EOF) {
 			return summary, nil
