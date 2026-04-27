@@ -24,6 +24,10 @@
       csv: "",
       schema: "",
     },
+    pickerSelection: {
+      csv: "",
+      schema: "",
+    },
     selected: {
       csv: "",
       schema: "",
@@ -105,7 +109,12 @@
     });
 
     els.pickerSelect.addEventListener("change", function () {
-      renderPicker();
+      const kind = state.browser.activeKind;
+      if (!kind) {
+        return;
+      }
+      state.pickerSelection[kind] = els.pickerSelect.value || "";
+      updatePickerSelectionState();
     });
 
     els.pickerSelect.addEventListener("dblclick", function () {
@@ -161,8 +170,8 @@
       state.browser[kind].currentPath = payload.current_path || "";
       state.browser[kind].parentPath = payload.parent_path || "";
       state.browser[kind].entries = payload.entries || [];
-      if (!hasRelativePath(kind, state.selected[kind])) {
-        state.selected[kind] = "";
+      if (!hasRelativePath(kind, state.pickerSelection[kind])) {
+        state.pickerSelection[kind] = "";
       }
       renderPicker();
       renderSelectionSummary(kind);
@@ -431,6 +440,7 @@
     const files = filteredFiles(kind);
     const directories = filteredDirectories(kind);
     const currentPath = state.browser[kind].currentPath || "";
+    const selectedValue = state.pickerSelection[kind] || "";
 
     els.pickerTitle.textContent = kind === "csv" ? "Select CSV file" : "Select schema file";
     els.pickerSubtitle.textContent = kind === "csv" ? "Browse the working directory and choose one CSV file." : "Browse the working directory and choose one schema JSON file.";
@@ -462,19 +472,18 @@
         const option = document.createElement("option");
         option.value = entry.relative_path;
         option.textContent = entry.name;
-        if (entry.relative_path === currentPickerValue()) {
+        if (entry.relative_path === selectedValue) {
           option.selected = true;
         }
         select.appendChild(option);
       });
-      if (!currentPickerValue() && files.length) {
+      if (!selectedValue && files.length) {
         select.selectedIndex = -1;
       }
     }
 
     updateFileCount(kind, directories.length + " dirs · " + fileEntries(kind).length + " files");
-    els.pickerSelectionSummary.textContent = currentPickerValue() ? currentPickerValue() : "No file selected.";
-    els.pickerChooseButton.disabled = !currentPickerValue();
+    updatePickerSelectionState();
   }
 
   function renderRunState() {
@@ -662,6 +671,7 @@
 
   function openPicker(kind) {
     state.browser.activeKind = kind;
+    state.pickerSelection[kind] = state.selected[kind] || "";
     if (!state.browser[kind].entries.length) {
       loadFileList(kind, state.browser[kind].currentPath);
     }
@@ -674,7 +684,8 @@
   }
 
   function currentPickerValue() {
-    return els.pickerSelect.value || "";
+    const kind = state.browser.activeKind;
+    return kind ? state.pickerSelection[kind] || "" : "";
   }
 
   function commitPickerSelection() {
@@ -687,6 +698,13 @@
     clearFormMessage();
     closePicker();
     render();
+  }
+
+  function updatePickerSelectionState() {
+    const kind = state.browser.activeKind;
+    const value = kind ? state.pickerSelection[kind] || "" : "";
+    els.pickerSelectionSummary.textContent = value ? value : "No file selected.";
+    els.pickerChooseButton.disabled = !value;
   }
 
   function updateFileCount(kind, text) {
