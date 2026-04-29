@@ -118,11 +118,11 @@ func parseFlags() cliOptions {
 	flag.StringVar(&opts.configPath, "config", "", "GVY run config JSON file")
 	flag.BoolVar(&opts.printConfig, "print-config", false, "Print the resolved effective config and exit")
 	flag.StringVar(&opts.phases, "phases", "", "Comma-separated pipeline phases: split,validate,batch")
-	flag.StringVar(&opts.schemaPath, "schema", "", "Schema JSON file (required)")
+	flag.StringVar(&opts.schemaPath, "schema", "", "Schema JSON file for validation phases")
 	flag.StringVar(&opts.inputDir, "dir", "", "Directory containing CSV files to validate")
-	flag.IntVar(&opts.threads, "t", service.DefaultThreadCount(), "Number of concurrent workers for -dir mode")
+	flag.IntVar(&opts.threads, "t", service.DefaultThreadCount(), "Number of concurrent workers for validation and batch phases")
 	flag.BoolVar(&opts.writeEmptyError, "write-empty-error", false, "Write empty error CSV files for fully valid inputs")
-	flag.BoolVar(&opts.clearCache, "clear-validation-cache", false, "Clear success/error/batch directories before auto mode run")
+	flag.BoolVar(&opts.clearCache, "clear-validation-cache", false, "Clear success/error/batch directories before compatible full auto runs")
 	flag.StringVar(&opts.successDir, "success-dir", "success", "Directory for valid parquet output")
 	flag.StringVar(&opts.errorDir, "error-dir", "errors", "Directory for validation error CSV output")
 	flag.StringVar(&opts.splitInput, "split-input", "", "Input CSV file to split by primary key")
@@ -131,7 +131,7 @@ func parseFlags() cliOptions {
 	flag.IntVar(&opts.splitMaxOpen, "split-max-open", 256, "Maximum number of concurrently open split file writers")
 	flag.StringVar(&opts.splitMissingFile, "split-missing-file", "missing_keys.csv", "Name for rows where split key is blank")
 	flag.IntVar(&opts.batchSize, "batch-size", 1000, "Number of parquet files per output batch")
-	flag.StringVar(&opts.batchDir, "batch-dir", "", "Directory containing parquet files for batch mode (defaults to success-dir in auto mode)")
+	flag.StringVar(&opts.batchDir, "batch-dir", "", "Directory containing parquet files for batch mode, or batch input override")
 	flag.StringVar(&opts.batchExportDir, "batch-export-dir", "batch_export", "Directory for batch mode output parquet files")
 	flag.StringVar(&opts.host, "host", "127.0.0.1", "Host for server mode")
 	flag.IntVar(&opts.port, "port", 8080, "Port for server mode")
@@ -847,7 +847,7 @@ func printUsageAndExit(code int) {
 	exitWithCode(code)
 }
 
-/* printUsage writes complete CLI help, including the new server mode. */
+/* printUsage writes complete CLI help, including config-first execution and API notes. */
 func printUsage() {
 	out := flag.CommandLine.Output()
 	bin := filepath.Base(os.Args[0])
@@ -865,13 +865,16 @@ func printUsage() {
 
 	fmt.Fprintf(out, "\nModes:\n")
 	fmt.Fprintf(out, "  config-driven pipeline:\n")
-	fmt.Fprintf(out, "    Loads a GVY run config JSON file and resolves it into explicit split, validate, and batch phases.\n")
+	fmt.Fprintf(out, "    Preferred contract for new automation. Loads a GVY run config JSON file and resolves it into explicit phases.\n")
 	fmt.Fprintf(out, "    CLI flags override config file values.\n")
 	fmt.Fprintf(out, "    Optional: -phases split,validate,batch to override the configured phase list.\n")
 	fmt.Fprintf(out, "    Optional: -print-config to print the resolved effective config and exit.\n")
+	fmt.Fprintf(out, "    Modes expand to phases unless pipeline.phases is set: auto => split,validate,batch.\n")
+	fmt.Fprintf(out, "    Minimal auto config:\n")
+	fmt.Fprintf(out, "      {\"mode\":\"auto\",\"inputs\":{\"main_csv\":\"main.csv\",\"schema\":\"schema.json\"}}\n")
 
 	fmt.Fprintf(out, "  auto mode:\n")
-	fmt.Fprintf(out, "    Splits a main CSV by primary key, validates split files, then batches success parquet outputs.\n")
+	fmt.Fprintf(out, "    CLI compatibility shortcut for config mode=auto: split, validate, then batch.\n")
 	fmt.Fprintf(out, "    Required positional args:\n")
 	fmt.Fprintf(out, "      <main.csv> <schema.json>\n")
 	fmt.Fprintf(out, "    Optional flags:\n")
@@ -913,9 +916,15 @@ func printUsage() {
 	fmt.Fprintf(out, "    Optional: -clear-validation-cache=true|false (default true in batch mode)\n")
 
 	fmt.Fprintf(out, "  server mode:\n")
-	fmt.Fprintf(out, "    Starts the localhost-only HTTP API.\n")
+	fmt.Fprintf(out, "    Starts the localhost-only HTTP API and browser UI.\n")
 	fmt.Fprintf(out, "    Optional: -host <addr> (default 127.0.0.1)\n")
 	fmt.Fprintf(out, "    Optional: -port <n> (default 8080)\n")
+	fmt.Fprintf(out, "    Config-first API endpoints:\n")
+	fmt.Fprintf(out, "      GET  /api/config/defaults\n")
+	fmt.Fprintf(out, "      POST /api/config/resolve\n")
+	fmt.Fprintf(out, "      POST /api/runs/config\n")
+	fmt.Fprintf(out, "    Compatibility endpoint:\n")
+	fmt.Fprintf(out, "      POST /run/validate-auto\n")
 
 	fmt.Fprintf(out, "\nHelp:\n")
 	fmt.Fprintf(out, "  -h, -help\n")
@@ -936,6 +945,8 @@ func printUsage() {
 	fmt.Fprintf(out, "  %s -config gvy.config.json -phases split\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -phases validate,batch -dir split/\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -print-config\n", bin)
+	fmt.Fprintf(out, "  curl -s http://127.0.0.1:8080/api/config/defaults\n")
+	fmt.Fprintf(out, "  curl -s -X POST http://127.0.0.1:8080/api/config/resolve -H 'Content-Type: application/json' --data '{\"mode\":\"auto\",\"inputs\":{\"main_csv\":\"main.csv\",\"schema\":\"schema.json\"}}'\n")
 }
 
 /* isLoopbackHost reports whether the provided bind host is loopback-safe. */

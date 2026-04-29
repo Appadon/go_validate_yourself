@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	gvyconfig "go_validate_yourself/internal/config"
 	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/runs"
 	"go_validate_yourself/internal/service"
@@ -39,6 +40,7 @@ type Server struct {
 	workspaceBaseDir string
 	templates        *template.Template
 	runAuto          func(context.Context, service.AutoOptions) (service.AutoResult, error)
+	runPipeline      func(context.Context, service.PipelineOptions) (service.PipelineResult, error)
 	detectPrimaryKey func(string) (string, error)
 	httpServer       *http.Server
 	shutdownOnce     sync.Once
@@ -82,10 +84,11 @@ type ValidateAutoRequest struct {
 
 /* ValidateAutoSuccessResponse returns the final result for a completed auto run. */
 type ValidateAutoSuccessResponse struct {
-	OK      bool               `json:"ok"`
-	Mode    string             `json:"mode"`
-	Outputs ValidateAutoOutput `json:"outputs"`
-	Result  service.AutoResult `json:"result"`
+	OK             bool                     `json:"ok"`
+	Mode           string                   `json:"mode"`
+	Outputs        ValidateAutoOutput       `json:"outputs"`
+	Result         service.AutoResult       `json:"result"`
+	ResolvedConfig gvyconfig.ResolvedConfig `json:"resolved_config"`
 }
 
 /* ValidateAutoOutput exposes the main output directories for the frontend. */
@@ -101,6 +104,33 @@ type ValidateAutoOutput struct {
 type RunCreateResponse struct {
 	OK  bool          `json:"ok"`
 	Run runs.Snapshot `json:"run"`
+}
+
+/* ConfigDefaultsResponse returns the canonical built-in config defaults. */
+type ConfigDefaultsResponse struct {
+	OK       bool             `json:"ok"`
+	Defaults gvyconfig.Config `json:"defaults"`
+}
+
+/* ConfigResolveResponse returns a config after server-side normalization. */
+type ConfigResolveResponse struct {
+	OK             bool                     `json:"ok"`
+	ResolvedConfig gvyconfig.ResolvedConfig `json:"resolved_config"`
+}
+
+/* ConfigRunResponse returns metadata and the resolved config for a config-first run. */
+type ConfigRunResponse struct {
+	OK             bool                     `json:"ok"`
+	Run            runs.Snapshot            `json:"run"`
+	ResolvedConfig gvyconfig.ResolvedConfig `json:"resolved_config"`
+	Result         service.PipelineResult   `json:"result,omitempty"`
+}
+
+/* ConfigRunResult is stored on run snapshots for config-first executions. */
+type ConfigRunResult struct {
+	Mode           string                   `json:"mode"`
+	ResolvedConfig gvyconfig.ResolvedConfig `json:"resolved_config"`
+	Result         service.PipelineResult   `json:"result"`
 }
 
 /* FileSelectionRunRequest defines JSON inputs for server-side file selection runs. */
@@ -179,6 +209,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 		templates:        templates,
 	}
 	server.runAuto = server.service.RunAuto
+	server.runPipeline = server.service.RunPipeline
 	server.detectPrimaryKey = service.DetectPrimaryKey
 
 	mux := http.NewServeMux()
@@ -187,8 +218,11 @@ func NewServer(host string, port int, svc service.Service) *Server {
 	mux.HandleFunc("/health", server.handleHealth)
 	mux.HandleFunc("/shutdown", server.handleShutdown)
 	mux.HandleFunc("/run/validate-auto", server.handleValidateAuto)
+	mux.HandleFunc("/api/config/defaults", server.handleConfigDefaults)
+	mux.HandleFunc("/api/config/resolve", server.handleConfigResolve)
 	mux.HandleFunc("/api/files", server.handleFileList)
 	mux.HandleFunc("/api/runs", server.handleRuns)
+	mux.HandleFunc("/api/runs/config", server.handleConfigRun)
 	mux.HandleFunc("/api/runs/", server.handleRunByID)
 
 	server.httpServer = &http.Server{
@@ -285,7 +319,7 @@ func (s *Server) handleValidateAuto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts, err := s.buildAutoOptions(req)
+	resolved, opts, err := s.buildLegacyAutoPipeline(req)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
@@ -308,7 +342,7 @@ func (s *Server) handleValidateAuto(w http.ResponseWriter, r *http.Request) {
 	opts.RunID = runID
 	opts.Reporter = progress.Combine(opts.Reporter, s.runManager.Reporter(runID))
 
-	result, err := s.service.RunAuto(r.Context(), opts)
+	pipelineResult, err := s.runPipeline(r.Context(), opts)
 	if err != nil {
 		_, _ = s.runManager.Fail(runID, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -318,19 +352,133 @@ func (s *Server) handleValidateAuto(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "VALIDATION_FAILED", err.Error())
 		return
 	}
-	_, _ = s.runManager.Complete(runID, result)
+	result := autoResultFromPipeline(resolved, pipelineResult)
+	_, _ = s.runManager.Complete(runID, ConfigRunResult{
+		Mode:           "auto",
+		ResolvedConfig: resolved,
+		Result:         pipelineResult,
+	})
 
 	writeJSON(w, http.StatusOK, ValidateAutoSuccessResponse{
 		OK:   true,
 		Mode: "auto",
 		Outputs: ValidateAutoOutput{
-			SplitOutputDir: opts.SplitOutputDir,
-			SuccessDir:     opts.SuccessDir,
-			ErrorDir:       opts.ErrorDir,
-			BatchDir:       firstNonEmpty(opts.BatchDir, opts.SuccessDir),
-			BatchExportDir: opts.BatchExportDir,
+			SplitOutputDir: resolved.Outputs.SplitDir,
+			SuccessDir:     resolved.Outputs.SuccessDir,
+			ErrorDir:       resolved.Outputs.ErrorDir,
+			BatchDir:       firstNonEmpty(resolved.Batch.InputDir, resolved.Outputs.SuccessDir),
+			BatchExportDir: resolved.Outputs.BatchExportDir,
 		},
-		Result: result,
+		Result:         result,
+		ResolvedConfig: resolved,
+	})
+}
+
+/* handleConfigDefaults returns canonical configuration defaults for clients. */
+func (s *Server) handleConfigDefaults(w http.ResponseWriter, r *http.Request) {
+	if !s.allowMethod(w, r, http.MethodGet) || !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/api/config/defaults" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, ConfigDefaultsResponse{
+		OK:       true,
+		Defaults: gvyconfig.Defaults(),
+	})
+}
+
+/* handleConfigResolve strictly decodes and resolves a config without executing it. */
+func (s *Server) handleConfigResolve(w http.ResponseWriter, r *http.Request) {
+	if !s.allowMethod(w, r, http.MethodPost) || !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/api/config/resolve" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	cfg, err := decodeConfigRequest(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	resolved, err := gvyconfig.Normalize(cfg, gvyconfig.NormalizeOptions{})
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_CONFIG", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ConfigResolveResponse{
+		OK:             true,
+		ResolvedConfig: resolved,
+	})
+}
+
+/* handleConfigRun executes a strict config-first run through the pipeline orchestrator. */
+func (s *Server) handleConfigRun(w http.ResponseWriter, r *http.Request) {
+	if !s.allowMethod(w, r, http.MethodPost) || !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/api/runs/config" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	cfg, err := decodeConfigRequest(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	resolved, err := gvyconfig.Normalize(cfg, gvyconfig.NormalizeOptions{})
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_CONFIG", err.Error())
+		return
+	}
+	if err := validateResolvedExecutionInputs(resolved); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_CONFIG", err.Error())
+		return
+	}
+
+	runID := progress.NewRunID()
+	snapshot, err := s.runManager.Create(runID, nil)
+	if err != nil {
+		if errors.Is(err, runs.ErrActiveRunExists) {
+			writeAPIError(w, http.StatusConflict, "BUSY", "another run is already active")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "RUN_INIT_FAILED", err.Error())
+		return
+	}
+	snapshot, err = s.runManager.Start(runID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "RUN_START_FAILED", err.Error())
+		return
+	}
+
+	opts := pipelineOptionsFromResolved(resolved)
+	opts.RunID = runID
+	opts.Reporter = progress.Combine(opts.Reporter, s.runManager.Reporter(runID))
+	result, err := s.runPipeline(r.Context(), opts)
+	if err != nil {
+		_, _ = s.runManager.Fail(runID, err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			writeAPIError(w, http.StatusRequestTimeout, "REQUEST_CANCELED", err.Error())
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "RUN_FAILED", err.Error())
+		return
+	}
+	finalResult := ConfigRunResult{
+		Mode:           resolvedPipelineMode(resolved),
+		ResolvedConfig: resolved,
+		Result:         result,
+	}
+	snapshot, _ = s.runManager.Complete(runID, finalResult)
+
+	writeJSON(w, http.StatusOK, ConfigRunResponse{
+		OK:             true,
+		Run:            snapshot,
+		ResolvedConfig: resolved,
+		Result:         result,
 	})
 }
 
@@ -688,61 +836,39 @@ func (s *Server) executeWorkspaceRun(runID string, ws workspace.RunWorkspace) {
 	_, _ = s.runManager.Complete(runID, result)
 }
 
-/* buildAutoOptions validates the request and maps it into service options. */
+/* buildAutoOptions is a compatibility-only adapter for legacy tests and SDK callers. */
 func (s *Server) buildAutoOptions(req ValidateAutoRequest) (service.AutoOptions, error) {
+	resolved, err := s.resolveLegacyAutoConfig(req)
+	if err != nil {
+		return service.AutoOptions{}, err
+	}
+	return autoOptionsFromResolved(resolved), nil
+}
+
+/* buildLegacyAutoPipeline converts /run/validate-auto requests into resolved pipeline options. */
+func (s *Server) buildLegacyAutoPipeline(req ValidateAutoRequest) (gvyconfig.ResolvedConfig, service.PipelineOptions, error) {
+	resolved, err := s.resolveLegacyAutoConfig(req)
+	if err != nil {
+		return gvyconfig.ResolvedConfig{}, service.PipelineOptions{}, err
+	}
+	return resolved, pipelineOptionsFromResolved(resolved), nil
+}
+
+/* resolveLegacyAutoConfig preserves edge compatibility while using the shared config resolver. */
+func (s *Server) resolveLegacyAutoConfig(req ValidateAutoRequest) (gvyconfig.ResolvedConfig, error) {
 	mainInput := firstNonEmpty(strings.TrimSpace(req.MainInputCSV), strings.TrimSpace(req.InputCSV))
 	if mainInput == "" {
-		return service.AutoOptions{}, fmt.Errorf("main_input_csv or input_csv is required")
+		return gvyconfig.ResolvedConfig{}, fmt.Errorf("main_input_csv or input_csv is required")
 	}
 	if err := validateAbsoluteCSVPath(mainInput, "main_input_csv"); err != nil {
-		return service.AutoOptions{}, err
+		return gvyconfig.ResolvedConfig{}, err
 	}
 	if err := validateAbsoluteJSONPath(req.SchemaPath, "schema_path"); err != nil {
-		return service.AutoOptions{}, err
+		return gvyconfig.ResolvedConfig{}, err
 	}
 
-	splitOutputDir := firstNonEmpty(req.SplitOutputDir, filepath.Join(filepath.Dir(mainInput), "split"))
-	successDir := firstNonEmpty(req.SuccessDir, filepath.Join(filepath.Dir(mainInput), "success"))
-	errorDir := firstNonEmpty(req.ErrorDir, filepath.Join(filepath.Dir(mainInput), "errors"))
-	batchExportDir := firstNonEmpty(req.BatchExportDir, filepath.Join(filepath.Dir(mainInput), "batch_export"))
-	batchDir := firstNonEmpty(req.BatchDir, successDir)
-
-	for field, dir := range map[string]string{
-		"split_output_dir": splitOutputDir,
-		"success_dir":      successDir,
-		"error_dir":        errorDir,
-		"batch_dir":        batchDir,
-		"batch_export_dir": batchExportDir,
-	} {
-		if err := validateAbsoluteDirPath(dir, field); err != nil {
-			return service.AutoOptions{}, err
-		}
-	}
-
-	threads := req.Threads
-	if threads == 0 {
-		threads = service.DefaultThreadCount()
-	}
-	if threads < 1 {
-		return service.AutoOptions{}, fmt.Errorf("threads must be >= 1")
-	}
-
-	splitMaxOpen := req.SplitMaxOpen
-	if splitMaxOpen == 0 {
-		splitMaxOpen = 256
-	}
-	if splitMaxOpen < 1 {
-		return service.AutoOptions{}, fmt.Errorf("split_max_open must be >= 1")
-	}
-
-	batchSize := req.BatchSize
-	if batchSize == 0 {
-		batchSize = 1000
-	}
-	if batchSize < 1 {
-		return service.AutoOptions{}, fmt.Errorf("batch_size must be >= 1")
-	}
-
+	defaults := gvyconfig.Defaults()
+	inputDir := filepath.Dir(mainInput)
 	writeEmptyError := false
 	if req.WriteEmptyError != nil {
 		writeEmptyError = *req.WriteEmptyError
@@ -753,26 +879,262 @@ func (s *Server) buildAutoOptions(req ValidateAutoRequest) (service.AutoOptions,
 		clearValidationCache = *req.ClearValidationCache
 	}
 
-	if samePath(batchDir, batchExportDir) {
-		return service.AutoOptions{}, fmt.Errorf("batch_export_dir must differ from batch_dir")
+	cfg := gvyconfig.Config{
+		Mode: "auto",
+		Inputs: gvyconfig.InputsConfig{
+			MainCSV: mainInput,
+			Schema:  strings.TrimSpace(req.SchemaPath),
+		},
+		Outputs: gvyconfig.OutputsConfig{
+			SplitDir:       firstNonEmpty(req.SplitOutputDir, filepath.Join(inputDir, defaults.Outputs.SplitDir)),
+			SuccessDir:     firstNonEmpty(req.SuccessDir, filepath.Join(inputDir, defaults.Outputs.SuccessDir)),
+			ErrorDir:       firstNonEmpty(req.ErrorDir, filepath.Join(inputDir, defaults.Outputs.ErrorDir)),
+			BatchExportDir: firstNonEmpty(req.BatchExportDir, filepath.Join(inputDir, defaults.Outputs.BatchExportDir)),
+		},
+		Split: gvyconfig.SplitConfig{
+			PrimaryKey:      strings.TrimSpace(req.SplitPrimaryKey),
+			MaxOpenWriters:  req.SplitMaxOpen,
+			MissingKeysFile: strings.TrimSpace(req.SplitMissingFile),
+			ReuseCache:      true,
+		},
+		Validation: gvyconfig.ValidationConfig{
+			WriteEmptyError: writeEmptyError,
+			ClearOutputs:    clearValidationCache,
+		},
+		Batch: gvyconfig.BatchConfig{
+			InputDir: strings.TrimSpace(req.BatchDir),
+			Size:     req.BatchSize,
+		},
+		Runtime: gvyconfig.RuntimeConfig{
+			Workers: req.Threads,
+		},
 	}
 
+	resolved, err := gvyconfig.Normalize(cfg, gvyconfig.NormalizeOptions{})
+	if err != nil {
+		return gvyconfig.ResolvedConfig{}, err
+	}
+	if err := validateLegacyResolvedPaths(resolved); err != nil {
+		return gvyconfig.ResolvedConfig{}, err
+	}
+	return resolved, nil
+}
+
+/* pipelineOptionsFromResolved maps canonical resolved config into service execution options. */
+func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig) service.PipelineOptions {
+	fullAutoPipeline := configPhasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch})
+	batchClearOutput := resolved.Batch.ClearOutput
+	if fullAutoPipeline {
+		batchClearOutput = false
+	}
+	return service.PipelineOptions{
+		Phases:       servicePipelinePhases(resolved.Plan.Phases),
+		ResumePolicy: service.PipelineResumePolicy(resolved.Plan.ResumePolicy),
+		Split: service.SplitOptions{
+			InputPath:       resolved.Inputs.MainCSV,
+			OutputDir:       resolved.Outputs.SplitDir,
+			PrimaryKey:      resolved.Split.PrimaryKey,
+			MaxOpenWriters:  resolved.Split.MaxOpenWriters,
+			MissingKeysFile: resolved.Split.MissingKeysFile,
+		},
+		Validate: service.ValidateOptions{
+			SchemaPath:      resolved.Inputs.Schema,
+			InputCSV:        resolved.Inputs.ValidateCSV,
+			InputDir:        resolved.Inputs.ValidateDir,
+			Threads:         resolved.EffectiveWorkers,
+			WriteEmptyError: resolved.Validation.WriteEmptyError,
+			SuccessDir:      resolved.Outputs.SuccessDir,
+			ErrorDir:        resolved.Outputs.ErrorDir,
+		},
+		Batch: service.BatchOptions{
+			InputDir:       resolved.Batch.InputDir,
+			OutputDir:      resolved.Outputs.BatchExportDir,
+			BatchSize:      resolved.Batch.Size,
+			Workers:        resolved.EffectiveWorkers,
+			ClearOutputDir: batchClearOutput,
+		},
+		ReuseSplitCache:           resolved.Split.ReuseCache,
+		ClearValidationOutputDirs: resolved.Validation.ClearOutputs && fullAutoPipeline,
+		Mode:                      resolvedPipelineMode(resolved),
+	}
+}
+
+/* autoOptionsFromResolved keeps the legacy options shape available at the API edge only. */
+func autoOptionsFromResolved(resolved gvyconfig.ResolvedConfig) service.AutoOptions {
 	return service.AutoOptions{
-		MainInputCSV:         mainInput,
-		SchemaPath:           req.SchemaPath,
-		SplitOutputDir:       splitOutputDir,
-		SplitPrimaryKey:      strings.TrimSpace(req.SplitPrimaryKey),
-		SplitMaxOpen:         splitMaxOpen,
-		SplitMissingFile:     firstNonEmpty(req.SplitMissingFile, "missing_keys.csv"),
-		Threads:              threads,
-		WriteEmptyError:      writeEmptyError,
-		ClearValidationCache: clearValidationCache,
-		SuccessDir:           successDir,
-		ErrorDir:             errorDir,
-		BatchDir:             batchDir,
-		BatchExportDir:       batchExportDir,
-		BatchSize:            batchSize,
-	}, nil
+		MainInputCSV:         resolved.Inputs.MainCSV,
+		SchemaPath:           resolved.Inputs.Schema,
+		SplitOutputDir:       resolved.Outputs.SplitDir,
+		SplitPrimaryKey:      resolved.Split.PrimaryKey,
+		SplitMaxOpen:         resolved.Split.MaxOpenWriters,
+		SplitMissingFile:     resolved.Split.MissingKeysFile,
+		Threads:              resolved.EffectiveWorkers,
+		WriteEmptyError:      resolved.Validation.WriteEmptyError,
+		ClearValidationCache: resolved.Validation.ClearOutputs,
+		SuccessDir:           resolved.Outputs.SuccessDir,
+		ErrorDir:             resolved.Outputs.ErrorDir,
+		BatchDir:             resolved.Batch.InputDir,
+		BatchExportDir:       resolved.Outputs.BatchExportDir,
+		BatchSize:            resolved.Batch.Size,
+	}
+}
+
+/* autoResultFromPipeline preserves the legacy /run/validate-auto response shape. */
+func autoResultFromPipeline(resolved gvyconfig.ResolvedConfig, result service.PipelineResult) service.AutoResult {
+	out := service.AutoResult{
+		MainInputCSV:    resolved.Inputs.MainCSV,
+		SchemaPath:      resolved.Inputs.Schema,
+		SplitPrimaryKey: result.SplitPrimaryKey,
+		SplitReused:     result.SplitReused,
+		SplitSummary:    result.SplitSummary,
+		BatchSummary:    result.BatchSummary,
+	}
+	if result.ValidationDir != nil {
+		out.Validation = *result.ValidationDir
+	}
+	return out
+}
+
+func servicePipelinePhases(phases []gvyconfig.Phase) []service.PipelinePhase {
+	out := make([]service.PipelinePhase, 0, len(phases))
+	for _, phase := range phases {
+		out = append(out, service.PipelinePhase(phase))
+	}
+	return out
+}
+
+func resolvedPipelineMode(resolved gvyconfig.ResolvedConfig) string {
+	switch {
+	case configPhasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch}):
+		return "auto"
+	case configPhasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit}):
+		return "split"
+	case configPhasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseValidate}):
+		if strings.TrimSpace(resolved.Inputs.ValidateCSV) != "" {
+			return "validate-file"
+		}
+		return "validate-dir"
+	case configPhasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseBatch}):
+		return "batch"
+	default:
+		return "pipeline"
+	}
+}
+
+func configPhasesEqual(actual, expected []gvyconfig.Phase) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	for i := range actual {
+		if actual[i] != expected[i] {
+			return false
+		}
+	}
+	return true
+}
+
+/* validateLegacyResolvedPaths preserves absolute-path requirements on /run/validate-auto. */
+func validateLegacyResolvedPaths(resolved gvyconfig.ResolvedConfig) error {
+	if err := validateAbsoluteCSVPath(resolved.Inputs.MainCSV, "main_input_csv"); err != nil {
+		return err
+	}
+	if err := validateAbsoluteJSONPath(resolved.Inputs.Schema, "schema_path"); err != nil {
+		return err
+	}
+	for field, dir := range map[string]string{
+		"split_output_dir": resolved.Outputs.SplitDir,
+		"success_dir":      resolved.Outputs.SuccessDir,
+		"error_dir":        resolved.Outputs.ErrorDir,
+		"batch_dir":        resolved.Batch.InputDir,
+		"batch_export_dir": resolved.Outputs.BatchExportDir,
+	} {
+		if err := validateAbsoluteDirPath(dir, field); err != nil {
+			return err
+		}
+	}
+	if samePath(resolved.Batch.InputDir, resolved.Outputs.BatchExportDir) {
+		return fmt.Errorf("batch_export_dir must differ from batch_dir")
+	}
+	return nil
+}
+
+/* validateResolvedExecutionInputs checks only source inputs required before execution starts. */
+func validateResolvedExecutionInputs(resolved gvyconfig.ResolvedConfig) error {
+	for _, phase := range resolved.Plan.Phases {
+		switch phase {
+		case gvyconfig.PhaseSplit:
+			if err := requireExistingFileWithExtension(resolved.Inputs.MainCSV, "inputs.main_csv", ".csv"); err != nil {
+				return err
+			}
+		case gvyconfig.PhaseValidate:
+			if err := requireExistingFileWithExtension(resolved.Inputs.Schema, "inputs.schema", ".json"); err != nil {
+				return err
+			}
+			if strings.TrimSpace(resolved.Inputs.ValidateCSV) != "" {
+				if err := requireExistingFileWithExtension(resolved.Inputs.ValidateCSV, "inputs.validate_csv", ".csv"); err != nil {
+					return err
+				}
+			} else if !configPhaseBefore(resolved.Plan.Phases, gvyconfig.PhaseSplit, gvyconfig.PhaseValidate) {
+				if err := requireExistingDir(resolved.Inputs.ValidateDir, "inputs.validate_dir"); err != nil {
+					return err
+				}
+			}
+		case gvyconfig.PhaseBatch:
+			if !configPhaseBefore(resolved.Plan.Phases, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch) {
+				if err := requireExistingDir(resolved.Batch.InputDir, "batch.input_dir"); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func configPhaseBefore(phases []gvyconfig.Phase, before, after gvyconfig.Phase) bool {
+	beforeIndex := -1
+	afterIndex := -1
+	for i, phase := range phases {
+		if phase == before {
+			beforeIndex = i
+		}
+		if phase == after {
+			afterIndex = i
+		}
+	}
+	return beforeIndex >= 0 && afterIndex >= 0 && beforeIndex < afterIndex
+}
+
+func requireExistingFileWithExtension(path, field, ext string) error {
+	clean := strings.TrimSpace(path)
+	if clean == "" {
+		return fmt.Errorf("%s is required", field)
+	}
+	if !strings.EqualFold(filepath.Ext(clean), ext) {
+		return fmt.Errorf("%s must use %s extension", field, ext)
+	}
+	info, err := os.Stat(clean)
+	if err != nil {
+		return fmt.Errorf("%s does not exist", field)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s must be a file", field)
+	}
+	return nil
+}
+
+func requireExistingDir(path, field string) error {
+	clean := strings.TrimSpace(path)
+	if clean == "" {
+		return fmt.Errorf("%s is required", field)
+	}
+	info, err := os.Stat(clean)
+	if err != nil {
+		return fmt.Errorf("%s does not exist", field)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s must be a directory", field)
+	}
+	return nil
 }
 
 /* withSecurityHeaders applies basic response hardening headers to every request. */
@@ -823,6 +1185,22 @@ func decodeValidateAutoRequest(r *http.Request) (ValidateAutoRequest, error) {
 		return ValidateAutoRequest{}, fmt.Errorf("request body must contain a single JSON object")
 	}
 	return req, nil
+}
+
+/* decodeConfigRequest decodes a strict GVY config JSON object. */
+func decodeConfigRequest(r *http.Request) (gvyconfig.Config, error) {
+	defer r.Body.Close()
+
+	var cfg gvyconfig.Config
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cfg); err != nil {
+		return gvyconfig.Config{}, err
+	}
+	if err := decoder.Decode(new(struct{})); err != io.EOF {
+		return gvyconfig.Config{}, fmt.Errorf("request body must contain a single JSON object")
+	}
+	return cfg, nil
 }
 
 /* decodeFileSelectionRunRequest decodes the JSON request body for a UI-selected run. */

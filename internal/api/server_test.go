@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	gvyconfig "go_validate_yourself/internal/config"
 	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/runs"
 	"go_validate_yourself/internal/service"
@@ -115,6 +116,198 @@ func TestBuildAutoOptionsDefaults(t *testing.T) {
 	if !opts.ClearValidationCache {
 		t.Fatalf("expected clear validation cache default to true")
 	}
+}
+
+func TestHandleConfigDefaultsReturnsUsableDefaults(t *testing.T) {
+	server := NewServer("127.0.0.1", 8080, service.New())
+	request := httptest.NewRequest(http.MethodGet, "/api/config/defaults", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleConfigDefaults(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response ConfigDefaultsResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("expected ok response: %+v", response)
+	}
+	response.Defaults.Inputs.MainCSV = "input.csv"
+	response.Defaults.Inputs.Schema = "schema.json"
+	resolved, err := gvyconfig.Normalize(response.Defaults, gvyconfig.NormalizeOptions{})
+	if err != nil {
+		t.Fatalf("Normalize(defaults) error = %v", err)
+	}
+	if !configPhasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch}) {
+		t.Fatalf("phases = %v, want auto phases", resolved.Plan.Phases)
+	}
+}
+
+func TestHandleConfigResolveExpandsAutoAndDerivedInputs(t *testing.T) {
+	server := NewServer("127.0.0.1", 8080, service.New())
+	request := httptest.NewRequest(http.MethodPost, "/api/config/resolve", strings.NewReader(`{
+		"mode": "auto",
+		"inputs": {
+			"main_csv": "input.csv",
+			"schema": "schema.json"
+		}
+	}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleConfigResolve(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response ConfigResolveResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !configPhasesEqual(response.ResolvedConfig.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch}) {
+		t.Fatalf("phases = %v, want auto phases", response.ResolvedConfig.Plan.Phases)
+	}
+	if response.ResolvedConfig.Inputs.ValidateDir != "split" {
+		t.Fatalf("validate dir = %q, want split", response.ResolvedConfig.Inputs.ValidateDir)
+	}
+	if response.ResolvedConfig.Batch.InputDir != "success" {
+		t.Fatalf("batch input dir = %q, want success", response.ResolvedConfig.Batch.InputDir)
+	}
+}
+
+func TestHandleConfigResolveExplicitPhasesOverrideMode(t *testing.T) {
+	server := NewServer("127.0.0.1", 8080, service.New())
+	request := httptest.NewRequest(http.MethodPost, "/api/config/resolve", strings.NewReader(`{
+		"mode": "batch",
+		"pipeline": {"phases": ["split"]},
+		"inputs": {"main_csv": "input.csv"}
+	}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleConfigResolve(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response ConfigResolveResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !configPhasesEqual(response.ResolvedConfig.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit}) {
+		t.Fatalf("phases = %v, want split only", response.ResolvedConfig.Plan.Phases)
+	}
+}
+
+func TestHandleConfigResolveRejectsUnknownFields(t *testing.T) {
+	server := NewServer("127.0.0.1", 8080, service.New())
+	request := httptest.NewRequest(http.MethodPost, "/api/config/resolve", strings.NewReader(`{"mode":"auto","surprise":true}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleConfigResolve(recorder, request)
+
+	assertAPIErrorCode(t, recorder, http.StatusBadRequest, "INVALID_JSON")
+	if !strings.Contains(recorder.Body.String(), "unknown field") {
+		t.Fatalf("expected unknown field error, got %s", recorder.Body.String())
+	}
+}
+
+func TestHandleConfigResolveRejectsInvalidPhaseInputsClearly(t *testing.T) {
+	server := NewServer("127.0.0.1", 8080, service.New())
+	request := httptest.NewRequest(http.MethodPost, "/api/config/resolve", strings.NewReader(`{"mode":"validate","inputs":{"schema":"schema.json"}}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleConfigResolve(recorder, request)
+
+	assertAPIErrorCode(t, recorder, http.StatusBadRequest, "INVALID_CONFIG")
+	if !strings.Contains(recorder.Body.String(), "inputs.validate_dir") {
+		t.Fatalf("expected invalid input combination error, got %s", recorder.Body.String())
+	}
+}
+
+func TestHandleConfigRunExecutesThroughRunPipeline(t *testing.T) {
+	tempDir := t.TempDir()
+	inputPath := filepath.Join(tempDir, "input.csv")
+	schemaPath := filepath.Join(tempDir, "schema.json")
+	writeTestFile(t, inputPath, "Record ID,Amount\n1,10\n")
+	writeTestFile(t, schemaPath, `{"fields":[{"name":"Record ID","type":"string","required":true},{"name":"Amount","type":"int","required":true}]}`)
+
+	server := NewServer("127.0.0.1", 8080, service.New())
+	called := false
+	server.runPipeline = func(ctx context.Context, opts service.PipelineOptions) (service.PipelineResult, error) {
+		called = true
+		if !servicePhasesEqual(opts.Phases, []service.PipelinePhase{service.PipelinePhaseSplit, service.PipelinePhaseValidate, service.PipelinePhaseBatch}) {
+			t.Fatalf("pipeline phases = %v, want auto phases", opts.Phases)
+		}
+		if opts.Split.InputPath != inputPath || opts.Validate.SchemaPath != schemaPath {
+			t.Fatalf("unexpected pipeline inputs: %+v %+v", opts.Split, opts.Validate)
+		}
+		return service.PipelineResult{
+			Phases:    opts.Phases,
+			RanPhases: opts.Phases,
+		}, nil
+	}
+
+	body, err := json.Marshal(gvyconfig.Config{
+		Mode: "auto",
+		Inputs: gvyconfig.InputsConfig{
+			MainCSV: inputPath,
+			Schema:  schemaPath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/runs/config", bytes.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleConfigRun(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if !called {
+		t.Fatal("expected RunPipeline to be called")
+	}
+	var response ConfigRunResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Run.State != runs.StateCompleted {
+		t.Fatalf("run state = %q, want completed", response.Run.State)
+	}
+	if response.ResolvedConfig.Inputs.MainCSV != inputPath {
+		t.Fatalf("resolved input = %q, want %q", response.ResolvedConfig.Inputs.MainCSV, inputPath)
+	}
+	snapshot, ok := server.runManager.Snapshot(response.Run.RunID)
+	if !ok || snapshot.FinalResult == nil {
+		t.Fatalf("expected final snapshot result, got ok=%v snapshot=%+v", ok, snapshot)
+	}
+	finalBytes, err := json.Marshal(snapshot.FinalResult)
+	if err != nil {
+		t.Fatalf("marshal final result: %v", err)
+	}
+	if !strings.Contains(string(finalBytes), "resolved_config") {
+		t.Fatalf("snapshot final result missing resolved config: %s", string(finalBytes))
+	}
+}
+
+func TestHandleConfigRunRejectsNonLoopback(t *testing.T) {
+	server := NewServer("127.0.0.1", 8080, service.New())
+	request := httptest.NewRequest(http.MethodPost, "/api/runs/config", strings.NewReader(`{}`))
+	request.RemoteAddr = "10.0.0.10:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleConfigRun(recorder, request)
+
+	assertAPIErrorCode(t, recorder, http.StatusForbidden, "FORBIDDEN")
 }
 
 func TestHandleUIRendersWorkingRootPage(t *testing.T) {
@@ -684,6 +877,18 @@ func assertAPIErrorCode(t *testing.T, recorder *httptest.ResponseRecorder, statu
 	if response.ErrorCode != errorCode {
 		t.Fatalf("error_code = %q, want %q body=%s", response.ErrorCode, errorCode, recorder.Body.String())
 	}
+}
+
+func servicePhasesEqual(actual, expected []service.PipelinePhase) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	for i := range actual {
+		if actual[i] != expected[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func waitForRunState(t *testing.T, manager *runs.Manager, runID string, state runs.State) runs.Snapshot {

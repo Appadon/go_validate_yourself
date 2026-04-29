@@ -198,19 +198,85 @@ class Gvy:
             self._process.wait(timeout=10)
 
     def set_validate_auto_defaults(self, **defaults: Any) -> None:
-        """set_validate_auto_defaults updates reusable defaults for validate-auto requests."""
+        """set_validate_auto_defaults updates reusable compatibility overlays for auto config requests."""
         self.settings.validate_auto_defaults.update(defaults)
 
-    def run_validate_auto(self, **payload: Any) -> Dict[str, Any]:
-        """run_validate_auto sends a POST /run/validate-auto request with merged defaults."""
-        request_payload = dict(self.settings.validate_auto_defaults)
-        request_payload.update(payload)
+    def config_defaults(self) -> Dict[str, Any]:
+        """config_defaults returns server-owned GVY config defaults."""
         return self._request(
-            "POST",
-            "/run/validate-auto",
-            payload=request_payload,
+            "GET",
+            "/api/config/defaults",
             timeout=self.settings.request_timeout,
         )
+
+    def resolve_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """resolve_config previews a GVY config without executing a run."""
+        return self._request(
+            "POST",
+            "/api/config/resolve",
+            payload=config,
+            timeout=self.settings.request_timeout,
+        )
+
+    def run_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """run_config executes a config-first pipeline run."""
+        return self._request(
+            "POST",
+            "/api/runs/config",
+            payload=config,
+            timeout=self.settings.request_timeout,
+        )
+
+    def validate_auto(self, input_csv: str, schema_path: str, **overrides: Any) -> Dict[str, Any]:
+        """validate_auto runs the auto workflow by sending a config-first request."""
+        payload = dict(overrides)
+        payload["input_csv"] = input_csv
+        payload["schema_path"] = schema_path
+        return self.run_validate_auto(**payload)
+
+    def run_validate_auto(self, **payload: Any) -> Dict[str, Any]:
+        """run_validate_auto preserves the legacy SDK name while sending config-first requests."""
+        request_payload = dict(self.settings.validate_auto_defaults)
+        request_payload.update(payload)
+        return self.run_config(self._auto_payload_to_config(request_payload))
+
+    def _auto_payload_to_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """_auto_payload_to_config maps legacy SDK auto fields into canonical config."""
+        config: Dict[str, Any] = {
+            "mode": "auto",
+            "inputs": {},
+        }
+
+        field_map = {
+            "input_csv": ("inputs", "main_csv"),
+            "main_input_csv": ("inputs", "main_csv"),
+            "schema_path": ("inputs", "schema"),
+            "split_output_dir": ("outputs", "split_dir"),
+            "success_dir": ("outputs", "success_dir"),
+            "error_dir": ("outputs", "error_dir"),
+            "batch_export_dir": ("outputs", "batch_export_dir"),
+            "split_primary_key": ("split", "primary_key"),
+            "split_max_open": ("split", "max_open_writers"),
+            "split_missing_file": ("split", "missing_keys_file"),
+            "write_empty_error": ("validation", "write_empty_error"),
+            "clear_validation_cache": ("validation", "clear_outputs"),
+            "batch_dir": ("batch", "input_dir"),
+            "batch_size": ("batch", "size"),
+            "threads": ("runtime", "workers"),
+        }
+
+        for source, value in payload.items():
+            if source not in field_map:
+                raise GvyError(f"unsupported validate_auto option: {source}")
+            section, target = field_map[source]
+            config.setdefault(section, {})[target] = value
+
+        inputs = config.get("inputs", {})
+        if not inputs.get("main_csv"):
+            raise GvyError("validate_auto requires input_csv")
+        if not inputs.get("schema"):
+            raise GvyError("validate_auto requires schema_path")
+        return config
 
     def _request(
         self,
