@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{.Title}}</title>
-    <link rel="stylesheet" href="/static/css/app.css?v={{.Version}}">
+    <link rel="stylesheet" href="/static/css/app.css?v={{.Version}}-stage5b">
   </head>
   <body>
     <div class="app-shell">
@@ -39,12 +39,37 @@
           </div>
 
           <form id="run-form" class="selection-form" novalidate>
+            <section class="config-section" aria-labelledby="phase-config-title">
+              <div class="config-section__head">
+                <div>
+                  <h3 id="phase-config-title">Pipeline phases</h3>
+                  <p>Server-resolved defaults and validation.</p>
+                </div>
+                <span id="defaults-status" class="badge badge--muted">Loading defaults</span>
+              </div>
+
+              <div class="toggle-row" role="group" aria-label="Pipeline phase toggles">
+                <label class="toggle-control">
+                  <input id="phase-split" type="checkbox">
+                  <span>Split</span>
+                </label>
+                <label class="toggle-control">
+                  <input id="phase-validate" type="checkbox">
+                  <span>Validate</span>
+                </label>
+                <label class="toggle-control">
+                  <input id="phase-batch" type="checkbox">
+                  <span>Batch</span>
+                </label>
+              </div>
+            </section>
+
             <div class="selectors-grid">
-              <section class="selector-group" aria-labelledby="csv-group-title">
+              <section id="main-csv-group" class="selector-group" aria-labelledby="csv-group-title">
                 <div class="selector-group__head">
                   <div>
-                    <h3 id="csv-group-title">CSV input</h3>
-                    <p>Select one CSV file from the server working directory.</p>
+                    <h3 id="csv-group-title">Main CSV</h3>
+                    <p>Split phase source.</p>
                   </div>
                   <span id="csv-count" class="badge badge--muted">Loading…</span>
                 </div>
@@ -55,11 +80,11 @@
                 </div>
               </section>
 
-              <section class="selector-group" aria-labelledby="schema-group-title">
+              <section id="schema-group" class="selector-group" aria-labelledby="schema-group-title">
                 <div class="selector-group__head">
                   <div>
                     <h3 id="schema-group-title">Schema JSON</h3>
-                    <p>Select one schema file from the server working directory.</p>
+                    <p>Validation schema.</p>
                   </div>
                   <span id="schema-count" class="badge badge--muted">Loading…</span>
                 </div>
@@ -71,8 +96,121 @@
               </section>
             </div>
 
+            <section id="source-inputs-section" class="config-section" aria-labelledby="source-inputs-title">
+              <div class="config-section__head">
+                <div>
+                  <h3 id="source-inputs-title">Source inputs</h3>
+                  <p>Existing split CSV output or parquet input sources.</p>
+                </div>
+              </div>
+
+              <div class="config-grid">
+                <label id="validate-csv-field" class="field-control" for="validate-csv-input">
+                  <span>Validate input file</span>
+                  <div class="input-action">
+                    <input id="validate-csv-input" type="text" autocomplete="off" placeholder="split/part.csv">
+                    <button id="validate-csv-open-button" class="button button--secondary button--small" type="button">Select</button>
+                  </div>
+                </label>
+
+                <label id="validate-dir-field" class="field-control" for="validate-dir-input">
+                  <span>Validate input directory</span>
+                  <div class="input-action">
+                    <input id="validate-dir-input" type="text" autocomplete="off" placeholder="split">
+                    <button id="validate-dir-open-button" class="button button--secondary button--small" type="button">Browse</button>
+                  </div>
+                </label>
+
+                <label id="batch-input-dir-field" class="field-control" for="batch-input-dir-input">
+                  <span>Batch input directory</span>
+                  <div class="input-action">
+                    <input id="batch-input-dir-input" type="text" autocomplete="off" placeholder="success">
+                    <button id="batch-input-dir-open-button" class="button button--secondary button--small" type="button">Browse</button>
+                  </div>
+                </label>
+              </div>
+            </section>
+
+            <section class="config-section" aria-labelledby="settings-title">
+              <div class="config-section__head">
+                <div>
+                  <h3 id="settings-title">Settings</h3>
+                  <p>Backend-resolved runtime and output controls.</p>
+                </div>
+              </div>
+
+              <div class="config-grid config-grid--settings">
+                <label class="field-control" for="workers-input">
+                  <span>Workers</span>
+                  <input id="workers-input" type="number" min="0" step="1">
+                </label>
+
+                <label class="field-control" for="split-primary-key-input">
+                  <span>Split primary key</span>
+                  <input id="split-primary-key-input" type="text" autocomplete="off" placeholder="First CSV column">
+                </label>
+
+                <label class="field-control" for="split-output-dir-input">
+                  <span>Split output directory</span>
+                  <input id="split-output-dir-input" type="text" autocomplete="off">
+                </label>
+
+                <label class="field-control" for="success-dir-input">
+                  <span>Success directory</span>
+                  <input id="success-dir-input" type="text" autocomplete="off">
+                </label>
+
+                <label class="field-control" for="error-dir-input">
+                  <span>Error directory</span>
+                  <input id="error-dir-input" type="text" autocomplete="off">
+                </label>
+
+                <label class="field-control" for="batch-export-dir-input">
+                  <span>Batch export directory</span>
+                  <input id="batch-export-dir-input" type="text" autocomplete="off">
+                </label>
+
+                <label class="field-control" for="batch-size-input">
+                  <span>Batch size</span>
+                  <input id="batch-size-input" type="number" min="1" step="1">
+                </label>
+
+                <label class="field-control" for="resume-policy-select">
+                  <span>Resume policy</span>
+                  <select id="resume-policy-select">
+                    <option value="reuse_valid_outputs">Reuse valid outputs</option>
+                    <option value="start_at_first_missing">Start at first missing</option>
+                    <option value="run_all">Run all</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="toggle-row toggle-row--settings">
+                <label class="toggle-control">
+                  <input id="write-empty-error-input" type="checkbox">
+                  <span>Write empty error files</span>
+                </label>
+                <label class="toggle-control">
+                  <input id="clear-outputs-input" type="checkbox">
+                  <span>Clear outputs</span>
+                </label>
+              </div>
+            </section>
+
+            <section class="config-section config-section--preview" aria-labelledby="preview-title">
+              <div class="config-section__head">
+                <div>
+                  <h3 id="preview-title">Resolved pipeline preview</h3>
+                  <p>Effective phases, inputs, outputs, workers, and resolver errors.</p>
+                </div>
+                <span id="preview-status" class="badge badge--muted">Waiting</span>
+              </div>
+              <div id="preview-errors" class="preview-errors" hidden></div>
+              <dl id="resolved-preview" class="preview-grid"></dl>
+            </section>
+
             <div class="form-actions">
-              <button id="submit-button" class="button button--primary" type="submit">Start validation</button>
+              <button id="submit-button" class="button button--primary" type="submit">Start run</button>
               <button id="refresh-button" class="button button--secondary" type="button">Refresh run state</button>
             </div>
 
@@ -164,6 +302,7 @@
 
         <div class="picker-actions">
           <p id="picker-selection-summary" class="selection-summary">No file selected.</p>
+          <button id="picker-current-dir-button" class="button button--secondary" type="button">Use current directory</button>
           <button id="picker-choose-button" class="button button--primary" type="button">Use selected file</button>
         </div>
       </section>
@@ -172,6 +311,6 @@
     <script>
       window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
     </script>
-    <script src="/static/js/app.js?v={{.Version}}" defer></script>
+    <script src="/static/js/app.js?v={{.Version}}-stage5b" defer></script>
   </body>
 </html>
