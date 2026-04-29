@@ -869,7 +869,9 @@ func printUsage() {
 	fmt.Fprintf(out, "    CLI flags override config file values.\n")
 	fmt.Fprintf(out, "    Optional: -phases split,validate,batch to override the configured phase list.\n")
 	fmt.Fprintf(out, "    Optional: -print-config to print the resolved effective config and exit.\n")
-	fmt.Fprintf(out, "    Modes expand to phases unless pipeline.phases is set: auto => split,validate,batch.\n")
+	fmt.Fprintf(out, "    Modes expand to phases unless pipeline.phases is set:\n")
+	fmt.Fprintf(out, "      auto => split,validate,batch; split => split; validate => validate; batch => batch.\n")
+	fmt.Fprintf(out, "    Server mode starts the runtime/API entry point; it is not a data phase.\n")
 	fmt.Fprintf(out, "    Minimal auto config:\n")
 	fmt.Fprintf(out, "      {\"mode\":\"auto\",\"inputs\":{\"main_csv\":\"main.csv\",\"schema\":\"schema.json\"}}\n")
 
@@ -944,6 +946,7 @@ func printUsage() {
 	fmt.Fprintf(out, "  %s -mode server -host 127.0.0.1 -port 8080\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -phases split\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -phases validate,batch -dir split/\n", bin)
+	fmt.Fprintf(out, "  %s -config gvy.config.json -t 12\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -print-config\n", bin)
 	fmt.Fprintf(out, "  curl -s http://127.0.0.1:8080/api/config/defaults\n")
 	fmt.Fprintf(out, "  curl -s -X POST http://127.0.0.1:8080/api/config/resolve -H 'Content-Type: application/json' --data '{\"mode\":\"auto\",\"inputs\":{\"main_csv\":\"main.csv\",\"schema\":\"schema.json\"}}'\n")

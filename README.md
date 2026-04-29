@@ -91,6 +91,13 @@ Start the HTTP API and browser UI:
 
 ## Config-First Usage
 
+GVY has two JSON file types:
+
+- GVY run config controls pipeline phases, inputs, outputs, runtime settings, and server settings.
+- Validation schema describes CSV field validation rules, such as required fields, types, defaults, and allowed values.
+
+The run config usually points at a validation schema with `inputs.schema`; it does not replace the schema.
+
 A minimal full pipeline config:
 
 ```json
@@ -109,13 +116,19 @@ Run it:
 ./gvy -config gvy.config.json
 ```
 
+Override a config value from the CLI:
+
+```bash
+./gvy -config gvy.config.json -t 12
+```
+
 `mode` presets expand to phases:
 
 - `auto`: `split`, `validate`, `batch`
 - `split`: `split`
 - `validate`: `validate`
 - `batch`: `batch`
-- `server`: no data phases, starts server mode
+- `server`: runtime entry point only, not a data phase
 
 Explicit `pipeline.phases` overrides `mode`:
 
@@ -183,6 +196,94 @@ Omitted fields use `internal/config.Defaults()`. CLI flags can still override co
 
 ```bash
 ./gvy -config gvy.config.json -phases validate,batch -dir split -t 12
+```
+
+### Phase Config Examples
+
+Split only:
+
+```json
+{
+  "mode": "split",
+  "pipeline": {
+    "phases": ["split"]
+  },
+  "inputs": {
+    "main_csv": "input.csv"
+  },
+  "outputs": {
+    "split_dir": "split"
+  },
+  "split": {
+    "primary_key": "Record ID"
+  }
+}
+```
+
+Validate from an existing split directory:
+
+```json
+{
+  "mode": "validate",
+  "pipeline": {
+    "phases": ["validate"]
+  },
+  "inputs": {
+    "schema": "schema.example.json",
+    "validate_dir": "split"
+  },
+  "outputs": {
+    "success_dir": "success",
+    "error_dir": "errors"
+  },
+  "runtime": {
+    "workers": 8
+  }
+}
+```
+
+Validate and batch from an existing split directory:
+
+```json
+{
+  "mode": "auto",
+  "pipeline": {
+    "phases": ["validate", "batch"]
+  },
+  "inputs": {
+    "schema": "schema.example.json",
+    "validate_dir": "split"
+  },
+  "outputs": {
+    "success_dir": "success",
+    "error_dir": "errors",
+    "batch_export_dir": "batch_export"
+  },
+  "runtime": {
+    "workers": 8
+  }
+}
+```
+
+Batch from an existing Parquet directory:
+
+```json
+{
+  "mode": "batch",
+  "pipeline": {
+    "phases": ["batch"]
+  },
+  "batch": {
+    "input_dir": "success",
+    "size": 1000
+  },
+  "outputs": {
+    "batch_export_dir": "batch_export"
+  },
+  "runtime": {
+    "workers": 8
+  }
+}
 ```
 
 ## CLI Modes
@@ -345,6 +446,9 @@ Start the server:
 ```
 
 The API is localhost-only and keeps one active run at a time. Non-loopback requests are rejected.
+Open `http://127.0.0.1:8080/` in a browser for the UI. The UI fetches backend defaults from
+`GET /api/config/defaults`, previews the effective config with `POST /api/config/resolve`, then starts
+config-first runs with `POST /api/runs/config`.
 
 ### Health
 
@@ -495,7 +599,48 @@ Import:
 from gvy_sdk import Gvy
 ```
 
-Start the local server and run the auto pipeline through the config-first endpoint:
+Recommended: send a GVY run config payload to the config-first endpoint:
+
+```python
+from gvy_sdk import Gvy
+
+config = {
+    "mode": "auto",
+    "pipeline": {
+        "phases": ["split", "validate", "batch"],
+    },
+    "inputs": {
+        "main_csv": "/abs/path/input.csv",
+        "schema": "/abs/path/schema.example.json",
+    },
+}
+
+with Gvy.start(binary_path="./gvy") as gvy:
+    preview = gvy.resolve_config(config)
+    result = gvy.run_config(config)
+```
+
+Load and run a config JSON file from Python:
+
+```python
+from gvy_sdk import Gvy
+
+with Gvy.start(binary_path="./gvy") as gvy:
+    preview = gvy.resolve_config(config_path="gvy.config.json")
+    result = gvy.run_config(config_path="gvy.config.json")
+```
+
+`config_path` is loaded client-side and sent as JSON. Relative paths inside the config are still interpreted by the
+GVY server process.
+
+Discover server defaults:
+
+```python
+with Gvy.start(binary_path="./gvy") as gvy:
+    defaults = gvy.config_defaults()
+```
+
+Simple auto convenience usage:
 
 ```python
 from gvy_sdk import Gvy
@@ -510,32 +655,7 @@ with Gvy.start(binary_path="./gvy") as gvy:
     print(result)
 ```
 
-Run an explicit config:
-
-```python
-from gvy_sdk import Gvy
-
-config = {
-    "mode": "auto",
-    "inputs": {
-        "main_csv": "/abs/path/input.csv",
-        "schema": "/abs/path/schema.example.json",
-    },
-}
-
-with Gvy.start(binary_path="./gvy") as gvy:
-    preview = gvy.resolve_config(config)
-    result = gvy.run_config(config)
-```
-
-Discover server defaults:
-
-```python
-with Gvy.start(binary_path="./gvy") as gvy:
-    defaults = gvy.config_defaults()
-```
-
-Compatibility method:
+Compatibility method with the older SDK method name:
 
 ```python
 with Gvy.start(binary_path="./gvy") as gvy:
@@ -545,7 +665,10 @@ with Gvy.start(binary_path="./gvy") as gvy:
     )
 ```
 
-`run_validate_auto(...)` keeps the old SDK method name, but sends a config-first request to `/api/runs/config`.
+`validate_auto(...)` and `run_validate_auto(...)` keep the old SDK method names, construct an explicit
+`split`, `validate`, `batch` config, and send it to `/api/runs/config`. `validate_auto_defaults` is retained as
+a compatibility overlay; new code should fetch defaults with `config_defaults()` instead of recreating backend
+defaults in Python.
 
 The SDK resolves the binary in this order:
 
