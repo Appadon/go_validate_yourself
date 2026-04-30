@@ -491,111 +491,52 @@ func runBatchPhase(ctx context.Context, opts BatchOptions, emitter progress.Emit
 	return summary, nil
 }
 
-/* RunAuto executes split, directory validation, and batch export in sequence. */
+/* RunAuto executes the legacy split, directory validation, and batch workflow. */
 func (s Service) RunAuto(ctx context.Context, opts AutoOptions) (AutoResult, error) {
-	ctx = ensureContext(ctx)
-	emitter := progress.NewEmitter(opts.RunID, opts.Reporter)
-	emitter.Started(progress.PhaseRun, "validation run started", map[string]any{
-		"mode": "auto",
+	pipelineResult, err := s.RunPipeline(ctx, PipelineOptions{
+		Phases:       []PipelinePhase{PipelinePhaseSplit, PipelinePhaseValidate, PipelinePhaseBatch},
+		ResumePolicy: PipelineResumePolicyReuseValidOutputs,
+		Split: SplitOptions{
+			InputPath:       opts.MainInputCSV,
+			OutputDir:       opts.SplitOutputDir,
+			PrimaryKey:      opts.SplitPrimaryKey,
+			MaxOpenWriters:  opts.SplitMaxOpen,
+			MissingKeysFile: opts.SplitMissingFile,
+		},
+		Validate: ValidateOptions{
+			SchemaPath:      opts.SchemaPath,
+			InputDir:        opts.SplitOutputDir,
+			Threads:         normalizeWorkers(opts.Threads),
+			WriteEmptyError: opts.WriteEmptyError,
+			SuccessDir:      opts.SuccessDir,
+			ErrorDir:        opts.ErrorDir,
+		},
+		Batch: BatchOptions{
+			InputDir:       resolveAutoBatchDir(opts),
+			OutputDir:      opts.BatchExportDir,
+			BatchSize:      opts.BatchSize,
+			Workers:        normalizeWorkers(opts.Threads),
+			ClearOutputDir: false,
+		},
+		ReuseSplitCache:           true,
+		ClearValidationOutputDirs: opts.ClearValidationCache,
+		RunID:                     opts.RunID,
+		Reporter:                  opts.Reporter,
+		Mode:                      "auto",
 	})
-	if opts.ClearValidationCache {
-		emitter.Log(
-			progress.PhaseRun,
-			fmt.Sprintf("clearing validation cache directories: %s, %s, %s",
-				opts.SuccessDir,
-				opts.ErrorDir,
-				opts.BatchExportDir,
-			), map[string]any{
-				"success_dir":      opts.SuccessDir,
-				"error_dir":        opts.ErrorDir,
-				"batch_export_dir": opts.BatchExportDir,
-			},
-		)
-		emitter.Log(progress.PhaseRun, "this might take a while depending on the size of the cache", nil)
-		if err := clearValidationOutputDirs(opts.SuccessDir, opts.ErrorDir, opts.BatchExportDir); err != nil {
-			emitter.Failed(progress.PhaseRun, err.Error(), nil)
-			return AutoResult{}, err
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		emitter.Failed(progress.PhaseRun, err.Error(), nil)
-		return AutoResult{}, err
-	}
-
-	primaryKey := strings.TrimSpace(opts.SplitPrimaryKey)
-	if primaryKey == "" {
-		detected, err := DetectPrimaryKey(opts.MainInputCSV)
-		if err != nil {
-			emitter.Failed(progress.PhaseRun, fmt.Sprintf("failed detecting split primary key: %v", err), nil)
-			return AutoResult{}, fmt.Errorf("failed detecting split primary key: %w", err)
-		}
-		primaryKey = detected
-	}
-
-	splitSummary, splitReused, err := s.prepareAutoSplit(ctx, opts, primaryKey, emitter)
-	if err != nil {
-		emitter.Failed(progress.PhaseRun, err.Error(), nil)
-		return AutoResult{}, err
-	}
-
-	validationResult, err := runValidateDirPhase(ctx, ValidateOptions{
-		SchemaPath:      opts.SchemaPath,
-		InputDir:        opts.SplitOutputDir,
-		Threads:         normalizeWorkers(opts.Threads),
-		WriteEmptyError: opts.WriteEmptyError,
-		SuccessDir:      opts.SuccessDir,
-		ErrorDir:        opts.ErrorDir,
-	}, emitter)
-	if err != nil {
-		emitter.Failed(progress.PhaseRun, err.Error(), nil)
-		return AutoResult{
-			MainInputCSV:    opts.MainInputCSV,
-			SchemaPath:      opts.SchemaPath,
-			SplitPrimaryKey: primaryKey,
-			SplitReused:     splitReused,
-			SplitSummary:    splitSummary,
-			Validation:      validationResult,
-		}, err
-	}
-
-	batchInputDir := resolveAutoBatchDir(opts)
-	batchSummary, err := runBatchPhase(ctx, BatchOptions{
-		InputDir:       batchInputDir,
-		OutputDir:      opts.BatchExportDir,
-		BatchSize:      opts.BatchSize,
-		Workers:        normalizeWorkers(opts.Threads),
-		ClearOutputDir: false,
-	}, emitter)
-	if err != nil {
-		emitter.Failed(progress.PhaseRun, err.Error(), nil)
-		return AutoResult{
-			MainInputCSV:    opts.MainInputCSV,
-			SchemaPath:      opts.SchemaPath,
-			SplitPrimaryKey: primaryKey,
-			SplitReused:     splitReused,
-			SplitSummary:    splitSummary,
-			Validation:      validationResult,
-		}, err
-	}
 
 	result := AutoResult{
 		MainInputCSV:    opts.MainInputCSV,
 		SchemaPath:      opts.SchemaPath,
-		SplitPrimaryKey: primaryKey,
-		SplitReused:     splitReused,
-		SplitSummary:    splitSummary,
-		Validation:      validationResult,
-		BatchSummary:    batchSummary,
+		SplitPrimaryKey: pipelineResult.SplitPrimaryKey,
+		SplitReused:     pipelineResult.SplitReused,
+		SplitSummary:    pipelineResult.SplitSummary,
+		BatchSummary:    pipelineResult.BatchSummary,
 	}
-	emitter.Completed(progress.PhaseRun, "validation run complete", map[string]any{
-		"mode":          "auto",
-		"split_reused":  splitReused,
-		"split_rows":    splitSummary.TotalRows,
-		"validated":     validationResult.Summary.Files,
-		"batch_files":   batchSummary.InputFiles,
-		"batch_outputs": batchSummary.Batches,
-	})
-	return result, nil
+	if pipelineResult.ValidationDir != nil {
+		result.Validation = *pipelineResult.ValidationDir
+	}
+	return result, err
 }
 
 /* prepareAutoSplit reuses an existing split directory when the input hash matches. */

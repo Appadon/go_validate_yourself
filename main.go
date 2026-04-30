@@ -118,11 +118,11 @@ func parseFlags() cliOptions {
 	flag.StringVar(&opts.configPath, "config", "", "GVY run config JSON file")
 	flag.BoolVar(&opts.printConfig, "print-config", false, "Print the resolved effective config and exit")
 	flag.StringVar(&opts.phases, "phases", "", "Comma-separated pipeline phases: split,validate,batch")
-	flag.StringVar(&opts.schemaPath, "schema", "", "Schema JSON file (required)")
+	flag.StringVar(&opts.schemaPath, "schema", "", "Schema JSON file for validation phases")
 	flag.StringVar(&opts.inputDir, "dir", "", "Directory containing CSV files to validate")
-	flag.IntVar(&opts.threads, "t", service.DefaultThreadCount(), "Number of concurrent workers for -dir mode")
+	flag.IntVar(&opts.threads, "t", service.DefaultThreadCount(), "Number of concurrent workers for validation and batch phases")
 	flag.BoolVar(&opts.writeEmptyError, "write-empty-error", false, "Write empty error CSV files for fully valid inputs")
-	flag.BoolVar(&opts.clearCache, "clear-validation-cache", false, "Clear success/error/batch directories before auto mode run")
+	flag.BoolVar(&opts.clearCache, "clear-validation-cache", false, "Clear success/error/batch directories before compatible full auto runs")
 	flag.StringVar(&opts.successDir, "success-dir", "success", "Directory for valid parquet output")
 	flag.StringVar(&opts.errorDir, "error-dir", "errors", "Directory for validation error CSV output")
 	flag.StringVar(&opts.splitInput, "split-input", "", "Input CSV file to split by primary key")
@@ -131,7 +131,7 @@ func parseFlags() cliOptions {
 	flag.IntVar(&opts.splitMaxOpen, "split-max-open", 256, "Maximum number of concurrently open split file writers")
 	flag.StringVar(&opts.splitMissingFile, "split-missing-file", "missing_keys.csv", "Name for rows where split key is blank")
 	flag.IntVar(&opts.batchSize, "batch-size", 1000, "Number of parquet files per output batch")
-	flag.StringVar(&opts.batchDir, "batch-dir", "", "Directory containing parquet files for batch mode (defaults to success-dir in auto mode)")
+	flag.StringVar(&opts.batchDir, "batch-dir", "", "Directory containing parquet files for batch mode, or batch input override")
 	flag.StringVar(&opts.batchExportDir, "batch-export-dir", "batch_export", "Directory for batch mode output parquet files")
 	flag.StringVar(&opts.host, "host", "127.0.0.1", "Host for server mode")
 	flag.IntVar(&opts.port, "port", 8080, "Port for server mode")
@@ -558,27 +558,31 @@ func dispatchResolvedConfig(resolution cliConfigResolution) error {
 	if resolved.Mode == modeServer && len(resolved.Plan.Phases) == 0 {
 		return runResolvedServer(resolved)
 	}
-	switch {
-	case phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch}):
-		return runResolvedAuto(resolved, resolution.ThreadSource)
-	case phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit}):
-		return runResolvedSplit(resolved)
-	case phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseValidate}):
-		return runResolvedValidate(resolved)
-	case phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseBatch}):
-		return runResolvedBatch(resolved, resolution.ThreadSource)
-	case phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseValidate, gvyconfig.PhaseBatch}):
-		if err := runResolvedValidate(resolved); err != nil {
-			return err
-		}
-		return runResolvedBatch(resolved, resolution.ThreadSource)
-	case phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate}):
-		if err := runResolvedSplit(resolved); err != nil {
-			return err
-		}
-		return runResolvedValidate(resolved)
-	default:
+	if !supportedResolvedPhases(resolved.Plan.Phases) {
 		return fmt.Errorf("unsupported pipeline phase sequence %v", resolved.Plan.Phases)
+	}
+
+	primaryKey, err := printResolvedPipelineBanners(resolved, resolution.ThreadSource)
+	if err != nil {
+		return err
+	}
+	pipelineOpts := pipelineOptionsFromResolved(resolved, primaryKey)
+	_, err = service.New().RunPipeline(context.Background(), pipelineOpts)
+	return err
+}
+
+/* supportedResolvedPhases reports whether the CLI can dispatch a resolved phase sequence. */
+func supportedResolvedPhases(phases []gvyconfig.Phase) bool {
+	switch {
+	case phasesEqual(phases, []gvyconfig.Phase{gvyconfig.PhaseSplit}),
+		phasesEqual(phases, []gvyconfig.Phase{gvyconfig.PhaseValidate}),
+		phasesEqual(phases, []gvyconfig.Phase{gvyconfig.PhaseBatch}),
+		phasesEqual(phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate}),
+		phasesEqual(phases, []gvyconfig.Phase{gvyconfig.PhaseValidate, gvyconfig.PhaseBatch}),
+		phasesEqual(phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch}):
+		return true
+	default:
+		return false
 	}
 }
 
@@ -595,127 +599,156 @@ func phasesEqual(actual, expected []gvyconfig.Phase) bool {
 	return true
 }
 
-/* runResolvedAuto executes the full resolved split, validate, and batch pipeline. */
-func runResolvedAuto(resolved gvyconfig.ResolvedConfig, threadSource string) error {
-	primaryKey, primaryKeySource, err := resolvePrimaryKeyForRun(resolved.Inputs.MainCSV, resolved.Split.PrimaryKey)
-	if err != nil {
-		return err
-	}
-	threads := resolved.EffectiveWorkers
-	printAutoModeBanner(autoModeBannerConfig{
-		MainInput:            resolved.Inputs.MainCSV,
-		SchemaPath:           resolved.Inputs.Schema,
-		WriteEmptyError:      resolved.Validation.WriteEmptyError,
-		ClearValidationCache: resolved.Validation.ClearOutputs,
-		SplitOutputDir:       resolved.Outputs.SplitDir,
-		SuccessDir:           resolved.Outputs.SuccessDir,
-		ErrorDir:             resolved.Outputs.ErrorDir,
-		PrimaryKey:           primaryKey,
-		PrimaryKeySource:     primaryKeySource,
-		SplitMaxOpen:         resolved.Split.MaxOpenWriters,
-		MissingKeysFile:      resolved.Split.MissingKeysFile,
-		Threads:              threads,
-		ThreadSource:         threadSource,
-		CPUCount:             runtime.NumCPU(),
-		BatchDir:             resolved.Batch.InputDir,
-		BatchExportDir:       resolved.Outputs.BatchExportDir,
-		BatchSize:            resolved.Batch.Size,
-		BatchThreads:         threads,
-		BatchThreadSource:    threadSource,
-	})
-	_, err = service.New().RunAuto(context.Background(), service.AutoOptions{
-		MainInputCSV:         resolved.Inputs.MainCSV,
-		SchemaPath:           resolved.Inputs.Schema,
-		SplitOutputDir:       resolved.Outputs.SplitDir,
-		SplitPrimaryKey:      primaryKey,
-		SplitMaxOpen:         resolved.Split.MaxOpenWriters,
-		SplitMissingFile:     resolved.Split.MissingKeysFile,
-		Threads:              threads,
-		WriteEmptyError:      resolved.Validation.WriteEmptyError,
-		ClearValidationCache: resolved.Validation.ClearOutputs,
-		SuccessDir:           resolved.Outputs.SuccessDir,
-		ErrorDir:             resolved.Outputs.ErrorDir,
-		BatchDir:             resolved.Batch.InputDir,
-		BatchExportDir:       resolved.Outputs.BatchExportDir,
-		BatchSize:            resolved.Batch.Size,
-		Reporter:             console.NewProgressReporter(),
-	})
-	return err
-}
-
-/* runResolvedSplit executes a resolved split-only phase. */
-func runResolvedSplit(resolved gvyconfig.ResolvedConfig) error {
-	primaryKey, _, err := resolvePrimaryKeyForRun(resolved.Inputs.MainCSV, resolved.Split.PrimaryKey)
-	if err != nil {
-		return err
-	}
-	printSplitModeBanner(resolved.Inputs.MainCSV, resolved.Outputs.SplitDir, primaryKey, resolved.Split.MaxOpenWriters, resolved.Split.MissingKeysFile)
-	_, err = service.New().RunSplit(context.Background(), service.SplitOptions{
-		InputPath:       resolved.Inputs.MainCSV,
-		OutputDir:       resolved.Outputs.SplitDir,
-		PrimaryKey:      primaryKey,
-		MaxOpenWriters:  resolved.Split.MaxOpenWriters,
-		MissingKeysFile: resolved.Split.MissingKeysFile,
-		Reporter:        console.NewProgressReporter(),
-	})
-	return err
-}
-
-/* runResolvedValidate executes a resolved single-file or directory validation phase. */
-func runResolvedValidate(resolved gvyconfig.ResolvedConfig) error {
-	if strings.TrimSpace(resolved.Inputs.ValidateCSV) != "" {
-		printValidationBanner(validationBannerConfig{
-			Mode:            "single-file validation",
-			SchemaPath:      resolved.Inputs.Schema,
-			Input:           resolved.Inputs.ValidateCSV,
-			SuccessDir:      resolved.Outputs.SuccessDir,
-			ErrorDir:        resolved.Outputs.ErrorDir,
-			WriteEmptyError: resolved.Validation.WriteEmptyError,
-			Threads:         1,
+/*
+printResolvedPipelineBanners prints the same CLI banners as the legacy
+mode dispatchers before handing execution to the service orchestrator.
+*/
+func printResolvedPipelineBanners(resolved gvyconfig.ResolvedConfig, threadSource string) (string, error) {
+	if phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch}) {
+		primaryKey, primaryKeySource, err := resolvePrimaryKeyForRun(resolved.Inputs.MainCSV, resolved.Split.PrimaryKey)
+		if err != nil {
+			return "", err
+		}
+		printAutoModeBanner(autoModeBannerConfig{
+			MainInput:            resolved.Inputs.MainCSV,
+			SchemaPath:           resolved.Inputs.Schema,
+			WriteEmptyError:      resolved.Validation.WriteEmptyError,
+			ClearValidationCache: resolved.Validation.ClearOutputs,
+			SplitOutputDir:       resolved.Outputs.SplitDir,
+			SuccessDir:           resolved.Outputs.SuccessDir,
+			ErrorDir:             resolved.Outputs.ErrorDir,
+			PrimaryKey:           primaryKey,
+			PrimaryKeySource:     primaryKeySource,
+			SplitMaxOpen:         resolved.Split.MaxOpenWriters,
+			MissingKeysFile:      resolved.Split.MissingKeysFile,
+			Threads:              resolved.EffectiveWorkers,
+			ThreadSource:         threadSource,
+			CPUCount:             runtime.NumCPU(),
+			BatchDir:             resolved.Batch.InputDir,
+			BatchExportDir:       resolved.Outputs.BatchExportDir,
+			BatchSize:            resolved.Batch.Size,
+			BatchThreads:         resolved.EffectiveWorkers,
+			BatchThreadSource:    threadSource,
 		})
-		_, err := service.New().RunValidateFile(context.Background(), service.ValidateOptions{
+		return primaryKey, nil
+	}
+
+	primaryKey := ""
+	if containsResolvedPhase(resolved.Plan.Phases, gvyconfig.PhaseSplit) {
+		detected, _, err := resolvePrimaryKeyForRun(resolved.Inputs.MainCSV, resolved.Split.PrimaryKey)
+		if err != nil {
+			return "", err
+		}
+		primaryKey = detected
+		printSplitModeBanner(resolved.Inputs.MainCSV, resolved.Outputs.SplitDir, primaryKey, resolved.Split.MaxOpenWriters, resolved.Split.MissingKeysFile)
+	}
+	if containsResolvedPhase(resolved.Plan.Phases, gvyconfig.PhaseValidate) {
+		if strings.TrimSpace(resolved.Inputs.ValidateCSV) != "" {
+			printValidationBanner(validationBannerConfig{
+				Mode:            "single-file validation",
+				SchemaPath:      resolved.Inputs.Schema,
+				Input:           resolved.Inputs.ValidateCSV,
+				SuccessDir:      resolved.Outputs.SuccessDir,
+				ErrorDir:        resolved.Outputs.ErrorDir,
+				WriteEmptyError: resolved.Validation.WriteEmptyError,
+				Threads:         1,
+			})
+		} else {
+			printValidationBanner(validationBannerConfig{
+				Mode:            "directory validation",
+				SchemaPath:      resolved.Inputs.Schema,
+				Input:           resolved.Inputs.ValidateDir,
+				SuccessDir:      resolved.Outputs.SuccessDir,
+				ErrorDir:        resolved.Outputs.ErrorDir,
+				WriteEmptyError: resolved.Validation.WriteEmptyError,
+				Threads:         resolved.EffectiveWorkers,
+			})
+		}
+	}
+	if containsResolvedPhase(resolved.Plan.Phases, gvyconfig.PhaseBatch) {
+		printBatchModeBanner(resolved.Batch.InputDir, resolved.Outputs.BatchExportDir, resolved.Batch.Size, resolved.EffectiveWorkers, threadSource, resolved.Batch.ClearOutput)
+	}
+	return primaryKey, nil
+}
+
+/* pipelineOptionsFromResolved converts resolved config into service execution options. */
+func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig, splitPrimaryKey string) service.PipelineOptions {
+	fullAutoPipeline := phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch})
+	batchClearOutput := resolved.Batch.ClearOutput
+	if fullAutoPipeline {
+		batchClearOutput = false
+	}
+	return service.PipelineOptions{
+		Phases:       servicePipelinePhases(resolved.Plan.Phases),
+		ResumePolicy: serviceResumePolicy(resolved.Plan.ResumePolicy),
+		Split: service.SplitOptions{
+			InputPath:       resolved.Inputs.MainCSV,
+			OutputDir:       resolved.Outputs.SplitDir,
+			PrimaryKey:      splitPrimaryKey,
+			MaxOpenWriters:  resolved.Split.MaxOpenWriters,
+			MissingKeysFile: resolved.Split.MissingKeysFile,
+		},
+		Validate: service.ValidateOptions{
 			SchemaPath:      resolved.Inputs.Schema,
 			InputCSV:        resolved.Inputs.ValidateCSV,
+			InputDir:        resolved.Inputs.ValidateDir,
+			Threads:         resolved.EffectiveWorkers,
 			WriteEmptyError: resolved.Validation.WriteEmptyError,
 			SuccessDir:      resolved.Outputs.SuccessDir,
 			ErrorDir:        resolved.Outputs.ErrorDir,
-			Reporter:        console.NewProgressReporter(),
-		})
-		return err
+		},
+		Batch: service.BatchOptions{
+			InputDir:       resolved.Batch.InputDir,
+			OutputDir:      resolved.Outputs.BatchExportDir,
+			BatchSize:      resolved.Batch.Size,
+			Workers:        resolved.EffectiveWorkers,
+			ClearOutputDir: batchClearOutput,
+		},
+		ReuseSplitCache:           resolved.Split.ReuseCache,
+		ClearValidationOutputDirs: resolved.Validation.ClearOutputs && fullAutoPipeline,
+		Reporter:                  console.NewProgressReporter(),
+		Mode:                      resolvedPipelineMode(resolved),
 	}
-	printValidationBanner(validationBannerConfig{
-		Mode:            "directory validation",
-		SchemaPath:      resolved.Inputs.Schema,
-		Input:           resolved.Inputs.ValidateDir,
-		SuccessDir:      resolved.Outputs.SuccessDir,
-		ErrorDir:        resolved.Outputs.ErrorDir,
-		WriteEmptyError: resolved.Validation.WriteEmptyError,
-		Threads:         resolved.EffectiveWorkers,
-	})
-	_, err := service.New().RunValidateDir(context.Background(), service.ValidateOptions{
-		SchemaPath:      resolved.Inputs.Schema,
-		InputDir:        resolved.Inputs.ValidateDir,
-		Threads:         resolved.EffectiveWorkers,
-		WriteEmptyError: resolved.Validation.WriteEmptyError,
-		SuccessDir:      resolved.Outputs.SuccessDir,
-		ErrorDir:        resolved.Outputs.ErrorDir,
-		Reporter:        console.NewProgressReporter(),
-	})
-	return err
 }
 
-/* runResolvedBatch executes a resolved batch-only phase. */
-func runResolvedBatch(resolved gvyconfig.ResolvedConfig, threadSource string) error {
-	printBatchModeBanner(resolved.Batch.InputDir, resolved.Outputs.BatchExportDir, resolved.Batch.Size, resolved.EffectiveWorkers, threadSource, resolved.Batch.ClearOutput)
-	_, err := service.New().RunBatch(context.Background(), service.BatchOptions{
-		InputDir:       resolved.Batch.InputDir,
-		OutputDir:      resolved.Outputs.BatchExportDir,
-		BatchSize:      resolved.Batch.Size,
-		Workers:        resolved.EffectiveWorkers,
-		ClearOutputDir: resolved.Batch.ClearOutput,
-		Reporter:       console.NewProgressReporter(),
-	})
-	return err
+func servicePipelinePhases(phases []gvyconfig.Phase) []service.PipelinePhase {
+	out := make([]service.PipelinePhase, 0, len(phases))
+	for _, phase := range phases {
+		out = append(out, service.PipelinePhase(phase))
+	}
+	return out
+}
+
+func serviceResumePolicy(policy gvyconfig.ResumePolicy) service.PipelineResumePolicy {
+	return service.PipelineResumePolicy(policy)
+}
+
+func resolvedPipelineMode(resolved gvyconfig.ResolvedConfig) string {
+	if phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch}) {
+		return modeAuto
+	}
+	if phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit}) {
+		return modeSplit
+	}
+	if phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseValidate}) {
+		if strings.TrimSpace(resolved.Inputs.ValidateCSV) != "" {
+			return "validate-file"
+		}
+		return "validate-dir"
+	}
+	if phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseBatch}) {
+		return modeBatch
+	}
+	return "pipeline"
+}
+
+func containsResolvedPhase(phases []gvyconfig.Phase, target gvyconfig.Phase) bool {
+	for _, phase := range phases {
+		if phase == target {
+			return true
+		}
+	}
+	return false
 }
 
 /* runResolvedServer starts server mode from resolved config values. */
@@ -790,309 +823,6 @@ func looksLikeImplicitAuto(args []string) bool {
 	return strings.ToLower(filepath.Ext(args[1])) == ".json"
 }
 
-/* runSplitOnlyMode resolves split inputs and executes split mode with auto key detection. */
-func runSplitOnlyMode(opts cliOptions, args []string) {
-	input, err := resolveSplitInput(opts, args)
-	if err != nil {
-		exitf("split mode argument error: %v", err)
-	}
-
-	primaryKey := strings.TrimSpace(opts.splitPrimaryKey)
-	if primaryKey == "" {
-		primaryKey, err = service.DetectPrimaryKey(input)
-		if err != nil {
-			exitf("failed detecting split primary key: %v", err)
-		}
-	}
-
-	printSplitModeBanner(input, opts.splitOutputDir, primaryKey, opts.splitMaxOpen, opts.splitMissingFile)
-	runSplitMode(input, opts.splitOutputDir, primaryKey, opts.splitMissingFile, opts.splitMaxOpen)
-}
-
-/* resolveSplitInput resolves split input from either -split-input or one positional argument. */
-func resolveSplitInput(opts cliOptions, args []string) (string, error) {
-	splitInput := strings.TrimSpace(opts.splitInput)
-	if splitInput == "" {
-		if len(args) == 0 {
-			return "", fmt.Errorf("missing split input CSV; use -mode split <input.csv> or -split-input <input.csv>")
-		}
-		if len(args) > 1 {
-			return "", fmt.Errorf("split mode accepts one positional input CSV")
-		}
-		return args[0], nil
-	}
-	if len(args) == 0 {
-		return splitInput, nil
-	}
-	if len(args) > 1 {
-		return "", fmt.Errorf("split mode accepts one positional input CSV")
-	}
-	if args[0] != splitInput {
-		return "", fmt.Errorf("conflicting split input values: %q and %q", splitInput, args[0])
-	}
-	return splitInput, nil
-}
-
-/* runAutoMode executes the full split, validate, and batch workflow. */
-func runAutoMode(opts cliOptions, args []string) {
-	mainInput, schemaPath, err := resolveAutoModeInputs(opts, args)
-	if err != nil {
-		exitf("auto mode argument error: %v", err)
-	}
-
-	writeEmptyError := opts.writeEmptyError
-	clearValidationCache := opts.clearCache
-	if !opts.modeSpecified && !opts.clearCacheSet {
-		clearValidationCache = true
-	}
-
-	primaryKey := strings.TrimSpace(opts.splitPrimaryKey)
-	if primaryKey == "" {
-		primaryKey, err = service.DetectPrimaryKey(mainInput)
-		if err != nil {
-			exitf("failed detecting split primary key: %v", err)
-		}
-	}
-
-	threads := opts.threads
-	threadSource := "cli"
-	if !opts.threadsSpecified {
-		threads = service.DefaultThreadCount()
-		threadSource = "default(60% cpu)"
-	}
-	primaryKeySource := "cli"
-	if strings.TrimSpace(opts.splitPrimaryKey) == "" {
-		primaryKeySource = "auto-detected(first header)"
-	}
-
-	printAutoModeBanner(autoModeBannerConfig{
-		MainInput:            mainInput,
-		SchemaPath:           schemaPath,
-		WriteEmptyError:      writeEmptyError,
-		ClearValidationCache: clearValidationCache,
-		SplitOutputDir:       opts.splitOutputDir,
-		SuccessDir:           opts.successDir,
-		ErrorDir:             opts.errorDir,
-		PrimaryKey:           primaryKey,
-		PrimaryKeySource:     primaryKeySource,
-		SplitMaxOpen:         opts.splitMaxOpen,
-		MissingKeysFile:      opts.splitMissingFile,
-		Threads:              threads,
-		ThreadSource:         threadSource,
-		CPUCount:             runtime.NumCPU(),
-		BatchDir:             resolveAutoBatchDir(opts),
-		BatchExportDir:       opts.batchExportDir,
-		BatchSize:            normalizeBatchSize(opts.batchSize),
-		BatchThreads:         threads,
-		BatchThreadSource:    threadSource,
-	})
-
-	_, err = service.New().RunAuto(context.Background(), service.AutoOptions{
-		MainInputCSV:         mainInput,
-		SchemaPath:           schemaPath,
-		SplitOutputDir:       opts.splitOutputDir,
-		SplitPrimaryKey:      primaryKey,
-		SplitMaxOpen:         opts.splitMaxOpen,
-		SplitMissingFile:     opts.splitMissingFile,
-		Threads:              threads,
-		WriteEmptyError:      writeEmptyError,
-		ClearValidationCache: clearValidationCache,
-		SuccessDir:           opts.successDir,
-		ErrorDir:             opts.errorDir,
-		BatchDir:             resolveAutoBatchDir(opts),
-		BatchExportDir:       opts.batchExportDir,
-		BatchSize:            normalizeBatchSize(opts.batchSize),
-		Reporter:             console.NewProgressReporter(),
-	})
-	if err != nil {
-		exitf("%v", err)
-	}
-}
-
-/* resolveAutoModeInputs maps supported auto-mode CLI patterns to input and schema paths. */
-func resolveAutoModeInputs(opts cliOptions, args []string) (string, string, error) {
-	remaining := append([]string{}, args...)
-	schemaPath := strings.TrimSpace(opts.schemaPath)
-	if schemaPath == "" {
-		idx := indexOfSchemaArg(remaining)
-		if idx == -1 {
-			return "", "", fmt.Errorf("missing schema path; pass <schema.json> or -schema <path>")
-		}
-		schemaPath = remaining[idx]
-		remaining = removeArgAt(remaining, idx)
-	}
-	if len(remaining) < 1 {
-		return "", "", fmt.Errorf("missing main input CSV")
-	}
-	if len(remaining) > 1 {
-		return "", "", fmt.Errorf("auto mode accepts only <main.csv> plus flags")
-	}
-	return remaining[0], schemaPath, nil
-}
-
-/* runBatchMode resolves batch inputs and executes parquet batching mode. */
-func runBatchMode(opts cliOptions, args []string) {
-	batchDir, err := resolveBatchInput(opts, args)
-	if err != nil {
-		exitf("batch mode argument error: %v", err)
-	}
-	clearValidationCache := opts.clearCache
-	if !opts.clearCacheSet {
-		clearValidationCache = true
-	}
-	batchSize := normalizeBatchSize(opts.batchSize)
-	threads := opts.threads
-	threadSource := "cli"
-	if !opts.threadsSpecified {
-		threads = service.DefaultThreadCount()
-		threadSource = "default(60% cpu)"
-	}
-
-	printBatchModeBanner(batchDir, opts.batchExportDir, batchSize, threads, threadSource, clearValidationCache)
-	_, err = service.New().RunBatch(context.Background(), service.BatchOptions{
-		InputDir:       batchDir,
-		OutputDir:      opts.batchExportDir,
-		BatchSize:      batchSize,
-		Workers:        threads,
-		ClearOutputDir: clearValidationCache,
-		Reporter:       console.NewProgressReporter(),
-	})
-	if err != nil {
-		exitf("%v", err)
-	}
-}
-
-/* resolveBatchInput resolves batch input directory from -batch-dir or one positional arg. */
-func resolveBatchInput(opts cliOptions, args []string) (string, error) {
-	batchDir := strings.TrimSpace(opts.batchDir)
-	if batchDir == "" {
-		if len(args) == 0 {
-			return "", fmt.Errorf("missing batch directory; use -mode batch -batch-dir <dir> or -mode batch <dir>")
-		}
-		if len(args) > 1 {
-			return "", fmt.Errorf("batch mode accepts one positional directory")
-		}
-		return args[0], nil
-	}
-	if len(args) == 0 {
-		return batchDir, nil
-	}
-	if len(args) > 1 {
-		return "", fmt.Errorf("batch mode accepts one positional directory")
-	}
-	if args[0] != batchDir {
-		return "", fmt.Errorf("conflicting batch directory values: %q and %q", batchDir, args[0])
-	}
-	return batchDir, nil
-}
-
-/* normalizeBatchSize applies lower bounds and defaults for parquet batching. */
-func normalizeBatchSize(batchSize int) int {
-	if batchSize < 1 {
-		return 1
-	}
-	return batchSize
-}
-
-/* resolveAutoBatchDir returns the parquet input directory used during auto mode batch phase. */
-func resolveAutoBatchDir(opts cliOptions) string {
-	if strings.TrimSpace(opts.batchDir) == "" {
-		return opts.successDir
-	}
-	return opts.batchDir
-}
-
-/* runValidationMode validates CLI arguments and executes single-file or directory processing. */
-func runValidationMode(opts cliOptions, args []string) {
-	normalizeValidationOptions(&opts)
-	inputCSV, schemaPath, err := resolveValidationInputs(opts, args)
-	if err != nil {
-		exitf("validation mode argument error: %v", err)
-	}
-
-	printValidationBanner(validationBannerConfig{
-		Mode:            validationModeLabel(opts),
-		SchemaPath:      schemaPath,
-		Input:           validationInputLabel(opts, inputCSV),
-		SuccessDir:      opts.successDir,
-		ErrorDir:        opts.errorDir,
-		WriteEmptyError: opts.writeEmptyError,
-		Threads:         validationThreadCount(opts),
-	})
-
-	if strings.TrimSpace(opts.inputDir) == "" {
-		runSingleFileValidation(inputCSV, schemaPath, opts.successDir, opts.errorDir, opts.writeEmptyError)
-		return
-	}
-	runDirectoryValidation(opts.inputDir, schemaPath, opts.threads, opts.successDir, opts.errorDir, opts.writeEmptyError)
-}
-
-/* normalizeValidationOptions applies bounds and defaults for validation mode. */
-func normalizeValidationOptions(opts *cliOptions) {
-	if opts.threads < 1 {
-		opts.threads = 1
-	}
-}
-
-/* resolveValidationInputs resolves schema and input targets for validation mode. */
-func resolveValidationInputs(opts cliOptions, args []string) (string, string, error) {
-	remaining := append([]string{}, args...)
-	schemaPath := strings.TrimSpace(opts.schemaPath)
-	if schemaPath == "" {
-		idx := indexOfSchemaArg(remaining)
-		if idx >= 0 {
-			schemaPath = remaining[idx]
-			remaining = removeArgAt(remaining, idx)
-		}
-	}
-	if schemaPath == "" {
-		defaulted, err := service.ResolveDefaultSchemaPath()
-		if err != nil {
-			return "", "", err
-		}
-		schemaPath = defaulted
-		console.Infof("no schema provided; defaulting to %s", console.GreenValue(schemaPath))
-	}
-
-	if strings.TrimSpace(opts.inputDir) != "" {
-		if len(remaining) > 0 {
-			return "", "", fmt.Errorf("for -dir mode, use flags only (no positional arguments)")
-		}
-		return "", schemaPath, nil
-	}
-	if len(remaining) < 1 {
-		return "", "", fmt.Errorf("missing input CSV; use -mode validate <input.csv> [-schema <schema.json>]")
-	}
-	if len(remaining) > 1 {
-		return "", "", fmt.Errorf("single-file validation accepts only <input.csv> plus flags")
-	}
-	return remaining[0], schemaPath, nil
-}
-
-/* validationModeLabel returns the label used in the validation banner. */
-func validationModeLabel(opts cliOptions) string {
-	if strings.TrimSpace(opts.inputDir) == "" {
-		return "single-file validation"
-	}
-	return "directory validation"
-}
-
-/* validationInputLabel returns the input label used in the validation banner. */
-func validationInputLabel(opts cliOptions, inputCSV string) string {
-	if strings.TrimSpace(opts.inputDir) == "" {
-		return inputCSV
-	}
-	return opts.inputDir
-}
-
-/* validationThreadCount returns the effective thread count for the validation banner. */
-func validationThreadCount(opts cliOptions) int {
-	if strings.TrimSpace(opts.inputDir) == "" {
-		return 1
-	}
-	return opts.threads
-}
-
 /* indexOfSchemaArg returns the first positional index that looks like a JSON schema path. */
 func indexOfSchemaArg(args []string) int {
 	for i, arg := range args {
@@ -1117,7 +847,7 @@ func printUsageAndExit(code int) {
 	exitWithCode(code)
 }
 
-/* printUsage writes complete CLI help, including the new server mode. */
+/* printUsage writes complete CLI help, including config-first execution and API notes. */
 func printUsage() {
 	out := flag.CommandLine.Output()
 	bin := filepath.Base(os.Args[0])
@@ -1135,13 +865,18 @@ func printUsage() {
 
 	fmt.Fprintf(out, "\nModes:\n")
 	fmt.Fprintf(out, "  config-driven pipeline:\n")
-	fmt.Fprintf(out, "    Loads a GVY run config JSON file and resolves it into explicit split, validate, and batch phases.\n")
+	fmt.Fprintf(out, "    Preferred contract for new automation. Loads a GVY run config JSON file and resolves it into explicit phases.\n")
 	fmt.Fprintf(out, "    CLI flags override config file values.\n")
 	fmt.Fprintf(out, "    Optional: -phases split,validate,batch to override the configured phase list.\n")
 	fmt.Fprintf(out, "    Optional: -print-config to print the resolved effective config and exit.\n")
+	fmt.Fprintf(out, "    Modes expand to phases unless pipeline.phases is set:\n")
+	fmt.Fprintf(out, "      auto => split,validate,batch; split => split; validate => validate; batch => batch.\n")
+	fmt.Fprintf(out, "    Server mode starts the runtime/API entry point; it is not a data phase.\n")
+	fmt.Fprintf(out, "    Minimal auto config:\n")
+	fmt.Fprintf(out, "      {\"mode\":\"auto\",\"inputs\":{\"main_csv\":\"main.csv\",\"schema\":\"schema.json\"}}\n")
 
 	fmt.Fprintf(out, "  auto mode:\n")
-	fmt.Fprintf(out, "    Splits a main CSV by primary key, validates split files, then batches success parquet outputs.\n")
+	fmt.Fprintf(out, "    CLI compatibility shortcut for config mode=auto: split, validate, then batch.\n")
 	fmt.Fprintf(out, "    Required positional args:\n")
 	fmt.Fprintf(out, "      <main.csv> <schema.json>\n")
 	fmt.Fprintf(out, "    Optional flags:\n")
@@ -1183,9 +918,15 @@ func printUsage() {
 	fmt.Fprintf(out, "    Optional: -clear-validation-cache=true|false (default true in batch mode)\n")
 
 	fmt.Fprintf(out, "  server mode:\n")
-	fmt.Fprintf(out, "    Starts the localhost-only HTTP API.\n")
+	fmt.Fprintf(out, "    Starts the localhost-only HTTP API and browser UI.\n")
 	fmt.Fprintf(out, "    Optional: -host <addr> (default 127.0.0.1)\n")
 	fmt.Fprintf(out, "    Optional: -port <n> (default 8080)\n")
+	fmt.Fprintf(out, "    Config-first API endpoints:\n")
+	fmt.Fprintf(out, "      GET  /api/config/defaults\n")
+	fmt.Fprintf(out, "      POST /api/config/resolve\n")
+	fmt.Fprintf(out, "      POST /api/runs/config\n")
+	fmt.Fprintf(out, "    Compatibility endpoint:\n")
+	fmt.Fprintf(out, "      POST /run/validate-auto\n")
 
 	fmt.Fprintf(out, "\nHelp:\n")
 	fmt.Fprintf(out, "  -h, -help\n")
@@ -1205,86 +946,10 @@ func printUsage() {
 	fmt.Fprintf(out, "  %s -mode server -host 127.0.0.1 -port 8080\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -phases split\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -phases validate,batch -dir split/\n", bin)
+	fmt.Fprintf(out, "  %s -config gvy.config.json -t 12\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -print-config\n", bin)
-}
-
-/* runSingleFileValidation delegates single-file validation to the shared service layer. */
-func runSingleFileValidation(input, schemaPath, successDir, errorDir string, writeEmptyError bool) {
-	_, err := service.New().RunValidateFile(context.Background(), service.ValidateOptions{
-		SchemaPath:      schemaPath,
-		InputCSV:        input,
-		WriteEmptyError: writeEmptyError,
-		SuccessDir:      successDir,
-		ErrorDir:        errorDir,
-		Reporter:        console.NewProgressReporter(),
-	})
-	if err != nil {
-		exitf("%v", err)
-	}
-}
-
-/* runDirectoryValidation delegates directory validation to the shared service layer. */
-func runDirectoryValidation(inputDir, schemaPath string, threads int, successDir, errorDir string, writeEmptyError bool) {
-	_, err := service.New().RunValidateDir(context.Background(), service.ValidateOptions{
-		SchemaPath:      schemaPath,
-		InputDir:        inputDir,
-		Threads:         threads,
-		WriteEmptyError: writeEmptyError,
-		SuccessDir:      successDir,
-		ErrorDir:        errorDir,
-		Reporter:        console.NewProgressReporter(),
-	})
-	if err != nil {
-		exitf("%v", err)
-	}
-}
-
-/* runSplitMode delegates split execution to the shared service layer. */
-func runSplitMode(input, outDir, primaryKey, missingFile string, maxOpen int) {
-	_, err := service.New().RunSplit(context.Background(), service.SplitOptions{
-		InputPath:       input,
-		OutputDir:       outDir,
-		PrimaryKey:      primaryKey,
-		MaxOpenWriters:  maxOpen,
-		MissingKeysFile: missingFile,
-		Reporter:        console.NewProgressReporter(),
-	})
-	if err != nil {
-		exitf("%v", err)
-	}
-}
-
-/* runBatchParquetMode delegates batch execution to the shared service layer. */
-func runBatchParquetMode(batchDir, batchExportDir string, batchSize, workers int) {
-	_, err := service.New().RunBatch(context.Background(), service.BatchOptions{
-		InputDir:  batchDir,
-		OutputDir: batchExportDir,
-		BatchSize: batchSize,
-		Workers:   workers,
-		Reporter:  console.NewProgressReporter(),
-	})
-	if err != nil {
-		exitf("%v", err)
-	}
-}
-
-/* runServerMode starts the localhost-only HTTP server. */
-func runServerMode(opts cliOptions) {
-	if strings.TrimSpace(opts.host) == "" {
-		opts.host = "127.0.0.1"
-	}
-	if opts.port < 1 {
-		exitf("invalid port %d", opts.port)
-	}
-	if !isLoopbackHost(opts.host) {
-		exitf("server mode only supports loopback hosts; got %q", opts.host)
-	}
-
-	console.Infof("starting server mode on %s:%d", console.GreenValue(opts.host), opts.port)
-	server := api.NewServer(opts.host, opts.port, service.New())
-	if err := server.ListenAndServe(); err != nil {
-		exitf("server failed: %v", err)
-	}
+	fmt.Fprintf(out, "  curl -s http://127.0.0.1:8080/api/config/defaults\n")
+	fmt.Fprintf(out, "  curl -s -X POST http://127.0.0.1:8080/api/config/resolve -H 'Content-Type: application/json' --data '{\"mode\":\"auto\",\"inputs\":{\"main_csv\":\"main.csv\",\"schema\":\"schema.json\"}}'\n")
 }
 
 /* isLoopbackHost reports whether the provided bind host is loopback-safe. */

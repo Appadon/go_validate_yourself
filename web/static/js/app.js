@@ -2,11 +2,30 @@
   "use strict";
 
   const bootstrap = window.GVY_UI_BOOTSTRAP || {};
+  const phaseOrder = ["split", "validate", "batch"];
+  const pickerProfiles = {
+    csv: { apiKind: "csv", mode: "file", title: "Select main CSV", subtitle: "Browse the working directory and choose one CSV file.", target: "selectedCsv" },
+    schema: { apiKind: "schema", mode: "file", title: "Select schema JSON", subtitle: "Browse the working directory and choose one schema JSON file.", target: "selectedSchema" },
+    validateCsv: { apiKind: "csv", mode: "file", title: "Select validation CSV", subtitle: "Choose one existing split CSV file.", target: "validateCsvInput" },
+    validateDir: { apiKind: "csv", mode: "dir", title: "Select validation directory", subtitle: "Choose a directory that contains existing split CSV output.", target: "validateDirInput" },
+    batchDir: { apiKind: "csv", mode: "dir", title: "Select batch input directory", subtitle: "Choose a directory that contains existing parquet output.", target: "batchInputDirInput" },
+  };
+
   const state = {
     health: bootstrap.server || { status: "ok", busy: false, version: "v1", working_root: "" },
     runId: bootstrap.latest_run_id || "",
     snapshot: null,
     result: null,
+    configDefaults: null,
+    configDefaultsLoaded: false,
+    preview: {
+      status: "idle",
+      resolved: null,
+      error: "",
+      localError: "",
+    },
+    lastSubmittedConfig: null,
+    lastSubmittedResolved: null,
     browser: {
       activeKind: "",
       csv: {
@@ -23,10 +42,16 @@
     filters: {
       csv: "",
       schema: "",
+      validateCsv: "",
+      validateDir: "",
+      batchDir: "",
     },
     pickerSelection: {
       csv: "",
       schema: "",
+      validateCsv: "",
+      validateDir: "",
+      batchDir: "",
     },
     selected: {
       csv: "",
@@ -36,11 +61,45 @@
     seenEvents: new Set(),
     stream: null,
     pendingRefresh: 0,
+    pendingConfigRun: false,
+    pendingAttach: 0,
+    attachingRunId: "",
+    resolveTimer: 0,
+    resolveSequence: 0,
   };
 
   const els = {
     form: document.getElementById("run-form"),
     refreshFilesButton: document.getElementById("refresh-files-button"),
+    defaultsStatus: document.getElementById("defaults-status"),
+    phaseSplit: document.getElementById("phase-split"),
+    phaseValidate: document.getElementById("phase-validate"),
+    phaseBatch: document.getElementById("phase-batch"),
+    mainCSVGroup: document.getElementById("main-csv-group"),
+    schemaGroup: document.getElementById("schema-group"),
+    sourceInputsSection: document.getElementById("source-inputs-section"),
+    validateCSVField: document.getElementById("validate-csv-field"),
+    validateDirField: document.getElementById("validate-dir-field"),
+    batchInputDirField: document.getElementById("batch-input-dir-field"),
+    validateCSVInput: document.getElementById("validate-csv-input"),
+    validateDirInput: document.getElementById("validate-dir-input"),
+    batchInputDirInput: document.getElementById("batch-input-dir-input"),
+    validateCSVOpenButton: document.getElementById("validate-csv-open-button"),
+    validateDirOpenButton: document.getElementById("validate-dir-open-button"),
+    batchInputDirOpenButton: document.getElementById("batch-input-dir-open-button"),
+    workersInput: document.getElementById("workers-input"),
+    splitPrimaryKeyInput: document.getElementById("split-primary-key-input"),
+    splitOutputDirInput: document.getElementById("split-output-dir-input"),
+    successDirInput: document.getElementById("success-dir-input"),
+    errorDirInput: document.getElementById("error-dir-input"),
+    batchExportDirInput: document.getElementById("batch-export-dir-input"),
+    batchSizeInput: document.getElementById("batch-size-input"),
+    resumePolicySelect: document.getElementById("resume-policy-select"),
+    writeEmptyErrorInput: document.getElementById("write-empty-error-input"),
+    clearOutputsInput: document.getElementById("clear-outputs-input"),
+    previewStatus: document.getElementById("preview-status"),
+    previewErrors: document.getElementById("preview-errors"),
+    resolvedPreview: document.getElementById("resolved-preview"),
     csvOpenButton: document.getElementById("csv-open-button"),
     schemaOpenButton: document.getElementById("schema-open-button"),
     csvCount: document.getElementById("csv-count"),
@@ -73,12 +132,14 @@
     pickerDirectories: document.getElementById("picker-directories"),
     pickerSelect: document.getElementById("picker-select"),
     pickerSelectionSummary: document.getElementById("picker-selection-summary"),
+    pickerCurrentDirButton: document.getElementById("picker-current-dir-button"),
     pickerChooseButton: document.getElementById("picker-choose-button"),
   };
 
   function init() {
     bindEvents();
     render();
+    loadConfigDefaults();
     refreshHealth();
     refreshFileLists();
     if (state.runId) {
@@ -97,6 +158,23 @@
 
     els.schemaOpenButton.addEventListener("click", function () {
       openPicker("schema");
+    });
+
+    els.validateCSVOpenButton.addEventListener("click", function () {
+      openPicker("validateCsv");
+    });
+
+    els.validateDirOpenButton.addEventListener("click", function () {
+      openPicker("validateDir");
+    });
+
+    els.batchInputDirOpenButton.addEventListener("click", function () {
+      openPicker("batchDir");
+    });
+
+    configControlElements().forEach(function (control) {
+      control.addEventListener("input", handleConfigControlChange);
+      control.addEventListener("change", handleConfigControlChange);
     });
 
     els.pickerFilterInput.addEventListener("input", function () {
@@ -119,6 +197,10 @@
 
     els.pickerSelect.addEventListener("dblclick", function () {
       commitPickerSelection();
+    });
+
+    els.pickerCurrentDirButton.addEventListener("click", function () {
+      commitCurrentDirectorySelection();
     });
 
     els.pickerUpButton.addEventListener("click", function () {
@@ -148,6 +230,233 @@
     els.pickerBackdrop.addEventListener("click", closePicker);
   }
 
+  function configControlElements() {
+    return [
+      els.phaseSplit,
+      els.phaseValidate,
+      els.phaseBatch,
+      els.validateCSVInput,
+      els.validateDirInput,
+      els.batchInputDirInput,
+      els.workersInput,
+      els.splitPrimaryKeyInput,
+      els.splitOutputDirInput,
+      els.successDirInput,
+      els.errorDirInput,
+      els.batchExportDirInput,
+      els.batchSizeInput,
+      els.resumePolicySelect,
+      els.writeEmptyErrorInput,
+      els.clearOutputsInput,
+    ];
+  }
+
+  function handleConfigControlChange() {
+    renderConfigVisibility();
+    clearFormMessage();
+    scheduleResolvePreview();
+    render();
+  }
+
+  /*
+  loadConfigDefaults hydrates the form from GET /api/config/defaults so the
+  browser starts from the same canonical values the backend will resolve.
+  */
+  async function loadConfigDefaults() {
+    try {
+      const response = await fetch("/api/config/defaults");
+      const payload = await parseJSON(response);
+      if (!response.ok) {
+        throw new Error(payload && payload.message ? payload.message : "Could not load backend config defaults");
+      }
+      state.configDefaults = payload.defaults || {};
+      state.configDefaultsLoaded = true;
+      applyDefaultsToForm(state.configDefaults);
+      setBadge(els.defaultsStatus, "Defaults loaded", "ok");
+      render();
+      scheduleResolvePreview(0);
+    } catch (error) {
+      state.configDefaultsLoaded = false;
+      setBadge(els.defaultsStatus, "Defaults unavailable", "error");
+      state.preview.status = "error";
+      state.preview.error = error.message || "Could not load backend config defaults";
+      renderPreview();
+      updateSubmitState();
+    }
+  }
+
+  /*
+  applyDefaultsToForm copies backend-supplied defaults into editable controls
+  without hard-coding fallback values in JavaScript.
+  */
+  function applyDefaultsToForm(defaults) {
+    const defaultPhases = defaultPhasesForConfig(defaults);
+    els.phaseSplit.checked = defaultPhases.indexOf("split") >= 0;
+    els.phaseValidate.checked = defaultPhases.indexOf("validate") >= 0;
+    els.phaseBatch.checked = defaultPhases.indexOf("batch") >= 0;
+    els.workersInput.value = valueOrEmpty(defaults.runtime && defaults.runtime.workers);
+    els.splitPrimaryKeyInput.value = valueOrEmpty(defaults.split && defaults.split.primary_key);
+    els.splitOutputDirInput.value = valueOrEmpty(defaults.outputs && defaults.outputs.split_dir);
+    els.successDirInput.value = valueOrEmpty(defaults.outputs && defaults.outputs.success_dir);
+    els.errorDirInput.value = valueOrEmpty(defaults.outputs && defaults.outputs.error_dir);
+    els.batchExportDirInput.value = valueOrEmpty(defaults.outputs && defaults.outputs.batch_export_dir);
+    els.batchSizeInput.value = valueOrEmpty(defaults.batch && defaults.batch.size);
+    els.resumePolicySelect.value = (defaults.pipeline && defaults.pipeline.resume_policy) || els.resumePolicySelect.value;
+    els.writeEmptyErrorInput.checked = Boolean(defaults.validation && defaults.validation.write_empty_error);
+    els.clearOutputsInput.checked = Boolean((defaults.validation && defaults.validation.clear_outputs) || (defaults.batch && defaults.batch.clear_output));
+    renderConfigVisibility();
+  }
+
+  function defaultPhasesForConfig(defaults) {
+    const explicit = defaults && defaults.pipeline && Array.isArray(defaults.pipeline.phases) ? defaults.pipeline.phases : [];
+    if (explicit.length) {
+      return explicit;
+    }
+    switch ((defaults && defaults.mode) || "") {
+      case "split":
+        return ["split"];
+      case "validate":
+        return ["validate"];
+      case "batch":
+        return ["batch"];
+      case "server":
+        return [];
+      default:
+        return ["split", "validate", "batch"];
+    }
+  }
+
+  /*
+  buildCurrentConfig overlays the current UI state onto the backend defaults
+  and returns the exact config object sent to resolve and run endpoints.
+  */
+  function buildCurrentConfig() {
+    const cfg = deepClone(state.configDefaults || {});
+    ensureConfigShape(cfg);
+    const phases = selectedPhases();
+    cfg.mode = "auto";
+    cfg.pipeline.phases = phases;
+    cfg.pipeline.resume_policy = els.resumePolicySelect.value;
+    cfg.inputs.main_csv = phases.indexOf("split") >= 0 ? state.selected.csv : "";
+    cfg.inputs.schema = phases.indexOf("validate") >= 0 ? state.selected.schema : "";
+    cfg.inputs.validate_csv = phases.indexOf("validate") >= 0 && phases.indexOf("split") < 0 ? els.validateCSVInput.value.trim() : "";
+    cfg.inputs.validate_dir = phases.indexOf("validate") >= 0 && phases.indexOf("split") < 0 ? els.validateDirInput.value.trim() : "";
+    cfg.outputs.split_dir = els.splitOutputDirInput.value.trim();
+    cfg.outputs.success_dir = els.successDirInput.value.trim();
+    cfg.outputs.error_dir = els.errorDirInput.value.trim();
+    cfg.outputs.batch_export_dir = els.batchExportDirInput.value.trim();
+    cfg.split.primary_key = els.splitPrimaryKeyInput.value.trim();
+    cfg.validation.write_empty_error = els.writeEmptyErrorInput.checked;
+    cfg.validation.clear_outputs = els.clearOutputsInput.checked;
+    cfg.batch.input_dir = phases.indexOf("batch") >= 0 && phases.indexOf("validate") < 0 ? els.batchInputDirInput.value.trim() : "";
+    cfg.batch.size = integerValue(els.batchSizeInput.value);
+    cfg.batch.clear_output = els.clearOutputsInput.checked;
+    cfg.runtime.workers = integerValue(els.workersInput.value);
+    return cfg;
+  }
+
+  function ensureConfigShape(cfg) {
+    cfg.pipeline = cfg.pipeline || {};
+    cfg.inputs = cfg.inputs || {};
+    cfg.outputs = cfg.outputs || {};
+    cfg.split = cfg.split || {};
+    cfg.validation = cfg.validation || {};
+    cfg.batch = cfg.batch || {};
+    cfg.runtime = cfg.runtime || {};
+    cfg.server = cfg.server || {};
+  }
+
+  function selectedPhases() {
+    return phaseOrder.filter(function (phase) {
+      if (phase === "split") {
+        return els.phaseSplit.checked;
+      }
+      if (phase === "validate") {
+        return els.phaseValidate.checked;
+      }
+      return els.phaseBatch.checked;
+    });
+  }
+
+  /*
+  scheduleResolvePreview debounces calls to POST /api/config/resolve so every
+  meaningful form change is validated by the backend before submission.
+  */
+  function scheduleResolvePreview(delayMs) {
+    window.clearTimeout(state.resolveTimer);
+    state.resolveTimer = window.setTimeout(function () {
+      resolvePreviewNow();
+    }, delayMs == null ? 250 : delayMs);
+  }
+
+  /*
+  resolvePreviewNow posts the current config to the server resolver and stores
+  either the effective config or the resolver's validation error for rendering.
+  */
+  async function resolvePreviewNow() {
+    window.clearTimeout(state.resolveTimer);
+    const localError = localConfigError();
+    if (localError) {
+      state.preview = { status: "error", resolved: null, error: localError, localError: localError };
+      renderPreview();
+      updateSubmitState();
+      return false;
+    }
+    if (!state.configDefaultsLoaded) {
+      state.preview = { status: "error", resolved: null, error: "Backend defaults have not loaded yet.", localError: "" };
+      renderPreview();
+      updateSubmitState();
+      return false;
+    }
+
+    const sequence = state.resolveSequence + 1;
+    state.resolveSequence = sequence;
+    state.preview.status = "pending";
+    state.preview.error = "";
+    renderPreview();
+    updateSubmitState();
+
+    try {
+      const response = await fetch("/api/config/resolve", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(buildCurrentConfig()),
+      });
+      const payload = await parseJSON(response);
+      if (sequence !== state.resolveSequence) {
+        return false;
+      }
+      if (!response.ok) {
+        throw new Error(payload && payload.message ? payload.message : "Config resolution failed");
+      }
+      state.preview.status = "ok";
+      state.preview.resolved = payload.resolved_config || null;
+      state.preview.error = "";
+      renderPreview();
+      updateSubmitState();
+      return true;
+    } catch (error) {
+      if (sequence !== state.resolveSequence) {
+        return false;
+      }
+      state.preview.status = "error";
+      state.preview.resolved = null;
+      state.preview.error = error.message || "Config resolution failed";
+      renderPreview();
+      updateSubmitState();
+      return false;
+    }
+  }
+
+  function localConfigError() {
+    if (!selectedPhases().length) {
+      return "Select at least one pipeline phase.";
+    }
+    return "";
+  }
+
   async function refreshFileLists() {
     clearFormMessage();
     await Promise.all([loadFileList("csv", state.browser.csv.currentPath), loadFileList("schema", state.browser.schema.currentPath)]);
@@ -155,54 +464,72 @@
   }
 
   async function loadFileList(kind, path) {
-    updateFileCount(kind, "Loading…");
+    const profile = pickerProfiles[kind] || pickerProfiles.csv;
+    const apiKind = profile.apiKind;
+    updateFileCount(apiKind, "Loading…");
     try {
       const params = new URLSearchParams();
-      params.set("kind", kind);
+      params.set("kind", apiKind);
       if (path) {
         params.set("path", path);
       }
       const response = await fetch("/api/files?" + params.toString());
       const payload = await parseJSON(response);
       if (!response.ok) {
-        throw new Error(payload && payload.message ? payload.message : "Could not load " + kind + " files");
+        throw new Error(payload && payload.message ? payload.message : "Could not load " + apiKind + " files");
       }
-      state.browser[kind].currentPath = payload.current_path || "";
-      state.browser[kind].parentPath = payload.parent_path || "";
-      state.browser[kind].entries = payload.entries || [];
-      if (!hasRelativePath(kind, state.pickerSelection[kind])) {
+      state.browser[apiKind].currentPath = payload.current_path || "";
+      state.browser[apiKind].parentPath = payload.parent_path || "";
+      state.browser[apiKind].entries = payload.entries || [];
+      if (pickerProfiles[kind] && pickerProfiles[kind].mode === "file" && !hasRelativePath(kind, state.pickerSelection[kind])) {
         state.pickerSelection[kind] = "";
       }
+      if (kind === "schema" && state.selected.schema && !hasRelativePath("schema", state.selected.schema)) {
+        state.selected.schema = "";
+        scheduleResolvePreview();
+      }
+      if (kind === "csv" && state.selected.csv && !hasRelativePath("csv", state.selected.csv)) {
+        state.selected.csv = "";
+        scheduleResolvePreview();
+      }
       renderPicker();
-      renderSelectionSummary(kind);
+      renderSelectionSummary("csv");
+      renderSelectionSummary("schema");
     } catch (error) {
-      state.browser[kind].entries = [];
+      state.browser[apiKind].entries = [];
       renderPicker();
-      renderSelectionSummary(kind);
+      renderSelectionSummary("csv");
+      renderSelectionSummary("schema");
       setFormMessage(error.message || "Could not load file lists", "error");
     }
   }
 
+  /*
+  submitRun uses the config-first run endpoint with the same config object
+  that was resolved in preview, preserving the simple CSV plus schema path.
+  */
   async function submitRun() {
-    if (!state.selected.csv || !state.selected.schema) {
-      setFormMessage("Choose both a CSV file and a schema JSON file before starting a run.", "warn");
+    const previewOK = state.preview.status === "ok" || await resolvePreviewNow();
+    if (!previewOK) {
+      setFormMessage("Fix the configuration errors before starting a run.", "warn");
       return;
     }
 
     closeStream();
     els.submitButton.disabled = true;
-    setFormMessage("Creating validation run from the server working directory…", "info");
+    const config = buildCurrentConfig();
+    state.lastSubmittedConfig = deepClone(config);
+    state.lastSubmittedResolved = state.preview.resolved ? deepClone(state.preview.resolved) : null;
+    setFormMessage("Creating config-driven run from the current pipeline settings…", "info");
+    startPendingConfigRunAttach();
 
     try {
-      const response = await fetch("/api/runs", {
+      const response = await fetch("/api/runs/config", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          csv_path: state.selected.csv,
-          schema_path: state.selected.schema,
-        }),
+        body: JSON.stringify(config),
       });
       const payload = await parseJSON(response);
 
@@ -221,17 +548,76 @@
       }
 
       state.runId = payload.run.run_id;
-      state.result = null;
-      state.health.busy = true;
+      state.result = {
+        result: {
+          resolved_config: payload.resolved_config || state.lastSubmittedResolved,
+          result: payload.result || null,
+        },
+      };
+      state.lastSubmittedResolved = payload.resolved_config || state.lastSubmittedResolved;
+      state.health.busy = false;
+      stopPendingConfigRunAttach();
       replaceSnapshot(payload.run);
-      openStream(state.runId);
       render();
-      setFormMessage("Run created. Streaming progress now.", "ok");
+      setFormMessage("Run completed. Final result is shown below.", "ok");
       refreshHealth();
     } catch (error) {
       setFormMessage(error.message || "Run creation failed", "error");
     } finally {
+      stopPendingConfigRunAttach();
       render();
+    }
+  }
+
+  /*
+  startPendingConfigRunAttach polls health while POST /api/runs/config is
+  still pending, then attaches the UI to the run snapshot and SSE stream.
+  */
+  function startPendingConfigRunAttach() {
+    state.pendingConfigRun = true;
+    state.attachingRunId = "";
+    window.clearTimeout(state.pendingAttach);
+    state.pendingAttach = window.setTimeout(pollPendingConfigRunAttach, 250);
+  }
+
+  function stopPendingConfigRunAttach() {
+    state.pendingConfigRun = false;
+    state.attachingRunId = "";
+    window.clearTimeout(state.pendingAttach);
+    state.pendingAttach = 0;
+  }
+
+  /*
+  pollPendingConfigRunAttach discovers the run ID created by the synchronous
+  config-run request and keeps the progress panel connected while it runs.
+  */
+  async function pollPendingConfigRunAttach() {
+    if (!state.pendingConfigRun) {
+      return;
+    }
+
+    try {
+      const response = await fetch("/health");
+      if (response.ok) {
+        state.health = await response.json();
+        const latestRunId = state.health.latest_run_id || "";
+        if (state.health.busy && latestRunId && latestRunId !== state.attachingRunId) {
+          state.attachingRunId = latestRunId;
+          await syncRun(latestRunId);
+          setFormMessage("Run created. Streaming progress now.", "ok");
+        } else if (state.health.busy && latestRunId && state.snapshot && state.snapshot.run_id === latestRunId && !isTerminalState(state.snapshot.state)) {
+          openStream(latestRunId);
+          render();
+        } else {
+          render();
+        }
+      }
+    } catch (error) {
+      render();
+    } finally {
+      if (state.pendingConfigRun) {
+        state.pendingAttach = window.setTimeout(pollPendingConfigRunAttach, 900);
+      }
     }
   }
 
@@ -242,6 +628,9 @@
         return;
       }
       state.health = await response.json();
+      if (state.health.busy && state.health.latest_run_id && (!state.snapshot || state.snapshot.run_id !== state.health.latest_run_id)) {
+        syncRun(state.health.latest_run_id);
+      }
       render();
     } catch (error) {
       setFormMessage("Health check failed. The page will keep showing the last known state.", "warn");
@@ -328,6 +717,7 @@
     if (schemaPath) {
       state.selected.schema = schemaPath;
     }
+    scheduleResolvePreview();
   }
 
   function pushEvent(event) {
@@ -409,8 +799,10 @@
 
   function render() {
     renderServerState();
+    renderConfigVisibility();
     renderSelectionSummary("csv");
     renderSelectionSummary("schema");
+    renderPreview();
     renderRunState();
     renderSummary();
     renderEvents();
@@ -424,9 +816,71 @@
     setBadge(els.serverStatusBadge, busy ? "Single run occupied" : "Ready for a new run", busy ? "warn" : "ok");
   }
 
+  function renderConfigVisibility() {
+    const phases = selectedPhases();
+    const split = phases.indexOf("split") >= 0;
+    const validate = phases.indexOf("validate") >= 0;
+    const batch = phases.indexOf("batch") >= 0;
+    els.mainCSVGroup.hidden = !split;
+    els.schemaGroup.hidden = !validate;
+    els.validateCSVField.hidden = !validate || split;
+    els.validateDirField.hidden = !validate || split;
+    els.batchInputDirField.hidden = !batch || validate;
+    els.sourceInputsSection.hidden = !((validate && !split) || (batch && !validate));
+  }
+
   function renderSelectionSummary(kind) {
     const summary = kind === "csv" ? els.csvSelectionSummary : els.schemaSelectionSummary;
     summary.textContent = state.selected[kind] ? displayFileName(state.selected[kind]) : "No " + kind + " selected";
+  }
+
+  function renderPreview() {
+    if (state.preview.status === "pending") {
+      setBadge(els.previewStatus, "Resolving", "info");
+    } else if (state.preview.status === "ok") {
+      setBadge(els.previewStatus, "Ready", "ok");
+    } else if (state.preview.status === "error") {
+      setBadge(els.previewStatus, "Invalid", "error");
+    } else {
+      setBadge(els.previewStatus, "Waiting", "muted");
+    }
+
+    if (state.preview.error) {
+      els.previewErrors.hidden = false;
+      els.previewErrors.textContent = state.preview.error;
+    } else {
+      els.previewErrors.hidden = true;
+      els.previewErrors.textContent = "";
+    }
+
+    const resolved = state.preview.resolved;
+    if (!resolved) {
+      els.resolvedPreview.innerHTML = rowHTML("Status", state.preview.error || "Choose inputs to preview the effective pipeline.");
+      return;
+    }
+
+    const plan = resolved.plan || {};
+    const rows = [
+      rowHTML("Phases", listText(plan.phases)),
+      rowHTML("Resume policy", valueText(plan.resume_policy)),
+      rowHTML("Workers", valueText(resolved.effective_workers)),
+    ];
+    if (phaseInPlan(resolved, "split")) {
+      rows.push(rowHTML("Primary key", splitPrimaryKeyText(resolved)));
+      rows.push(rowHTML("Split input", valueText(plan.split_input_csv)));
+      rows.push(rowHTML("Split output", valueText(plan.split_output_dir)));
+    }
+    if (phaseInPlan(resolved, "validate")) {
+      rows.push(rowHTML("Validate input", valueText(plan.validate_input_csv || plan.validate_input_dir)));
+      rows.push(rowHTML("Schema", valueText(plan.validate_schema)));
+      rows.push(rowHTML("Success output", valueText(plan.validation_success_dir)));
+      rows.push(rowHTML("Error output", valueText(plan.validation_error_dir)));
+    }
+    if (phaseInPlan(resolved, "batch")) {
+      rows.push(rowHTML("Batch input", valueText(plan.batch_input_dir)));
+      rows.push(rowHTML("Batch output", valueText(plan.batch_output_dir)));
+    }
+    els.resolvedPreview.innerHTML = rows.join("");
   }
 
   function renderPicker() {
@@ -436,17 +890,21 @@
       return;
     }
 
+    const profile = pickerProfiles[kind];
+    const apiKind = profile.apiKind;
     const select = els.pickerSelect;
-    const files = filteredFiles(kind);
+    const files = profile.mode === "file" ? filteredFiles(kind) : filteredDirectories(kind);
     const directories = filteredDirectories(kind);
-    const currentPath = state.browser[kind].currentPath || "";
+    const currentPath = state.browser[apiKind].currentPath || "";
     const selectedValue = state.pickerSelection[kind] || "";
 
-    els.pickerTitle.textContent = kind === "csv" ? "Select CSV file" : "Select schema file";
-    els.pickerSubtitle.textContent = kind === "csv" ? "Browse the working directory and choose one CSV file." : "Browse the working directory and choose one schema JSON file.";
+    els.pickerTitle.textContent = profile.title;
+    els.pickerSubtitle.textContent = profile.subtitle;
     els.pickerFilterInput.value = state.filters[kind] || "";
     els.pickerPathValue.textContent = "/" + currentPath;
-    els.pickerUpButton.disabled = !state.browser[kind].parentPath && !currentPath;
+    els.pickerUpButton.disabled = !state.browser[apiKind].parentPath && !currentPath;
+    els.pickerCurrentDirButton.hidden = profile.mode !== "dir";
+    els.pickerChooseButton.textContent = profile.mode === "dir" ? "Use selected directory" : "Use selected file";
 
     if (!directories.length) {
       els.pickerDirectories.innerHTML = '<span class="directory-empty">No subdirectories here.</span>';
@@ -465,7 +923,7 @@
     if (!files.length) {
       const option = document.createElement("option");
       option.disabled = true;
-      option.textContent = hasFileEntries(kind) ? "No files match the current filter" : "No matching files in this directory";
+      option.textContent = profile.mode === "dir" ? "No subdirectories match the current filter" : hasFileEntries(kind) ? "No files match the current filter" : "No matching files in this directory";
       select.appendChild(option);
     } else {
       files.forEach(function (entry) {
@@ -482,7 +940,7 @@
       }
     }
 
-    updateFileCount(kind, directories.length + " dirs · " + fileEntries(kind).length + " files");
+    updateFileCount(apiKind, directories.length + " dirs · " + selectableFileEntries(kind).length + " files");
     updatePickerSelectionState();
   }
 
@@ -492,9 +950,9 @@
       els.runIDValue.textContent = state.runId || "Waiting for submission";
       els.runStageValue.textContent = state.health.busy ? "Attached elsewhere" : "Idle";
       els.runProgressValue.textContent = "Not started";
-      els.stageDetail.textContent = state.health.busy ? "Run in progress" : "Preparing";
-      els.phaseHeading.textContent = state.health.busy ? "Server busy" : "Ready";
-      els.phaseDetail.textContent = state.health.busy ? "A run exists, but this page has not attached to its snapshot yet." : "No active run.";
+      els.stageDetail.textContent = state.pendingConfigRun ? "Attaching" : state.health.busy ? "Run in progress" : "Preparing";
+      els.phaseHeading.textContent = state.pendingConfigRun ? "Starting run" : state.health.busy ? "Server busy" : "Ready";
+      els.phaseDetail.textContent = state.pendingConfigRun ? "Waiting for the run snapshot and progress stream." : state.health.busy ? "A run exists, but this page has not attached to its snapshot yet." : "No active run.";
       els.progressFill.style.width = "0%";
       setBadge(els.runStateBadge, state.health.busy ? "Busy" : "No run selected", state.health.busy ? "warn" : "muted");
       return;
@@ -519,23 +977,49 @@
   function renderSummary() {
     const snapshot = state.snapshot;
     const workspace = snapshot && snapshot.workspace ? snapshot.workspace : null;
-    const result = state.result && state.result.result ? state.result.result : null;
+    const final = finalResultInfo();
+    const resolved = final.resolved || state.lastSubmittedResolved || null;
+    const result = final.pipeline || null;
     const cards = [];
     const splitSummary = field(result, "split_summary") || {};
-    const validation = field(result, "validation") || {};
+    const validation = field(result, "validation", "validation_dir") || {};
     const validationSummary = field(validation, "summary") || {};
     const batchSummary = field(result, "batch_summary") || {};
 
-    cards.push(cardHTML("Inputs", [
-      rowHTML("CSV", valueText((workspace && workspace.input_csv_path) || state.selected.csv)),
-      rowHTML("Schema", valueText((workspace && workspace.schema_path) || state.selected.schema)),
-    ]));
+    if (resolved) {
+      const plan = resolved.plan || {};
+      cards.push(cardHTML("Effective config", [
+        rowHTML("Phases", listText(plan.phases)),
+        rowHTML("Workers", valueText(resolved.effective_workers)),
+        rowHTML("Primary key", splitPrimaryKeyText(resolved)),
+        rowHTML("Resume", valueText(plan.resume_policy)),
+      ]));
 
-    cards.push(cardHTML("Outputs", [
-      rowHTML("Success", valueText(workspace && workspace.success_dir)),
-      rowHTML("Errors", valueText(workspace && workspace.error_dir)),
-      rowHTML("Batch export", valueText(workspace && workspace.batch_export_dir)),
-    ]));
+      cards.push(cardHTML("Effective inputs", [
+        rowHTML("Split CSV", valueText(plan.split_input_csv)),
+        rowHTML("Validate input", valueText(plan.validate_input_csv || plan.validate_input_dir)),
+        rowHTML("Schema", valueText(plan.validate_schema)),
+        rowHTML("Batch input", valueText(plan.batch_input_dir)),
+      ]));
+
+      cards.push(cardHTML("Effective outputs", [
+        rowHTML("Split", valueText(plan.split_output_dir)),
+        rowHTML("Success", valueText(plan.validation_success_dir)),
+        rowHTML("Errors", valueText(plan.validation_error_dir)),
+        rowHTML("Batch export", valueText(plan.batch_output_dir)),
+      ]));
+    } else {
+      cards.push(cardHTML("Inputs", [
+        rowHTML("CSV", valueText((workspace && workspace.input_csv_path) || state.selected.csv)),
+        rowHTML("Schema", valueText((workspace && workspace.schema_path) || state.selected.schema)),
+      ]));
+
+      cards.push(cardHTML("Outputs", [
+        rowHTML("Success", valueText(workspace && workspace.success_dir)),
+        rowHTML("Errors", valueText(workspace && workspace.error_dir)),
+        rowHTML("Batch export", valueText(workspace && workspace.batch_export_dir)),
+      ]));
+    }
 
     if (result) {
       cards.push(cardHTML("Split", [
@@ -614,12 +1098,14 @@
   function updateSubmitState() {
     const busy = Boolean(state.health && state.health.busy);
     const runningThisPage = state.snapshot && state.snapshot.state === "running";
-    els.submitButton.disabled = !state.selected.csv || !state.selected.schema || (busy && !runningThisPage);
+    const previewOK = state.preview.status === "ok";
+    els.submitButton.disabled = !previewOK || (busy && !runningThisPage);
   }
 
   function filteredFiles(kind) {
+    const profile = pickerProfiles[kind] || pickerProfiles.csv;
     const filter = state.filters[kind];
-    const files = fileEntries(kind);
+    const files = selectableFileEntries(kind);
     if (!filter) {
       return files;
     }
@@ -629,8 +1115,9 @@
   }
 
   function filteredDirectories(kind) {
+    const profile = pickerProfiles[kind] || pickerProfiles.csv;
     const filter = state.filters[kind];
-    const directories = directoryEntries(kind);
+    const directories = directoryEntries(profile.apiKind);
     if (!filter) {
       return directories;
     }
@@ -640,40 +1127,50 @@
   }
 
   function fileEntries(kind) {
-    return (state.browser[kind].entries || []).filter(function (entry) {
+    const profile = pickerProfiles[kind] || pickerProfiles.csv;
+    return (state.browser[profile.apiKind].entries || []).filter(function (entry) {
       return !entry.is_dir;
     });
   }
 
+  function selectableFileEntries(kind) {
+    return fileEntries(kind).filter(function (entry) {
+      return !(kind === "schema" && entry.relative_path === "schema.example.json");
+    });
+  }
+
   function directoryEntries(kind) {
-    return (state.browser[kind].entries || []).filter(function (entry) {
+    const apiKind = pickerProfiles[kind] ? pickerProfiles[kind].apiKind : kind;
+    return (state.browser[apiKind].entries || []).filter(function (entry) {
       return entry.is_dir;
     });
   }
 
   function hasFileEntries(kind) {
-    return fileEntries(kind).length > 0;
+    return selectableFileEntries(kind).length > 0;
   }
 
   function hasRelativePath(kind, relativePath) {
     if (!relativePath) {
       return false;
     }
-    return fileEntries(kind).some(function (entry) {
+    return selectableFileEntries(kind).some(function (entry) {
       return entry.relative_path === relativePath;
     });
   }
 
   function browseUp(kind) {
-    const targetPath = state.browser[kind].parentPath || "";
+    const profile = pickerProfiles[kind] || pickerProfiles.csv;
+    const targetPath = state.browser[profile.apiKind].parentPath || "";
     loadFileList(kind, targetPath);
   }
 
   function openPicker(kind) {
+    const profile = pickerProfiles[kind];
     state.browser.activeKind = kind;
-    state.pickerSelection[kind] = state.selected[kind] || "";
-    if (!state.browser[kind].entries.length) {
-      loadFileList(kind, state.browser[kind].currentPath);
+    state.pickerSelection[kind] = pickerCurrentTargetValue(profile) || "";
+    if (!state.browser[profile.apiKind].entries.length) {
+      loadFileList(kind, state.browser[profile.apiKind].currentPath);
     }
     renderPicker();
   }
@@ -688,27 +1185,82 @@
     return kind ? state.pickerSelection[kind] || "" : "";
   }
 
-  function commitPickerSelection() {
+  function commitCurrentDirectorySelection() {
     const kind = state.browser.activeKind;
-    const value = currentPickerValue();
-    if (!kind || !value) {
+    const profile = pickerProfiles[kind];
+    if (!kind || !profile || profile.mode !== "dir") {
       return;
     }
-    state.selected[kind] = value;
+    applyPickerValue(profile, state.browser[profile.apiKind].currentPath || ".");
+    closePicker();
+    render();
+    scheduleResolvePreview();
+  }
+
+  function commitPickerSelection() {
+    const kind = state.browser.activeKind;
+    const profile = pickerProfiles[kind];
+    const value = currentPickerValue();
+    if (!kind || !profile || !value) {
+      return;
+    }
+    applyPickerValue(profile, value);
     clearFormMessage();
     closePicker();
     render();
+    scheduleResolvePreview();
+  }
+
+  function pickerCurrentTargetValue(profile) {
+    switch (profile.target) {
+      case "selectedCsv":
+        return state.selected.csv;
+      case "selectedSchema":
+        return state.selected.schema;
+      case "validateCsvInput":
+        return els.validateCSVInput.value.trim();
+      case "validateDirInput":
+        return els.validateDirInput.value.trim();
+      case "batchInputDirInput":
+        return els.batchInputDirInput.value.trim();
+      default:
+        return "";
+    }
+  }
+
+  function applyPickerValue(profile, value) {
+    switch (profile.target) {
+      case "selectedCsv":
+        state.selected.csv = value;
+        break;
+      case "selectedSchema":
+        state.selected.schema = value;
+        break;
+      case "validateCsvInput":
+        els.validateCSVInput.value = value;
+        break;
+      case "validateDirInput":
+        els.validateDirInput.value = value;
+        break;
+      case "batchInputDirInput":
+        els.batchInputDirInput.value = value;
+        break;
+      default:
+        break;
+    }
   }
 
   function updatePickerSelectionState() {
     const kind = state.browser.activeKind;
+    const profile = pickerProfiles[kind];
     const value = kind ? state.pickerSelection[kind] || "" : "";
-    els.pickerSelectionSummary.textContent = value ? value : "No file selected.";
+    els.pickerSelectionSummary.textContent = value ? value : (profile && profile.mode === "dir" ? "No directory selected." : "No file selected.");
     els.pickerChooseButton.disabled = !value;
+    els.pickerCurrentDirButton.disabled = !(profile && profile.mode === "dir");
   }
 
   function updateFileCount(kind, text) {
-    const node = kind === "csv" ? els.csvCount : els.schemaCount;
+    const node = kind === "schema" ? els.schemaCount : els.csvCount;
     node.textContent = text;
   }
 
@@ -757,27 +1309,56 @@
   }
 
   function getStageInfo(snapshot, latestEvent) {
+    const phases = currentResolvedPhases();
+    const total = phases.length || 3;
     if (!snapshot) {
       return { label: "Preparing" };
     }
     if (snapshot.state === "completed") {
-      return { label: "Stage 3 of 3" };
+      return { label: "Stage " + total + " of " + total };
     }
 
     const phase = latestEvent && latestEvent.phase ? latestEvent.phase : "";
-    switch (phase) {
-      case "split":
-        return { label: "Stage 1 of 3" };
-      case "validate":
-        return { label: "Stage 2 of 3" };
-      case "batch":
-        return { label: "Stage 3 of 3" };
-      default:
-        if (snapshot.state === "failed") {
-          return { label: "Preparation" };
-        }
-        return { label: "Preparing" };
+    const index = phases.indexOf(phase);
+    if (index >= 0) {
+      return { label: "Stage " + (index + 1) + " of " + total };
     }
+    if (snapshot.state === "failed") {
+      return { label: "Preparation" };
+    }
+    return { label: "Preparing" };
+  }
+
+  function currentResolvedPhases() {
+    const final = finalResultInfo();
+    const resolved = final.resolved || state.lastSubmittedResolved || state.preview.resolved;
+    return resolved && resolved.plan && Array.isArray(resolved.plan.phases) ? resolved.plan.phases : [];
+  }
+
+  function finalResultInfo() {
+    if (!state.result) {
+      return { resolved: null, pipeline: null };
+    }
+    const outer = state.result.result || null;
+    if (outer && (outer.resolved_config || outer.result || outer.mode)) {
+      return {
+        resolved: outer.resolved_config || null,
+        pipeline: outer.result || null,
+      };
+    }
+    return {
+      resolved: state.result.resolved_config || null,
+      pipeline: outer,
+    };
+  }
+
+  function phaseInPlan(resolved, phase) {
+    return Boolean(resolved && resolved.plan && Array.isArray(resolved.plan.phases) && resolved.plan.phases.indexOf(phase) >= 0);
+  }
+
+  function splitPrimaryKeyText(resolved) {
+    const configured = resolved && resolved.split ? resolved.split.primary_key : "";
+    return configured ? configured : "First CSV column";
   }
 
   function formatPhase(phase) {
@@ -874,6 +1455,25 @@
     return String(value);
   }
 
+  function valueOrEmpty(value) {
+    if (value == null) {
+      return "";
+    }
+    return String(value);
+  }
+
+  function integerValue(value) {
+    if (value == null || String(value).trim() === "") {
+      return 0;
+    }
+    const parsed = Number.parseInt(value, 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+
+  function listText(value) {
+    return Array.isArray(value) && value.length ? value.join(" -> ") : "None";
+  }
+
   function displayFileName(relativePath) {
     if (!relativePath) {
       return "";
@@ -943,6 +1543,10 @@
       }
     }
     return undefined;
+  }
+
+  function deepClone(value) {
+    return JSON.parse(JSON.stringify(value || {}));
   }
 
   function escapeHTML(value) {
