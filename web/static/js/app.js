@@ -961,7 +961,7 @@
     const latestEvent = snapshot.latest_event || newestEvent();
     const progressPercent = getProgressPercent(snapshot, latestEvent);
     const stageInfo = getStageInfo(snapshot, latestEvent);
-    const phaseText = latestEvent ? formatPhase(latestEvent.phase) : formatState(snapshot.state);
+    const phaseText = stageInfo.phase ? formatPhase(stageInfo.phase) : latestEvent ? formatPhase(latestEvent.phase) : formatState(snapshot.state);
     const detail = latestEvent && latestEvent.message ? latestEvent.message : describeState(snapshot.state);
 
     els.runIDValue.textContent = snapshot.run_id;
@@ -1309,24 +1309,52 @@
   }
 
   function getStageInfo(snapshot, latestEvent) {
-    const phases = currentResolvedPhases();
-    const total = phases.length || 3;
     if (!snapshot) {
       return { label: "Preparing" };
     }
     if (snapshot.state === "completed") {
-      return { label: "Stage " + total + " of " + total };
+      const completedPhase = lastResolvedPhase() || latestDataPhase();
+      return completedPhase ? { label: formatPhase(completedPhase), phase: completedPhase } : { label: "Completed" };
     }
 
-    const phase = latestEvent && latestEvent.phase ? latestEvent.phase : "";
-    const index = phases.indexOf(phase);
-    if (index >= 0) {
-      return { label: "Stage " + (index + 1) + " of " + total };
+    const phase = dataPhaseForEvent(latestEvent) || latestDataPhase();
+    if (phase) {
+      return { label: formatPhase(phase), phase: phase };
     }
     if (snapshot.state === "failed") {
-      return { label: "Preparation" };
+      return { label: "Failed" };
     }
     return { label: "Preparing" };
+  }
+
+  function dataPhaseForEvent(event) {
+    if (!event) {
+      return "";
+    }
+    if (isDataPhase(event.phase)) {
+      return event.phase;
+    }
+    const metricsPhase = event.metrics && event.metrics.phase ? String(event.metrics.phase) : "";
+    return isDataPhase(metricsPhase) ? metricsPhase : "";
+  }
+
+  function latestDataPhase() {
+    for (let i = state.events.length - 1; i >= 0; i -= 1) {
+      const phase = dataPhaseForEvent(state.events[i]);
+      if (phase) {
+        return phase;
+      }
+    }
+    return "";
+  }
+
+  function lastResolvedPhase() {
+    const phases = currentResolvedPhases();
+    return phases.length ? phases[phases.length - 1] : "";
+  }
+
+  function isDataPhase(phase) {
+    return phase === "split" || phase === "validate" || phase === "batch";
   }
 
   function currentResolvedPhases() {
@@ -1364,13 +1392,13 @@
   function formatPhase(phase) {
     switch (phase) {
       case "run":
-        return "Run orchestration";
+        return "Run";
       case "split":
-        return "Split phase";
+        return "Split";
       case "validate":
-        return "Validation phase";
+        return "Validation";
       case "batch":
-        return "Batch export";
+        return "Batching";
       default:
         return phase ? phase : "Idle";
     }

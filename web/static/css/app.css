@@ -240,6 +240,12 @@ body::before {
   gap: 0.65rem;
 }
 
+.phase-selector {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
 .toggle-row--settings {
   padding-top: 0.2rem;
 }
@@ -256,6 +262,26 @@ body::before {
   color: var(--text);
   font-weight: 700;
   line-height: 1.2;
+}
+
+.workflow-phase {
+  min-height: 3.2rem;
+  justify-content: center;
+  padding: 0.75rem 0.9rem;
+  background: rgba(4, 7, 12, 0.48);
+  color: var(--muted);
+}
+
+.workflow-phase span {
+  color: inherit;
+  font-size: 1rem;
+}
+
+.workflow-phase:has(input:checked) {
+  border-color: rgba(118, 168, 255, 0.72);
+  background: linear-gradient(180deg, rgba(75, 141, 255, 0.26), rgba(75, 141, 255, 0.12));
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(118, 168, 255, 0.18);
 }
 
 .toggle-control input {
@@ -306,6 +332,48 @@ body::before {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.5rem;
+}
+
+.advanced-settings {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.advanced-settings__summary {
+  cursor: pointer;
+  color: var(--text);
+  list-style-position: outside;
+}
+
+.advanced-settings__summary::marker {
+  color: var(--accent-strong);
+}
+
+.advanced-settings__summary > span {
+  display: inline-grid;
+  gap: 0.25rem;
+  margin-left: 0.45rem;
+  vertical-align: top;
+}
+
+.advanced-settings__summary strong {
+  font-size: 1.05rem;
+}
+
+.advanced-settings__summary span span {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.advanced-settings[open] .advanced-settings__summary {
+  margin-bottom: 0.9rem;
+}
+
+.advanced-settings[open] .toggle-row--settings {
+  margin-top: 0.9rem;
 }
 
 .preview-errors {
@@ -734,6 +802,7 @@ body::before {
 
 .button:focus-visible,
 .directory-chip:focus-visible,
+.advanced-settings__summary:focus-visible,
 .field-control input:focus-visible,
 .field-control select:focus-visible,
 .filter-field input:focus-visible,
@@ -803,6 +872,7 @@ code {
   .facts,
   .summary-cards,
   .selectors-grid,
+  .phase-selector,
   .config-grid,
   .config-grid--settings,
   .preview-grid {
