@@ -13,7 +13,7 @@
           <p class="eyebrow">CONSOLE</p>
           <h1>Go Validate Yourself</h1>
           <p class="lede">
-            Select an existing CSV and schema from the server working directory, start one validation run, and follow live progress through the existing snapshot and SSE APIs.
+            Choose a workflow, select the required files, start a run, and follow live progress.
           </p>
         </div>
         <div class="topbar__status">
@@ -31,8 +31,7 @@
         <section class="panel panel--selector" aria-labelledby="selection-title">
           <div class="panel__head">
             <div>
-              <p class="eyebrow">Stage 5</p>
-              <h2 id="selection-title">Start a validation run</h2>
+              <h2 id="selection-title">Start run</h2>
               <p class="panel-note">Browsing is limited to <code>{{.WorkingRoot}}</code></p>
             </div>
             <button id="refresh-files-button" class="button button--secondary" type="button">Refresh file lists</button>
@@ -42,22 +41,22 @@
             <section class="config-section" aria-labelledby="phase-config-title">
               <div class="config-section__head">
                 <div>
-                  <h3 id="phase-config-title">Pipeline phases</h3>
-                  <p>Server-resolved defaults and validation.</p>
+                  <h3 id="phase-config-title">Workflow</h3>
+                  <p>Choose one or more phases for this run.</p>
                 </div>
                 <span id="defaults-status" class="badge badge--muted">Loading defaults</span>
               </div>
 
-              <div class="toggle-row" role="group" aria-label="Pipeline phase toggles">
-                <label class="toggle-control">
+              <div class="toggle-row phase-selector" role="group" aria-label="Workflow phase toggles">
+                <label class="toggle-control workflow-phase">
                   <input id="phase-split" type="checkbox">
                   <span>Split</span>
                 </label>
-                <label class="toggle-control">
+                <label class="toggle-control workflow-phase">
                   <input id="phase-validate" type="checkbox">
                   <span>Validate</span>
                 </label>
-                <label class="toggle-control">
+                <label class="toggle-control workflow-phase">
                   <input id="phase-batch" type="checkbox">
                   <span>Batch</span>
                 </label>
@@ -99,8 +98,8 @@
             <section id="source-inputs-section" class="config-section" aria-labelledby="source-inputs-title">
               <div class="config-section__head">
                 <div>
-                  <h3 id="source-inputs-title">Source inputs</h3>
-                  <p>Existing split CSV output or parquet input sources.</p>
+                  <h3 id="source-inputs-title">Run source</h3>
+                  <p>Use existing files when a run starts after split or validate.</p>
                 </div>
               </div>
 
@@ -131,13 +130,13 @@
               </div>
             </section>
 
-            <section class="config-section" aria-labelledby="settings-title">
-              <div class="config-section__head">
-                <div>
-                  <h3 id="settings-title">Settings</h3>
-                  <p>Backend-resolved runtime and output controls.</p>
-                </div>
-              </div>
+            <details class="advanced-settings">
+              <summary class="advanced-settings__summary">
+                <span>
+                  <strong id="settings-title">Advanced settings</strong>
+                  <span>Runtime, output, and cache controls.</span>
+                </span>
+              </summary>
 
               <div class="config-grid config-grid--settings">
                 <label class="field-control" for="workers-input">
@@ -195,12 +194,12 @@
                   <span>Clear outputs</span>
                 </label>
               </div>
-            </section>
+            </details>
 
             <section class="config-section config-section--preview" aria-labelledby="preview-title">
               <div class="config-section__head">
                 <div>
-                  <h3 id="preview-title">Resolved pipeline preview</h3>
+                  <h3 id="preview-title">Run preview</h3>
                   <p>Effective phases, inputs, outputs, workers, and resolver errors.</p>
                 </div>
                 <span id="preview-status" class="badge badge--muted">Waiting</span>
@@ -215,7 +214,7 @@
             </div>
 
             <p class="form-note">
-              GVY uses server-side file selection for V1. Multipart upload remains available at the API level, but this UI only starts runs from files already present under the server root.
+              Runs start from files already present under the server root.
             </p>
             <p id="form-message" class="form-message" aria-live="polite"></p>
           </form>
@@ -236,7 +235,7 @@
               <dd id="run-id-value">{{if .LatestRunID}}{{.LatestRunID}}{{else}}Waiting for submission{{end}}</dd>
             </div>
             <div class="fact">
-              <dt>Stage</dt>
+              <dt>Phase</dt>
               <dd id="run-stage-value">{{if .LatestRunState}}{{.LatestRunState}}{{else}}Idle{{end}}</dd>
             </div>
             <div class="fact">
