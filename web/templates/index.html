@@ -28,8 +28,8 @@
       </header>
 
       <main class="layout">
-        <section class="panel panel--selector" aria-labelledby="selection-title">
-          <div class="panel__head">
+        <section class="panel panel--selector wizard-shell" aria-labelledby="selection-title">
+          <div class="panel__head wizard-shell__head">
             <div>
               <h2 id="selection-title">Start run</h2>
               <p class="panel-note">Browsing is limited to <code>{{.WorkingRoot}}</code></p>
@@ -37,239 +37,315 @@
             <button id="refresh-files-button" class="button button--secondary" type="button">Refresh file lists</button>
           </div>
 
+          <nav class="wizard-steps" aria-label="Run setup steps">
+            <button class="wizard-step" type="button" data-wizard-step="0">
+              <span class="wizard-step__number">1</span>
+              <span class="wizard-step__label">Input</span>
+            </button>
+            <button class="wizard-step" type="button" data-wizard-step="1">
+              <span class="wizard-step__number">2</span>
+              <span class="wizard-step__label">Schema</span>
+            </button>
+            <button class="wizard-step" type="button" data-wizard-step="2">
+              <span class="wizard-step__number">3</span>
+              <span class="wizard-step__label">Options</span>
+            </button>
+            <button class="wizard-step" type="button" data-wizard-step="3">
+              <span class="wizard-step__number">4</span>
+              <span class="wizard-step__label">Confirm</span>
+            </button>
+            <button class="wizard-step" type="button" data-wizard-step="4">
+              <span class="wizard-step__number">5</span>
+              <span class="wizard-step__label">Progress</span>
+            </button>
+          </nav>
+
           <form id="run-form" class="selection-form" novalidate>
-            <section class="config-section" aria-labelledby="phase-config-title">
-              <div class="config-section__head">
+            <section class="wizard-card wizard-card--active" data-step="0" aria-labelledby="wizard-step-source-title">
+              <div class="wizard-card__head">
                 <div>
-                  <h3 id="phase-config-title">Workflow</h3>
-                  <p>Choose one or more phases for this run.</p>
+                  <p class="eyebrow">Step 1</p>
+                  <h2 id="wizard-step-source-title">Input file / source</h2>
                 </div>
-                <span id="defaults-status" class="badge badge--muted">Loading defaults</span>
               </div>
 
-              <div class="toggle-row phase-selector" role="group" aria-label="Workflow phase toggles">
-                <label class="toggle-control workflow-phase">
-                  <input id="phase-split" type="checkbox">
-                  <span>Split</span>
-                </label>
-                <label class="toggle-control workflow-phase">
-                  <input id="phase-validate" type="checkbox">
-                  <span>Validate</span>
-                </label>
-                <label class="toggle-control workflow-phase">
-                  <input id="phase-batch" type="checkbox">
-                  <span>Batch</span>
-                </label>
+              <div class="selectors-grid">
+                <section id="main-csv-group" class="selector-group" aria-labelledby="csv-group-title">
+                  <div class="selector-group__head">
+                    <div>
+                      <h3 id="csv-group-title">Main CSV</h3>
+                      <p>Split phase source.</p>
+                    </div>
+                    <span id="csv-count" class="badge badge--muted">Loading…</span>
+                  </div>
+                  <div class="selection-compact">
+                    <span class="selection-compact__label">Selected file</span>
+                    <strong id="csv-selection-summary" class="selection-compact__value">No CSV selected</strong>
+                    <button id="csv-open-button" class="button button--secondary" type="button">Select file</button>
+                  </div>
+                </section>
+              </div>
+
+              <section id="source-inputs-section" class="config-section" aria-labelledby="source-inputs-title">
+                <div class="config-section__head">
+                  <div>
+                    <h3 id="source-inputs-title">Run source</h3>
+                    <p>Use existing files when a run starts after split or validate.</p>
+                  </div>
+                </div>
+
+                <div class="config-grid">
+                  <label id="validate-csv-field" class="field-control" for="validate-csv-input">
+                    <span>Validate input file</span>
+                    <div class="input-action">
+                      <input id="validate-csv-input" type="text" autocomplete="off" placeholder="split/part.csv">
+                      <button id="validate-csv-open-button" class="button button--secondary button--small" type="button">Select</button>
+                    </div>
+                  </label>
+
+                  <label id="validate-dir-field" class="field-control" for="validate-dir-input">
+                    <span>Validate input directory</span>
+                    <div class="input-action">
+                      <input id="validate-dir-input" type="text" autocomplete="off" placeholder="split">
+                      <button id="validate-dir-open-button" class="button button--secondary button--small" type="button">Browse</button>
+                    </div>
+                  </label>
+
+                  <label id="batch-input-dir-field" class="field-control" for="batch-input-dir-input">
+                    <span>Batch input directory</span>
+                    <div class="input-action">
+                      <input id="batch-input-dir-input" type="text" autocomplete="off" placeholder="success">
+                      <button id="batch-input-dir-open-button" class="button button--secondary button--small" type="button">Browse</button>
+                    </div>
+                  </label>
+                </div>
+              </section>
+            </section>
+
+            <section class="wizard-card" data-step="1" aria-labelledby="wizard-step-schema-title">
+              <div class="wizard-card__head">
+                <div>
+                  <p class="eyebrow">Step 2</p>
+                  <h2 id="wizard-step-schema-title">Schema selection</h2>
+                </div>
+              </div>
+
+              <div class="selectors-grid selectors-grid--schema">
+                <section id="schema-group" class="selector-group" aria-labelledby="schema-group-title">
+                  <div class="selector-group__head">
+                    <div>
+                      <h3 id="schema-group-title">Schema JSON</h3>
+                      <p>Validation schema.</p>
+                    </div>
+                    <span id="schema-count" class="badge badge--muted">Loading…</span>
+                  </div>
+                  <div class="selection-compact">
+                    <span class="selection-compact__label">Selected file</span>
+                    <strong id="schema-selection-summary" class="selection-compact__value">No schema selected</strong>
+                    <button id="schema-open-button" class="button button--secondary" type="button">Select file</button>
+                  </div>
+                </section>
               </div>
             </section>
 
-            <div class="selectors-grid">
-              <section id="main-csv-group" class="selector-group" aria-labelledby="csv-group-title">
-                <div class="selector-group__head">
-                  <div>
-                    <h3 id="csv-group-title">Main CSV</h3>
-                    <p>Split phase source.</p>
-                  </div>
-                  <span id="csv-count" class="badge badge--muted">Loading…</span>
+            <section class="wizard-card" data-step="2" aria-labelledby="wizard-step-options-title">
+              <div class="wizard-card__head">
+                <div>
+                  <p class="eyebrow">Step 3</p>
+                  <h2 id="wizard-step-options-title">Options</h2>
                 </div>
-                <div class="selection-compact">
-                  <span class="selection-compact__label">Selected file</span>
-                  <strong id="csv-selection-summary" class="selection-compact__value">No CSV selected</strong>
-                  <button id="csv-open-button" class="button button--secondary" type="button">Select file</button>
+              </div>
+
+              <section class="config-section" aria-labelledby="phase-config-title">
+                <div class="config-section__head">
+                  <div>
+                    <h3 id="phase-config-title">Workflow</h3>
+                    <p>Choose one or more phases for this run.</p>
+                  </div>
+                  <span id="defaults-status" class="badge badge--muted">Loading defaults</span>
+                </div>
+
+                <div class="toggle-row phase-selector" role="group" aria-label="Workflow phase toggles">
+                  <label class="toggle-control workflow-phase">
+                    <input id="phase-split" type="checkbox">
+                    <span>Split</span>
+                  </label>
+                  <label class="toggle-control workflow-phase">
+                    <input id="phase-validate" type="checkbox">
+                    <span>Validate</span>
+                  </label>
+                  <label class="toggle-control workflow-phase">
+                    <input id="phase-batch" type="checkbox">
+                    <span>Batch</span>
+                  </label>
                 </div>
               </section>
 
-              <section id="schema-group" class="selector-group" aria-labelledby="schema-group-title">
-                <div class="selector-group__head">
+              <details class="advanced-settings">
+                <summary class="advanced-settings__summary">
+                  <span>
+                    <strong id="settings-title">Advanced settings</strong>
+                    <span>Runtime, output, and cache controls.</span>
+                  </span>
+                </summary>
+
+                <div class="config-grid config-grid--settings">
+                  <label class="field-control" for="workers-input">
+                    <span>Workers</span>
+                    <input id="workers-input" type="number" min="0" step="1">
+                  </label>
+
+                  <label class="field-control" for="split-primary-key-input">
+                    <span>Split primary key</span>
+                    <input id="split-primary-key-input" type="text" autocomplete="off" placeholder="First CSV column">
+                  </label>
+
+                  <label class="field-control" for="split-output-dir-input">
+                    <span>Split output directory</span>
+                    <input id="split-output-dir-input" type="text" autocomplete="off">
+                  </label>
+
+                  <label class="field-control" for="success-dir-input">
+                    <span>Success directory</span>
+                    <input id="success-dir-input" type="text" autocomplete="off">
+                  </label>
+
+                  <label class="field-control" for="error-dir-input">
+                    <span>Error directory</span>
+                    <input id="error-dir-input" type="text" autocomplete="off">
+                  </label>
+
+                  <label class="field-control" for="batch-export-dir-input">
+                    <span>Batch export directory</span>
+                    <input id="batch-export-dir-input" type="text" autocomplete="off">
+                  </label>
+
+                  <label class="field-control" for="batch-size-input">
+                    <span>Batch size</span>
+                    <input id="batch-size-input" type="number" min="1" step="1">
+                  </label>
+
+                  <label class="field-control" for="resume-policy-select">
+                    <span>Resume policy</span>
+                    <select id="resume-policy-select">
+                      <option value="reuse_valid_outputs">Reuse valid outputs</option>
+                      <option value="start_at_first_missing">Start at first missing</option>
+                      <option value="run_all">Run all</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="toggle-row toggle-row--settings">
+                  <label class="toggle-control">
+                    <input id="write-empty-error-input" type="checkbox">
+                    <span>Write empty error files</span>
+                  </label>
+                  <label class="toggle-control">
+                    <input id="clear-outputs-input" type="checkbox">
+                    <span>Clear outputs</span>
+                  </label>
+                </div>
+              </details>
+            </section>
+
+            <section class="wizard-card" data-step="3" aria-labelledby="wizard-step-confirm-title">
+              <div class="wizard-card__head">
+                <div>
+                  <p class="eyebrow">Step 4</p>
+                  <h2 id="wizard-step-confirm-title">Run settings confirmation</h2>
+                </div>
+              </div>
+
+              <section class="config-section config-section--preview" aria-labelledby="preview-title">
+                <div class="config-section__head">
                   <div>
-                    <h3 id="schema-group-title">Schema JSON</h3>
-                    <p>Validation schema.</p>
+                    <h3 id="preview-title">Run preview</h3>
+                    <p>Effective phases, inputs, outputs, workers, and resolver errors.</p>
                   </div>
-                  <span id="schema-count" class="badge badge--muted">Loading…</span>
+                  <span id="preview-status" class="badge badge--muted">Waiting</span>
                 </div>
-                <div class="selection-compact">
-                  <span class="selection-compact__label">Selected file</span>
-                  <strong id="schema-selection-summary" class="selection-compact__value">No schema selected</strong>
-                  <button id="schema-open-button" class="button button--secondary" type="button">Select file</button>
-                </div>
+                <div id="preview-errors" class="preview-errors" hidden></div>
+                <dl id="resolved-preview" class="preview-grid"></dl>
               </section>
+
+              <div class="form-actions">
+                <button id="submit-button" class="button button--primary" type="submit">Start run</button>
+                <button id="refresh-button" class="button button--secondary" type="button">Refresh run state</button>
+              </div>
+
+              <p class="form-note">
+                Runs start from files already present under the server root.
+              </p>
+              <p id="form-message" class="form-message" aria-live="polite"></p>
+            </section>
+          </form>
+
+          <section class="wizard-card" data-step="4" aria-labelledby="wizard-step-progress-title">
+            <div class="wizard-card__head">
+              <div>
+                <p class="eyebrow">Step 5</p>
+                <h2 id="wizard-step-progress-title">Run progress</h2>
+              </div>
             </div>
 
-            <section id="source-inputs-section" class="config-section" aria-labelledby="source-inputs-title">
-              <div class="config-section__head">
+            <section class="panel--run" aria-labelledby="run-title">
+              <div class="panel__head">
                 <div>
-                  <h3 id="source-inputs-title">Run source</h3>
-                  <p>Use existing files when a run starts after split or validate.</p>
+                  <p class="eyebrow">Run State</p>
+                  <h2 id="run-title">Live validation status</h2>
+                </div>
+                <span id="run-state-badge" class="badge badge--muted">No run selected</span>
+              </div>
+
+              <dl class="facts">
+                <div class="fact">
+                  <dt>Run ID</dt>
+                  <dd id="run-id-value">{{if .LatestRunID}}{{.LatestRunID}}{{else}}Waiting for submission{{end}}</dd>
+                </div>
+                <div class="fact">
+                  <dt>Phase</dt>
+                  <dd id="run-stage-value">{{if .LatestRunState}}{{.LatestRunState}}{{else}}Idle{{end}}</dd>
+                </div>
+                <div class="fact">
+                  <dt>Progress</dt>
+                  <dd id="run-progress-value">Not started</dd>
+                </div>
+              </dl>
+
+              <div class="progress-card" aria-live="polite">
+                <div class="progress-card__topline">
+                  <div class="progress-card__copy">
+                    <span id="stage-detail" class="progress-card__stage">Preparing</span>
+                    <strong id="phase-heading">Ready</strong>
+                  </div>
+                  <span id="phase-detail">No active run.</span>
+                </div>
+                <div class="progress-bar" aria-hidden="true">
+                  <span id="progress-fill" class="progress-bar__fill"></span>
                 </div>
               </div>
 
-              <div class="config-grid">
-                <label id="validate-csv-field" class="field-control" for="validate-csv-input">
-                  <span>Validate input file</span>
-                  <div class="input-action">
-                    <input id="validate-csv-input" type="text" autocomplete="off" placeholder="split/part.csv">
-                    <button id="validate-csv-open-button" class="button button--secondary button--small" type="button">Select</button>
-                  </div>
-                </label>
-
-                <label id="validate-dir-field" class="field-control" for="validate-dir-input">
-                  <span>Validate input directory</span>
-                  <div class="input-action">
-                    <input id="validate-dir-input" type="text" autocomplete="off" placeholder="split">
-                    <button id="validate-dir-open-button" class="button button--secondary button--small" type="button">Browse</button>
-                  </div>
-                </label>
-
-                <label id="batch-input-dir-field" class="field-control" for="batch-input-dir-input">
-                  <span>Batch input directory</span>
-                  <div class="input-action">
-                    <input id="batch-input-dir-input" type="text" autocomplete="off" placeholder="success">
-                    <button id="batch-input-dir-open-button" class="button button--secondary button--small" type="button">Browse</button>
-                  </div>
-                </label>
-              </div>
+              <div id="summary-cards" class="summary-cards"></div>
             </section>
 
-            <details class="advanced-settings">
-              <summary class="advanced-settings__summary">
+            <details class="event-details">
+              <summary class="event-details__summary">
                 <span>
-                  <strong id="settings-title">Advanced settings</strong>
-                  <span>Runtime, output, and cache controls.</span>
+                  <strong id="activity-title">Progress stream</strong>
+                  <span>Recent run events and diagnostics.</span>
                 </span>
               </summary>
-
-              <div class="config-grid config-grid--settings">
-                <label class="field-control" for="workers-input">
-                  <span>Workers</span>
-                  <input id="workers-input" type="number" min="0" step="1">
-                </label>
-
-                <label class="field-control" for="split-primary-key-input">
-                  <span>Split primary key</span>
-                  <input id="split-primary-key-input" type="text" autocomplete="off" placeholder="First CSV column">
-                </label>
-
-                <label class="field-control" for="split-output-dir-input">
-                  <span>Split output directory</span>
-                  <input id="split-output-dir-input" type="text" autocomplete="off">
-                </label>
-
-                <label class="field-control" for="success-dir-input">
-                  <span>Success directory</span>
-                  <input id="success-dir-input" type="text" autocomplete="off">
-                </label>
-
-                <label class="field-control" for="error-dir-input">
-                  <span>Error directory</span>
-                  <input id="error-dir-input" type="text" autocomplete="off">
-                </label>
-
-                <label class="field-control" for="batch-export-dir-input">
-                  <span>Batch export directory</span>
-                  <input id="batch-export-dir-input" type="text" autocomplete="off">
-                </label>
-
-                <label class="field-control" for="batch-size-input">
-                  <span>Batch size</span>
-                  <input id="batch-size-input" type="number" min="1" step="1">
-                </label>
-
-                <label class="field-control" for="resume-policy-select">
-                  <span>Resume policy</span>
-                  <select id="resume-policy-select">
-                    <option value="reuse_valid_outputs">Reuse valid outputs</option>
-                    <option value="start_at_first_missing">Start at first missing</option>
-                    <option value="run_all">Run all</option>
-                  </select>
-                </label>
-              </div>
-
-              <div class="toggle-row toggle-row--settings">
-                <label class="toggle-control">
-                  <input id="write-empty-error-input" type="checkbox">
-                  <span>Write empty error files</span>
-                </label>
-                <label class="toggle-control">
-                  <input id="clear-outputs-input" type="checkbox">
-                  <span>Clear outputs</span>
-                </label>
-              </div>
+              <ol id="event-log" class="event-log" aria-live="polite">
+                <li class="event-log__empty">Progress events will appear here once a validation starts.</li>
+              </ol>
             </details>
+          </section>
 
-            <section class="config-section config-section--preview" aria-labelledby="preview-title">
-              <div class="config-section__head">
-                <div>
-                  <h3 id="preview-title">Run preview</h3>
-                  <p>Effective phases, inputs, outputs, workers, and resolver errors.</p>
-                </div>
-                <span id="preview-status" class="badge badge--muted">Waiting</span>
-              </div>
-              <div id="preview-errors" class="preview-errors" hidden></div>
-              <dl id="resolved-preview" class="preview-grid"></dl>
-            </section>
-
-            <div class="form-actions">
-              <button id="submit-button" class="button button--primary" type="submit">Start run</button>
-              <button id="refresh-button" class="button button--secondary" type="button">Refresh run state</button>
-            </div>
-
-            <p class="form-note">
-              Runs start from files already present under the server root.
-            </p>
-            <p id="form-message" class="form-message" aria-live="polite"></p>
-          </form>
-        </section>
-
-        <section class="panel panel--run" aria-labelledby="run-title">
-          <div class="panel__head">
-            <div>
-              <p class="eyebrow">Run State</p>
-              <h2 id="run-title">Live validation status</h2>
-            </div>
-            <span id="run-state-badge" class="badge badge--muted">No run selected</span>
+          <div class="wizard-nav" aria-label="Wizard navigation">
+            <button id="wizard-back-button" class="button button--secondary" type="button">Back</button>
+            <span id="wizard-step-status" class="wizard-nav__status" aria-live="polite">Step 1 of 5</span>
+            <button id="wizard-next-button" class="button button--primary" type="button">Next</button>
           </div>
-
-          <dl class="facts">
-            <div class="fact">
-              <dt>Run ID</dt>
-              <dd id="run-id-value">{{if .LatestRunID}}{{.LatestRunID}}{{else}}Waiting for submission{{end}}</dd>
-            </div>
-            <div class="fact">
-              <dt>Phase</dt>
-              <dd id="run-stage-value">{{if .LatestRunState}}{{.LatestRunState}}{{else}}Idle{{end}}</dd>
-            </div>
-            <div class="fact">
-              <dt>Progress</dt>
-              <dd id="run-progress-value">Not started</dd>
-            </div>
-          </dl>
-
-          <div class="progress-card" aria-live="polite">
-            <div class="progress-card__topline">
-              <div class="progress-card__copy">
-                <span id="stage-detail" class="progress-card__stage">Preparing</span>
-                <strong id="phase-heading">Ready</strong>
-              </div>
-              <span id="phase-detail">No active run.</span>
-            </div>
-            <div class="progress-bar" aria-hidden="true">
-              <span id="progress-fill" class="progress-bar__fill"></span>
-            </div>
-          </div>
-
-          <div id="summary-cards" class="summary-cards"></div>
-        </section>
-
-        <section class="panel panel--activity" aria-labelledby="activity-title">
-          <div class="panel__head">
-            <div>
-              <p class="eyebrow">Recent Events</p>
-              <h2 id="activity-title">Progress stream</h2>
-            </div>
-          </div>
-          <ol id="event-log" class="event-log" aria-live="polite">
-            <li class="event-log__empty">Progress events will appear here once a validation starts.</li>
-          </ol>
         </section>
       </main>
     </div>

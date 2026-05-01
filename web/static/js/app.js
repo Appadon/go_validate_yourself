@@ -66,10 +66,19 @@
     attachingRunId: "",
     resolveTimer: 0,
     resolveSequence: 0,
+    wizard: {
+      activeStep: 0,
+      maxStep: 4,
+    },
   };
 
   const els = {
     form: document.getElementById("run-form"),
+    wizardCards: document.querySelectorAll(".wizard-card[data-step]"),
+    wizardStepButtons: document.querySelectorAll("[data-wizard-step]"),
+    wizardBackButton: document.getElementById("wizard-back-button"),
+    wizardNextButton: document.getElementById("wizard-next-button"),
+    wizardStepStatus: document.getElementById("wizard-step-status"),
     refreshFilesButton: document.getElementById("refresh-files-button"),
     defaultsStatus: document.getElementById("defaults-status"),
     phaseSplit: document.getElementById("phase-split"),
@@ -150,6 +159,14 @@
   function bindEvents() {
     els.refreshFilesButton.addEventListener("click", function () {
       refreshFileLists();
+    });
+
+    els.wizardBackButton.addEventListener("click", previousWizardStep);
+    els.wizardNextButton.addEventListener("click", nextWizardStep);
+    els.wizardStepButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        setWizardStep(integerValue(button.getAttribute("data-wizard-step")));
+      });
     });
 
     els.csvOpenButton.addEventListener("click", function () {
@@ -798,6 +815,7 @@
   }
 
   function render() {
+    renderWizard();
     renderServerState();
     renderConfigVisibility();
     renderSelectionSummary("csv");
@@ -808,6 +826,58 @@
     renderEvents();
     updateSubmitState();
     renderPicker();
+  }
+
+  function setWizardStep(step) {
+    const nextStep = clampStep(step);
+    if (state.wizard.activeStep === nextStep) {
+      renderWizard();
+      return;
+    }
+    state.wizard.activeStep = nextStep;
+    renderWizard();
+  }
+
+  function nextWizardStep() {
+    setWizardStep(state.wizard.activeStep + 1);
+  }
+
+  function previousWizardStep() {
+    setWizardStep(state.wizard.activeStep - 1);
+  }
+
+  function renderWizard() {
+    const activeStep = clampStep(state.wizard.activeStep);
+    state.wizard.activeStep = activeStep;
+
+    els.wizardCards.forEach(function (card) {
+      const step = integerValue(card.getAttribute("data-step"));
+      const active = step === activeStep;
+      card.classList.toggle("wizard-card--active", active);
+      card.setAttribute("aria-hidden", active ? "false" : "true");
+    });
+
+    els.wizardStepButtons.forEach(function (button) {
+      const step = integerValue(button.getAttribute("data-wizard-step"));
+      const active = step === activeStep;
+      button.classList.toggle("wizard-step--active", active);
+      if (active) {
+        button.setAttribute("aria-current", "step");
+      } else {
+        button.removeAttribute("aria-current");
+      }
+    });
+
+    els.wizardBackButton.disabled = activeStep === 0;
+    els.wizardNextButton.disabled = activeStep === state.wizard.maxStep;
+    els.wizardStepStatus.textContent = "Step " + (activeStep + 1) + " of " + (state.wizard.maxStep + 1);
+  }
+
+  function clampStep(step) {
+    if (!Number.isFinite(step)) {
+      return 0;
+    }
+    return Math.min(Math.max(step, 0), state.wizard.maxStep);
   }
 
   function renderServerState() {

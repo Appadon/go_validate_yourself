@@ -209,6 +209,116 @@ body::before {
   gap: 1rem;
 }
 
+.wizard-shell {
+  display: grid;
+  gap: 1rem;
+}
+
+.wizard-shell__head {
+  margin-bottom: 0;
+}
+
+.wizard-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.wizard-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  min-height: 3rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(4, 7, 12, 0.26);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+}
+
+.wizard-step--active {
+  border-color: rgba(118, 168, 255, 0.72);
+  background: linear-gradient(180deg, rgba(75, 141, 255, 0.22), rgba(75, 141, 255, 0.1));
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(118, 168, 255, 0.16);
+}
+
+.wizard-step__number {
+  display: inline-grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 999px;
+  background: rgba(147, 161, 191, 0.12);
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.wizard-step--active .wizard-step__number {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.wizard-step__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wizard-card {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  max-height: min(74vh, 860px);
+  overflow: auto;
+  padding: 1rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(4, 7, 12, 0.2);
+}
+
+.wizard-card:not(.wizard-card--active) {
+  display: none;
+}
+
+.wizard-card__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.wizard-card__head h2 {
+  margin: 0.2rem 0 0;
+  font-family: var(--font-display);
+  font-size: 1.55rem;
+  line-height: 1.15;
+}
+
+.wizard-nav {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.8rem;
+  padding-top: 0.15rem;
+}
+
+.wizard-nav__status {
+  justify-self: center;
+  color: var(--muted);
+  font-weight: 700;
+}
+
 .config-section {
   display: grid;
   gap: 0.9rem;
@@ -421,6 +531,10 @@ body::before {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
+}
+
+.selectors-grid--schema {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .selector-group {
@@ -693,6 +807,44 @@ body::before {
   gap: 0.8rem;
 }
 
+.event-details {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.event-details__summary {
+  cursor: pointer;
+  color: var(--text);
+  list-style-position: outside;
+}
+
+.event-details__summary::marker {
+  color: var(--accent-strong);
+}
+
+.event-details__summary > span {
+  display: inline-grid;
+  gap: 0.25rem;
+  margin-left: 0.45rem;
+  vertical-align: top;
+}
+
+.event-details__summary strong {
+  font-size: 1.05rem;
+}
+
+.event-details__summary span span {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.event-details[open] .event-details__summary {
+  margin-bottom: 0.9rem;
+}
+
 .event-item,
 .event-log__empty {
   padding: 1rem;
@@ -801,8 +953,10 @@ body::before {
 }
 
 .button:focus-visible,
+.wizard-step:focus-visible,
 .directory-chip:focus-visible,
 .advanced-settings__summary:focus-visible,
+.event-details__summary:focus-visible,
 .field-control input:focus-visible,
 .field-control select:focus-visible,
 .filter-field input:focus-visible,
@@ -872,6 +1026,7 @@ code {
   .facts,
   .summary-cards,
   .selectors-grid,
+  .wizard-steps,
   .phase-selector,
   .config-grid,
   .config-grid--settings,
@@ -881,6 +1036,7 @@ code {
 
   .selector-group__head,
   .config-section__head,
+  .wizard-card__head,
   .progress-card__topline,
   .event-head,
   .picker-actions {
@@ -890,6 +1046,14 @@ code {
 
   .input-action {
     grid-template-columns: 1fr;
+  }
+
+  .wizard-nav {
+    grid-template-columns: 1fr;
+  }
+
+  .wizard-nav__status {
+    order: -1;
   }
 
   .button,
