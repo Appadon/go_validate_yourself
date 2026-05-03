@@ -115,8 +115,6 @@
     schemaCount: document.getElementById("schema-count"),
     csvSelectionSummary: document.getElementById("csv-selection-summary"),
     schemaSelectionSummary: document.getElementById("schema-selection-summary"),
-    submitButton: document.getElementById("submit-button"),
-    refreshButton: document.getElementById("refresh-button"),
     formMessage: document.getElementById("form-message"),
     serverStatusText: document.getElementById("server-status-text"),
     serverStatusBadge: document.getElementById("server-status-badge"),
@@ -227,16 +225,11 @@
       }
     });
 
-    els.refreshButton.addEventListener("click", function () {
-      refreshHealth();
-      if (state.runId) {
-        syncRun(state.runId);
-      }
-    });
-
     els.form.addEventListener("submit", function (event) {
       event.preventDefault();
-      submitRun();
+      if (state.wizard.activeStep === 3) {
+        submitRun();
+      }
     });
 
     els.pickerChooseButton.addEventListener("click", function () {
@@ -550,7 +543,7 @@
 
     const previousRunId = state.runId;
     closeStream();
-    els.submitButton.disabled = true;
+    els.wizardNextButton.disabled = true;
     const config = buildCurrentConfig();
     state.lastSubmittedConfig = deepClone(config);
     state.lastSubmittedResolved = state.preview.resolved ? deepClone(state.preview.resolved) : null;
@@ -865,6 +858,10 @@
   }
 
   function nextWizardStep() {
+    if (state.wizard.activeStep === 3) {
+      submitRun();
+      return;
+    }
     setWizardStep(state.wizard.activeStep + 1);
   }
 
@@ -895,8 +892,18 @@
     });
 
     els.wizardBackButton.disabled = activeStep === 0;
-    els.wizardNextButton.disabled = activeStep === state.wizard.maxStep;
+    syncWizardNextButtonState();
     els.wizardStepStatus.textContent = "Step " + (activeStep + 1) + " of " + (state.wizard.maxStep + 1);
+  }
+
+  function syncWizardNextButtonState() {
+    const activeStep = clampStep(state.wizard.activeStep);
+    const confirmStep = activeStep === 3;
+    const busy = Boolean(state.health && state.health.busy);
+    const runningThisPage = state.snapshot && state.snapshot.state === "running";
+    const previewOK = state.preview.status === "ok";
+    els.wizardNextButton.textContent = confirmStep ? "Start run" : "Next";
+    els.wizardNextButton.disabled = activeStep === state.wizard.maxStep || (confirmStep && (!previewOK || (busy && !runningThisPage)));
   }
 
   function clampStep(step) {
@@ -1250,10 +1257,7 @@
   }
 
   function updateSubmitState() {
-    const busy = Boolean(state.health && state.health.busy);
-    const runningThisPage = state.snapshot && state.snapshot.state === "running";
-    const previewOK = state.preview.status === "ok";
-    els.submitButton.disabled = !previewOK || (busy && !runningThisPage);
+    syncWizardNextButtonState();
   }
 
   function filteredFiles(kind) {

@@ -37,11 +37,14 @@
 
 html {
   font-size: 16px;
+  height: 100%;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
+  height: 100%;
+  overflow: hidden;
   color: var(--text);
   font-family: var(--font-body);
   background:
@@ -64,8 +67,13 @@ body::before {
 
 .app-shell {
   width: min(1240px, calc(100% - 2rem));
+  height: 100dvh;
   margin: 0 auto;
-  padding: 0.8rem 0 2.4rem;
+  padding: 0.8rem 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.65rem;
+  overflow: hidden;
 }
 
 .topbar {
@@ -73,7 +81,6 @@ body::before {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 0.65rem;
   padding: 0.48rem 0.75rem;
   background: linear-gradient(180deg, rgba(18, 25, 39, 0.92), rgba(11, 15, 24, 0.92));
   border: 1px solid var(--border);
@@ -162,6 +169,7 @@ body::before {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 1.2rem;
+  min-height: 0;
 }
 
 .panel {
@@ -219,13 +227,15 @@ body::before {
 }
 
 .selection-form {
-  display: grid;
-  gap: 1rem;
+  display: contents;
 }
 
 .wizard-shell {
   display: grid;
-  gap: 1rem;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 0.9rem;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .wizard-shell__head {
@@ -300,10 +310,13 @@ body::before {
 }
 
 .wizard-card {
+  grid-row: 3;
   display: grid;
+  align-content: start;
   gap: 1rem;
   min-width: 0;
-  max-height: min(78vh, 880px);
+  min-height: 0;
+  height: 100%;
   overflow: auto;
   padding: 1rem;
   border: 1px solid var(--border-strong);
@@ -336,6 +349,7 @@ body::before {
 }
 
 .wizard-nav {
+  grid-row: 4;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -966,14 +980,6 @@ body::before {
   font-size: 0.9rem;
 }
 
-.form-actions {
-  display: flex;
-  gap: 0.8rem;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  padding-top: 0.15rem;
-}
-
 .button {
   appearance: none;
   border: 0;
@@ -1127,9 +1133,28 @@ code {
 }
 
 @media (max-width: 720px) {
+  body {
+    height: auto;
+    overflow: auto;
+  }
+
   .app-shell {
     width: min(100% - 1rem, 1240px);
+    height: auto;
+    min-height: 100vh;
+    display: block;
+    overflow: visible;
     padding-top: 0.7rem;
+  }
+
+  .layout,
+  .wizard-shell {
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .topbar {
+    margin-bottom: 0.65rem;
   }
 
   .panel {
@@ -1148,6 +1173,28 @@ code {
   .status-card {
     justify-content: space-between;
     flex-wrap: wrap;
+  }
+
+  .selection-form {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .wizard-shell {
+    display: grid;
+    grid-template-rows: none;
+    gap: 1rem;
+  }
+
+  .wizard-card {
+    grid-row: auto;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .wizard-nav {
+    grid-row: auto;
   }
 
   .facts,
