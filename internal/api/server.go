@@ -21,6 +21,7 @@ import (
 	gvyconfig "go_validate_yourself/internal/config"
 	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/runs"
+	"go_validate_yourself/internal/schemaeditor"
 	"go_validate_yourself/internal/service"
 	"go_validate_yourself/internal/workspace"
 	"go_validate_yourself/web"
@@ -157,6 +158,29 @@ type FileListResponse struct {
 	Entries     []FileListEntry `json:"entries"`
 }
 
+/* SchemaDocumentResponse returns an editable schema JSON document. */
+type SchemaDocumentResponse struct {
+	OK           bool                  `json:"ok"`
+	Path         string                `json:"path"`
+	RelativePath string                `json:"relative_path"`
+	Schema       schemaeditor.Document `json:"schema"`
+}
+
+/* SchemaSaveRequest defines a schema JSON document to validate and write. */
+type SchemaSaveRequest struct {
+	Path   string                `json:"path"`
+	Schema schemaeditor.Document `json:"schema"`
+}
+
+/* SchemaSaveResponse returns the saved schema path and normalized document. */
+type SchemaSaveResponse struct {
+	OK           bool                  `json:"ok"`
+	Path         string                `json:"path"`
+	RelativePath string                `json:"relative_path"`
+	Schema       schemaeditor.Document `json:"schema"`
+	Message      string                `json:"message"`
+}
+
 type uiPageData struct {
 	Title          string
 	Version        string
@@ -214,6 +238,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.handleUI)
+	mux.HandleFunc("/schema-editor", server.handleSchemaEditorUI)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
 	mux.HandleFunc("/health", server.handleHealth)
 	mux.HandleFunc("/shutdown", server.handleShutdown)
@@ -221,6 +246,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 	mux.HandleFunc("/api/config/defaults", server.handleConfigDefaults)
 	mux.HandleFunc("/api/config/resolve", server.handleConfigResolve)
 	mux.HandleFunc("/api/files", server.handleFileList)
+	mux.HandleFunc("/api/schema", server.handleSchemaDocument)
 	mux.HandleFunc("/api/runs", server.handleRuns)
 	mux.HandleFunc("/api/runs/config", server.handleConfigRun)
 	mux.HandleFunc("/api/runs/", server.handleRunByID)
@@ -231,6 +257,44 @@ func NewServer(host string, port int, svc service.Service) *Server {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return server
+}
+
+/* handleSchemaEditorUI renders the standalone schema editor proof of concept. */
+func (s *Server) handleSchemaEditorUI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/schema-editor" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	health := s.currentHealth()
+	bootstrap, err := json.Marshal(uiBootstrap{
+		Server:      health,
+		LatestRunID: health.LatestRunID,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_BOOTSTRAP_FAILED", err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "schema_editor.html", uiPageData{
+		Title:          "GVY Schema Editor",
+		Version:        version,
+		ServerBusy:     health.Busy,
+		WorkingRoot:    s.workingRoot,
+		LatestRunID:    health.LatestRunID,
+		LatestRunState: health.LatestRunState,
+		BootstrapJSON:  template.JS(bootstrap),
+	}); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_RENDER_FAILED", err.Error())
+		return
+	}
 }
 
 /* ListenAndServe starts the HTTP server and blocks until it stops. */
@@ -529,6 +593,77 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 		CurrentPath: currentPath,
 		ParentPath:  parentPath,
 		Entries:     entries,
+	})
+}
+
+/* handleSchemaDocument loads or saves a working-root-scoped schema document. */
+func (s *Server) handleSchemaDocument(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/api/schema" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.handleSchemaRead(w, r)
+	case http.MethodPut:
+		s.handleSchemaSave(w, r)
+	default:
+		w.Header().Set("Allow", strings.Join([]string{http.MethodGet, http.MethodPut}, ", "))
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "expected GET or PUT")
+	}
+}
+
+/* handleSchemaRead returns a validated schema JSON document for editing. */
+func (s *Server) handleSchemaRead(w http.ResponseWriter, r *http.Request) {
+	path, err := s.resolveSelectedFile(r.URL.Query().Get("path"), ".json", "path")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_SCHEMA_PATH", err.Error())
+		return
+	}
+	schema, err := schemaeditor.Load(path)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_SCHEMA", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, SchemaDocumentResponse{
+		OK:           true,
+		Path:         path,
+		RelativePath: s.relativeWorkingPath(path),
+		Schema:       schema,
+	})
+}
+
+/* handleSchemaSave validates and writes an editable schema JSON document. */
+func (s *Server) handleSchemaSave(w http.ResponseWriter, r *http.Request) {
+	req, err := decodeSchemaSaveRequest(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	path, err := s.resolveSchemaSavePath(req.Path)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_SCHEMA_PATH", err.Error())
+		return
+	}
+	if err := schemaeditor.Save(path, req.Schema); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_SCHEMA", err.Error())
+		return
+	}
+	schema, err := schemaeditor.Load(path)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "SCHEMA_RELOAD_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, SchemaSaveResponse{
+		OK:           true,
+		Path:         path,
+		RelativePath: s.relativeWorkingPath(path),
+		Schema:       schema,
+		Message:      "schema saved",
 	})
 }
 
@@ -1219,6 +1354,22 @@ func decodeFileSelectionRunRequest(r *http.Request) (FileSelectionRunRequest, er
 	return req, nil
 }
 
+/* decodeSchemaSaveRequest decodes the JSON request body for schema saves. */
+func decodeSchemaSaveRequest(r *http.Request) (SchemaSaveRequest, error) {
+	defer r.Body.Close()
+
+	var req SchemaSaveRequest
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		return SchemaSaveRequest{}, err
+	}
+	if err := decoder.Decode(new(struct{})); err != io.EOF {
+		return SchemaSaveRequest{}, fmt.Errorf("request body must contain a single JSON object")
+	}
+	return req, nil
+}
+
 /* parseRunRoute extracts a run id and supported sub-route suffix from /api/runs paths. */
 func parseRunRoute(path string) (string, string, bool) {
 	trimmed := strings.TrimPrefix(path, "/api/runs/")
@@ -1505,6 +1656,60 @@ func (s *Server) resolveSelectedFile(rawPath, expectedExt, field string) (string
 		return "", fmt.Errorf("%s must stay within the server working directory", field)
 	}
 	return absolutePath, nil
+}
+
+func (s *Server) resolveSchemaSavePath(rawPath string) (string, error) {
+	clean := strings.TrimSpace(rawPath)
+	if clean == "" {
+		return "", fmt.Errorf("path is required")
+	}
+
+	candidate := clean
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(s.workingRoot, filepath.FromSlash(clean))
+	}
+	absolutePath, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("path must resolve to a valid file")
+	}
+	if !strings.EqualFold(filepath.Ext(absolutePath), ".json") {
+		return "", fmt.Errorf("path must use .json extension")
+	}
+
+	if info, err := os.Stat(absolutePath); err == nil {
+		if info.IsDir() {
+			return "", fmt.Errorf("path must be a file")
+		}
+		resolved := resolveRealPath(absolutePath)
+		if resolved == "" || !isWithinRoot(s.workingRootReal, resolved) {
+			return "", fmt.Errorf("path must stay within the server working directory")
+		}
+		return absolutePath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("failed checking path")
+	}
+
+	parent := filepath.Dir(absolutePath)
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return "", fmt.Errorf("parent directory does not exist")
+	}
+	if !parentInfo.IsDir() {
+		return "", fmt.Errorf("parent path must be a directory")
+	}
+	parentResolved := resolveRealPath(parent)
+	if parentResolved == "" || !isWithinRoot(s.workingRootReal, parentResolved) {
+		return "", fmt.Errorf("path must stay within the server working directory")
+	}
+	return absolutePath, nil
+}
+
+func (s *Server) relativeWorkingPath(path string) string {
+	relativePath, err := filepath.Rel(s.workingRoot, path)
+	if err != nil {
+		return path
+	}
+	return filepath.ToSlash(relativePath)
 }
 
 func extForKind(kind string) string {

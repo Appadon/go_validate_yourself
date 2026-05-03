@@ -17,7 +17,9 @@ import (
 	gvyconfig "go_validate_yourself/internal/config"
 	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/runs"
+	"go_validate_yourself/internal/schemaeditor"
 	"go_validate_yourself/internal/service"
+	"go_validate_yourself/internal/validator"
 	"go_validate_yourself/internal/workspace"
 )
 
@@ -331,6 +333,108 @@ func TestHandleUIRendersWorkingRootPage(t *testing.T) {
 	if !strings.Contains(body, server.workingRoot) {
 		t.Fatalf("body missing working root %q: %s", server.workingRoot, body)
 	}
+}
+
+func TestHandleSchemaEditorUIRendersWorkingRootPage(t *testing.T) {
+	server := newSelectionTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/schema-editor", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleSchemaEditorUI(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "Schema Editor") {
+		t.Fatalf("body missing schema editor heading: %s", body)
+	}
+	if !strings.Contains(body, server.workingRoot) {
+		t.Fatalf("body missing working root %q: %s", server.workingRoot, body)
+	}
+}
+
+func TestHandleSchemaDocumentReadReturnsValidatedSchema(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workingRoot, "schemas", "schema.json"), `{
+		"fields": [
+			{"name": "Record ID", "type": "string", "required": true},
+			{"name": "Amount", "type": "float"}
+		]
+	}`)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/schema?path=schemas/schema.json", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleSchemaDocument(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response SchemaDocumentResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.RelativePath != "schemas/schema.json" {
+		t.Fatalf("relative path = %q", response.RelativePath)
+	}
+	if response.Schema.Fields[0].ParquetName != "record_id" {
+		t.Fatalf("expected normalized parquet name, got %+v", response.Schema.Fields[0])
+	}
+}
+
+func TestHandleSchemaDocumentSaveWritesValidatedSchema(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workingRoot, "schemas", ".keep"), "")
+
+	body := `{
+		"path": "schemas/saved.json",
+		"schema": {
+			"fields": [
+				{"name": "Record ID", "type": "string", "required": true},
+				{"name": "Amount", "type": "int", "non_zero": true}
+			]
+		}
+	}`
+	request := httptest.NewRequest(http.MethodPut, "/api/schema", strings.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleSchemaDocument(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	data, err := os.ReadFile(filepath.Join(server.workingRoot, "schemas", "saved.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(saved schema) error = %v", err)
+	}
+	if !strings.Contains(string(data), `"parquet_name": "record_id"`) {
+		t.Fatalf("saved schema missing normalized parquet name: %s", string(data))
+	}
+}
+
+func TestHandleSchemaDocumentSaveRejectsOutOfRootPath(t *testing.T) {
+	server := newSelectionTestServer(t)
+	outsidePath := filepath.Join(t.TempDir(), "schema.json")
+	body, err := json.Marshal(SchemaSaveRequest{
+		Path: outsidePath,
+		Schema: schemaeditor.Document{
+			Fields: []validator.FieldRule{{Name: "Record ID", Type: "string"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPut, "/api/schema", bytes.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleSchemaDocument(recorder, request)
+
+	assertAPIErrorCode(t, recorder, http.StatusBadRequest, "INVALID_SCHEMA_PATH")
 }
 
 func TestHandleFileListReturnsEligibleWorkingRootFiles(t *testing.T) {
