@@ -126,6 +126,7 @@
     phaseHeading: document.getElementById("phase-heading"),
     phaseDetail: document.getElementById("phase-detail"),
     progressFill: document.getElementById("progress-fill"),
+    phaseTimeline: document.getElementById("phase-timeline"),
     summaryCards: document.getElementById("summary-cards"),
     eventLog: document.getElementById("event-log"),
     pickerModal: document.getElementById("picker-modal"),
@@ -792,9 +793,9 @@
         pushEvent(event);
         if (state.snapshot) {
           state.snapshot.latest_event = event;
-          if (event.type === "completed") {
+          if (event.type === "completed" && isRunLevelEvent(event)) {
             state.snapshot.state = "completed";
-          } else if (event.type === "failed") {
+          } else if (event.type === "failed" && isRunLevelEvent(event)) {
             state.snapshot.state = "failed";
           }
         }
@@ -1111,10 +1112,11 @@
       els.runIDValue.textContent = state.runId || "Waiting for submission";
       els.runStageValue.textContent = state.health.busy ? "Attached elsewhere" : "Idle";
       els.runProgressValue.textContent = "Not started";
-      els.stageDetail.textContent = state.pendingConfigRun ? "Attaching" : state.health.busy ? "Run in progress" : "Preparing";
+      els.stageDetail.textContent = "Stage";
       els.phaseHeading.textContent = state.pendingConfigRun ? "Starting run" : state.health.busy ? "Server busy" : "Ready";
       els.phaseDetail.textContent = state.pendingConfigRun ? "Waiting for the run snapshot and progress stream." : state.health.busy ? "A run exists, but this page has not attached to its snapshot yet." : "No active run.";
       els.progressFill.style.width = "0%";
+      renderPhaseTimeline(null, null);
       setBadge(els.runStateBadge, state.health.busy ? "Busy" : "No run selected", state.health.busy ? "warn" : "muted");
       return;
     }
@@ -1122,17 +1124,55 @@
     const latestEvent = snapshot.latest_event || newestEvent();
     const progressPercent = getProgressPercent(snapshot, latestEvent);
     const stageInfo = getStageInfo(snapshot, latestEvent);
-    const phaseText = stageInfo.phase ? formatPhase(stageInfo.phase) : latestEvent ? formatPhase(latestEvent.phase) : formatState(snapshot.state);
-    const detail = latestEvent && latestEvent.message ? latestEvent.message : describeState(snapshot.state);
+    const phaseText = snapshot.state === "completed" ? "Complete" : stageInfo.phase ? formatPhase(stageInfo.phase) : latestEvent ? formatPhase(latestEvent.phase) : formatState(snapshot.state);
+    const detail = snapshot.state === "completed" ? "All selected stages completed." : latestEvent && latestEvent.message ? latestEvent.message : describeState(snapshot.state);
 
     els.runIDValue.textContent = snapshot.run_id;
     els.runStageValue.textContent = stageInfo.label;
     els.runProgressValue.textContent = progressPercent == null ? describeState(snapshot.state) : progressPercent + "%";
-    els.stageDetail.textContent = stageInfo.label;
+    els.stageDetail.textContent = "Stage";
     els.phaseHeading.textContent = phaseText;
     els.phaseDetail.textContent = detail;
     els.progressFill.style.width = (progressPercent == null ? 0 : progressPercent) + "%";
+    renderPhaseTimeline(snapshot, stageInfo);
     setBadge(els.runStateBadge, formatState(snapshot.state), toneForState(snapshot.state));
+  }
+
+  function renderPhaseTimeline(snapshot, stageInfo) {
+    const phases = timelinePhases(snapshot);
+    if (!phases.length) {
+      els.phaseTimeline.innerHTML = [
+        '<li class="phase-step phase-step--idle">',
+        '<span class="phase-step__marker">1</span>',
+        '<span class="phase-step__body">',
+        '<strong>Waiting for a run</strong>',
+        '<span>Configured stages will appear here when the run starts.</span>',
+        "</span>",
+        "</li>",
+      ].join("");
+      return;
+    }
+
+    const failed = snapshot && snapshot.state === "failed";
+    const completed = snapshot && snapshot.state === "completed";
+    const activePhase = stageInfo && stageInfo.phase ? stageInfo.phase : activeTimelinePhase(snapshot, phases);
+    let activeIndex = activePhase ? phases.indexOf(activePhase) : -1;
+    if (failed && activeIndex < 0) {
+      activeIndex = 0;
+    }
+
+    els.phaseTimeline.innerHTML = phases.map(function (phase, index) {
+      const status = phaseTimelineStatus(index, activeIndex, completed, failed);
+      return [
+        '<li class="phase-step phase-step--' + status.tone + '">',
+        '<span class="phase-step__marker">' + (index + 1) + "</span>",
+        '<span class="phase-step__body">',
+        "<strong>" + escapeHTML(formatPhase(phase)) + "</strong>",
+        "<span>" + escapeHTML(status.label) + "</span>",
+        "</span>",
+        "</li>",
+      ].join("");
+    }).join("");
   }
 
   function renderSummary() {
@@ -1147,39 +1187,20 @@
     const validationSummary = field(validation, "summary") || {};
     const batchSummary = field(result, "batch_summary") || {};
 
-    if (resolved) {
-      const plan = resolved.plan || {};
-      cards.push(cardHTML("Effective config", [
-        rowHTML("Phases", listText(plan.phases)),
-        rowHTML("Workers", valueText(resolved.effective_workers)),
-        rowHTML("Primary key", splitPrimaryKeyText(resolved)),
-        rowHTML("Resume", valueText(plan.resume_policy)),
-      ]));
+    if (!snapshot) {
+      els.summaryCards.innerHTML = "";
+      return;
+    }
 
-      cards.push(cardHTML("Effective inputs", [
-        rowHTML("Split CSV", valueText(plan.split_input_csv)),
-        rowHTML("Validate input", valueText(plan.validate_input_csv || plan.validate_input_dir)),
-        rowHTML("Schema", valueText(plan.validate_schema)),
-        rowHTML("Batch input", valueText(plan.batch_input_dir)),
+    if (!result && !isTerminalState(snapshot.state)) {
+      const plan = resolved && resolved.plan ? resolved.plan : {};
+      cards.push(cardHTML("Run context", [
+        rowHTML("Workflow", listText(plan.phases || currentResolvedPhases())),
+        rowHTML("Workers", valueText(resolved && resolved.effective_workers)),
+        rowHTML("Output", valueText(plan.validation_success_dir || plan.batch_output_dir || (workspace && workspace.success_dir))),
       ]));
-
-      cards.push(cardHTML("Effective outputs", [
-        rowHTML("Split", valueText(plan.split_output_dir)),
-        rowHTML("Success", valueText(plan.validation_success_dir)),
-        rowHTML("Errors", valueText(plan.validation_error_dir)),
-        rowHTML("Batch export", valueText(plan.batch_output_dir)),
-      ]));
-    } else {
-      cards.push(cardHTML("Inputs", [
-        rowHTML("CSV", valueText((workspace && workspace.input_csv_path) || state.selected.csv)),
-        rowHTML("Schema", valueText((workspace && workspace.schema_path) || state.selected.schema)),
-      ]));
-
-      cards.push(cardHTML("Outputs", [
-        rowHTML("Success", valueText(workspace && workspace.success_dir)),
-        rowHTML("Errors", valueText(workspace && workspace.error_dir)),
-        rowHTML("Batch export", valueText(workspace && workspace.batch_export_dir)),
-      ]));
+      els.summaryCards.innerHTML = cards.join("");
+      return;
     }
 
     if (result) {
@@ -1217,14 +1238,6 @@
       cards.push(cardHTML("Result", [
         rowHTML("Status", "Completed"),
         rowHTML("Details", "Fetching final result…"),
-      ]));
-    }
-
-    if (!result && snapshot && snapshot.state === "running") {
-      cards.push(cardHTML("Outputs", [
-        rowHTML("Success", valueText(workspace && workspace.success_dir)),
-        rowHTML("Errors", valueText(workspace && workspace.error_dir)),
-        rowHTML("Batch export", valueText(workspace && workspace.batch_export_dir)),
       ]));
     }
 
@@ -1496,6 +1509,10 @@
     return isDataPhase(metricsPhase) ? metricsPhase : "";
   }
 
+  function isRunLevelEvent(event) {
+    return Boolean(event && event.phase === "run");
+  }
+
   function latestDataPhase() {
     for (let i = state.events.length - 1; i >= 0; i -= 1) {
       const phase = dataPhaseForEvent(state.events[i]);
@@ -1504,6 +1521,56 @@
       }
     }
     return "";
+  }
+
+  function timelinePhases(snapshot) {
+    const resolvedPhases = currentResolvedPhases().filter(isDataPhase);
+    if (resolvedPhases.length) {
+      return resolvedPhases;
+    }
+    const eventPhases = [];
+    state.events.forEach(function (event) {
+      const phase = dataPhaseForEvent(event);
+      if (phase && eventPhases.indexOf(phase) < 0) {
+        eventPhases.push(phase);
+      }
+    });
+    if (eventPhases.length) {
+      return phaseOrder.filter(function (phase) {
+        return eventPhases.indexOf(phase) >= 0;
+      });
+    }
+    return snapshot ? phaseOrder.slice() : selectedPhases();
+  }
+
+  function activeTimelinePhase(snapshot, phases) {
+    const phase = latestDataPhase();
+    if (phase && phases.indexOf(phase) >= 0) {
+      return phase;
+    }
+    if (snapshot && snapshot.state === "queued") {
+      return phases[0] || "";
+    }
+    return "";
+  }
+
+  function phaseTimelineStatus(index, activeIndex, completed, failed) {
+    if (completed) {
+      return { tone: "done", label: "Complete" };
+    }
+    if (failed && index === activeIndex) {
+      return { tone: "failed", label: "Needs attention" };
+    }
+    if (activeIndex < 0) {
+      return index === 0 ? { tone: "current", label: "Waiting to start" } : { tone: "waiting", label: "Waiting" };
+    }
+    if (index < activeIndex) {
+      return { tone: "done", label: "Complete" };
+    }
+    if (index === activeIndex) {
+      return { tone: "current", label: failed ? "Needs attention" : "In progress" };
+    }
+    return { tone: "waiting", label: "Waiting" };
   }
 
   function lastResolvedPhase() {

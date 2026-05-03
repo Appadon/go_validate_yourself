@@ -286,25 +286,10 @@
               <div class="panel__head">
                 <div>
                   <p class="eyebrow">Run State</p>
-                  <h2 id="run-title">Live validation status</h2>
+                  <h2 id="run-title">Run state</h2>
                 </div>
                 <span id="run-state-badge" class="badge badge--muted">No run selected</span>
               </div>
-
-              <dl class="facts">
-                <div class="fact">
-                  <dt>Run ID</dt>
-                  <dd id="run-id-value">{{if .LatestRunID}}{{.LatestRunID}}{{else}}Waiting for submission{{end}}</dd>
-                </div>
-                <div class="fact">
-                  <dt>Phase</dt>
-                  <dd id="run-stage-value">{{if .LatestRunState}}{{.LatestRunState}}{{else}}Idle{{end}}</dd>
-                </div>
-                <div class="fact">
-                  <dt>Progress</dt>
-                  <dd id="run-progress-value">Not started</dd>
-                </div>
-              </dl>
 
               <div class="progress-card" aria-live="polite">
                 <div class="progress-card__topline">
@@ -318,6 +303,23 @@
                   <span id="progress-fill" class="progress-bar__fill"></span>
                 </div>
               </div>
+
+              <ol id="phase-timeline" class="phase-timeline" aria-label="Pipeline stages"></ol>
+
+              <dl class="facts facts--compact">
+                <div class="fact">
+                  <dt>Run ID</dt>
+                  <dd id="run-id-value">{{if .LatestRunID}}{{.LatestRunID}}{{else}}Waiting for submission{{end}}</dd>
+                </div>
+                <div class="fact">
+                  <dt>Overall progress</dt>
+                  <dd id="run-progress-value">Not started</dd>
+                </div>
+                <div class="fact">
+                  <dt>Current stage</dt>
+                  <dd id="run-stage-value">{{if .LatestRunState}}{{.LatestRunState}}{{else}}Idle{{end}}</dd>
+                </div>
+              </dl>
 
               <div id="summary-cards" class="summary-cards"></div>
             </section>
