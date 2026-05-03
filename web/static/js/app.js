@@ -468,8 +468,24 @@
   }
 
   function localConfigError() {
-    if (!selectedPhases().length) {
+    const phases = selectedPhases();
+    const split = phases.indexOf("split") >= 0;
+    const validate = phases.indexOf("validate") >= 0;
+    const batch = phases.indexOf("batch") >= 0;
+    if (!phases.length) {
       return "Select at least one pipeline phase.";
+    }
+    if (split && !state.selected.csv) {
+      return "Select a main CSV before resolving this workflow.";
+    }
+    if (validate && !state.selected.schema) {
+      return "Select a schema JSON before resolving this workflow.";
+    }
+    if (validate && !split && !els.validateCSVInput.value.trim() && !els.validateDirInput.value.trim()) {
+      return "Select a validation file or directory, or include the split phase.";
+    }
+    if (batch && !validate && !els.batchInputDirInput.value.trim()) {
+      return "Select a batch input directory, or include the validate phase.";
     }
     return "";
   }

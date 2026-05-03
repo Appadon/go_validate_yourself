@@ -4,7 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{.Title}}</title>
-    <link rel="stylesheet" href="/static/css/app.css?v={{.Version}}-stage5b">
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/static/css/app.css?v={{.Version}}-stage6">
   </head>
   <body>
     <div class="app-shell">
@@ -12,13 +13,11 @@
         <div class="topbar__copy">
           <p class="eyebrow">CONSOLE</p>
           <h1>Go Validate Yourself</h1>
-          <p class="lede">
-            Choose a workflow, select the required files, start a run, and follow live progress.
-          </p>
+          <p class="lede">Workflow setup and live progress.</p>
         </div>
         <div class="topbar__status">
           <section class="status-card">
-            <span class="status-card__label">Server status</span>
+            <span class="status-card__label">Server</span>
             <strong id="server-status-text">{{if .ServerBusy}}Busy{{else}}Idle{{end}}</strong>
             <span id="server-status-badge" class="badge {{if .ServerBusy}}badge--warn{{else}}badge--ok{{end}}">
               {{if .ServerBusy}}Single run occupied{{else}}Ready for a new run{{end}}
@@ -69,7 +68,7 @@
                 </div>
               </div>
 
-              <div class="selectors-grid">
+              <div class="selectors-grid selectors-grid--single">
                 <section id="main-csv-group" class="selector-group" aria-labelledby="csv-group-title">
                   <div class="selector-group__head">
                     <div>
@@ -386,6 +385,6 @@
     <script>
       window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
     </script>
-    <script src="/static/js/app.js?v={{.Version}}-stage5b" defer></script>
+    <script src="/static/js/app.js?v={{.Version}}-stage6" defer></script>
   </body>
 </html>
