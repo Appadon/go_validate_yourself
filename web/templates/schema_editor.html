@@ -25,44 +25,13 @@
       </header>
 
       <main class="schema-layout">
-        <section class="panel schema-browser" aria-labelledby="schema-browser-title">
-          <div class="panel__head">
-            <div>
-              <p class="eyebrow">Files</p>
-              <h2 id="schema-browser-title">Schema JSON</h2>
-              <p class="panel-note">Browse and load existing schema files.</p>
+        <section id="schema-workbench" class="panel schema-workbench" aria-label="Schema editor" tabindex="-1">
+          <div class="schema-workflow" aria-label="Schema file actions">
+            <div class="schema-workflow__left">
+              <button id="load-button" class="button button--primary" type="button">Load</button>
+              <button id="new-button" class="button button--secondary" type="button">New</button>
             </div>
-            <button id="refresh-button" class="button button--secondary button--small" type="button">Refresh</button>
-          </div>
-
-          <div class="browser-toolbar schema-browser__toolbar">
-            <code id="current-path">/</code>
-            <button id="up-button" class="button button--secondary button--small" type="button">Up</button>
-          </div>
-
-          <div id="directory-list" class="directory-list schema-directory-list" aria-live="polite"></div>
-          <select id="schema-file-select" class="file-select schema-file-select" size="10"></select>
-
-          <div class="schema-browser__actions">
-            <button id="load-button" class="button button--primary" type="button">Load schema</button>
-            <button id="new-button" class="button button--secondary" type="button">New draft</button>
-          </div>
-        </section>
-
-        <section class="panel schema-workbench" aria-labelledby="schema-workbench-title">
-          <div class="panel__head schema-workbench__head">
-            <div>
-              <p class="eyebrow">Editor</p>
-              <h2 id="schema-workbench-title">Fields and rules</h2>
-              <p id="loaded-path" class="panel-note">No schema loaded.</p>
-            </div>
-            <div class="schema-save">
-              <label class="field-control schema-save__path" for="save-path-input">
-                <span>Save path</span>
-                <input id="save-path-input" type="text" autocomplete="off" placeholder="schemas/policy.schema.json">
-              </label>
-              <button id="save-button" class="button button--primary" type="button">Save</button>
-            </div>
+            <button id="save-button" class="button button--primary schema-workflow__save" type="button">Save</button>
           </div>
 
           <p id="message" class="form-message schema-message" aria-live="polite"></p>
@@ -111,12 +80,12 @@
               <div id="field-editor" class="field-editor" hidden>
                 <div class="config-grid config-grid--settings schema-config-grid">
                   <label class="field-control" for="field-name-input">
-                    <span>CSV column name</span>
+                    <span>Input Column Name</span>
                     <input id="field-name-input" type="text" autocomplete="off">
                   </label>
 
                   <label class="field-control" for="field-parquet-input">
-                    <span>Parquet name</span>
+                    <span>Output Column Name</span>
                     <input id="field-parquet-input" type="text" autocomplete="off">
                   </label>
 
@@ -131,7 +100,7 @@
                     </select>
                   </label>
 
-                  <label class="field-control" for="field-min-length-input">
+                  <label class="field-control" for="field-min-length-input" data-field-types="string">
                     <span>Min length</span>
                     <input id="field-min-length-input" type="number" min="0" step="1">
                   </label>
@@ -152,37 +121,39 @@
                     <input id="field-required-input" type="checkbox">
                     <span>Required</span>
                   </label>
-                  <label class="toggle-control">
-                    <input id="field-exclude-missing-input" type="checkbox">
-                    <span>Exclude if missing</span>
-                  </label>
-                  <label class="toggle-control">
+                  <label class="toggle-control" data-field-types="string">
                     <input id="field-lower-input" type="checkbox">
                     <span>Lower case</span>
                   </label>
-                  <label class="toggle-control">
+                  <label class="toggle-control" data-field-types="int">
                     <input id="field-non-zero-input" type="checkbox">
                     <span>Non-zero</span>
                   </label>
                 </div>
 
                 <div class="schema-textareas">
-                  <label class="field-control" for="field-allowed-input">
-                    <span>Allowed values</span>
-                    <textarea id="field-allowed-input" rows="5" placeholder="One value per line"></textarea>
-                  </label>
+                  <div class="field-control schema-list-editor allowed-values-editor" data-field-types="string">
+                    <div class="schema-list-editor__head">
+                      <span>Allowed values</span>
+                      <button id="field-allowed-add" class="button button--secondary button--small" type="button">Add</button>
+                    </div>
+                    <div id="field-allowed-rows" class="schema-list-editor__rows"></div>
+                  </div>
 
-                  <label class="field-control" for="field-inline-replace-input">
-                    <span>Inline replacements</span>
-                    <textarea id="field-inline-replace-input" rows="5" placeholder="cahs => cash"></textarea>
-                  </label>
+                  <div class="field-control schema-list-editor inline-replace-editor" data-field-types="string">
+                    <div class="schema-list-editor__head">
+                      <span>Inline replacements</span>
+                      <button id="field-inline-replace-add" class="button button--secondary button--small" type="button">Add</button>
+                    </div>
+                    <div id="field-inline-replace-rows" class="schema-list-editor__rows"></div>
+                  </div>
 
-                  <label class="field-control" for="field-date-formats-input">
+                  <label class="field-control" for="field-date-formats-input" data-field-types="date">
                     <span>Date formats</span>
                     <textarea id="field-date-formats-input" rows="4" placeholder="2006-01-02"></textarea>
                   </label>
 
-                  <label class="field-control" for="field-datetime-formats-input">
+                  <label class="field-control" for="field-datetime-formats-input" data-field-types="datetime">
                     <span>Datetime formats</span>
                     <textarea id="field-datetime-formats-input" rows="4" placeholder="2006-01-02 15:04:05"></textarea>
                   </label>
@@ -192,6 +163,52 @@
           </div>
         </section>
       </main>
+    </div>
+
+    <div id="schema-picker-modal" class="picker-modal" hidden>
+      <div id="picker-backdrop" class="picker-modal__backdrop"></div>
+      <section class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+        <div class="panel__head">
+          <div>
+            <p class="eyebrow">File Picker</p>
+            <h2 id="picker-title">Select schema JSON</h2>
+            <p id="picker-subtitle" class="panel-note">Browse the working directory and choose one schema JSON file.</p>
+          </div>
+          <div class="schema-picker__head-actions">
+            <button id="refresh-button" class="button button--secondary button--small" type="button">Refresh</button>
+            <button id="picker-close-button" class="button button--secondary button--small" type="button">Close</button>
+          </div>
+        </div>
+
+        <label class="filter-field" for="picker-filter-input">
+          <span>Filter files</span>
+          <input id="picker-filter-input" type="search" placeholder="Filter by filename or folder" autocomplete="off">
+        </label>
+
+        <div class="browser-toolbar">
+          <code id="current-path">/</code>
+          <button id="up-button" class="button button--secondary button--small" type="button">Up</button>
+        </div>
+
+        <div id="draft-location-panel" class="draft-location-panel" hidden>
+          <label class="field-control" for="draft-name-input">
+            <span id="schema-name-label">Schema filename</span>
+            <input id="draft-name-input" type="text" autocomplete="off" placeholder="new.schema.json">
+          </label>
+          <p id="draft-path-preview" class="selection-summary">Schema will be saved in this folder.</p>
+        </div>
+
+        <div id="directory-list" class="directory-list" aria-live="polite"></div>
+        <div class="schema-picker__file-list">
+          <p id="picker-list-label" class="schema-picker__list-label">Schema files</p>
+          <select id="schema-file-select" class="file-select file-select--modal" size="12"></select>
+        </div>
+
+        <div class="picker-actions">
+          <p id="picker-selection-summary" class="selection-summary">No file selected.</p>
+          <button id="picker-choose-button" class="button button--primary" type="button">Use selected file</button>
+        </div>
+      </section>
     </div>
 
     <script>

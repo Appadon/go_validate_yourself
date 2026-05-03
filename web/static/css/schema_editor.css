@@ -4,46 +4,13 @@
 
 .schema-layout {
   display: grid;
-  grid-template-columns: minmax(280px, 0.32fr) minmax(0, 1fr);
   gap: 0.9rem;
   min-height: 0;
 }
 
-.schema-browser,
 .schema-workbench {
   min-height: 0;
   overflow: hidden;
-}
-
-.schema-browser {
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
-  gap: 0.7rem;
-}
-
-.schema-browser .panel__head,
-.schema-workbench .panel__head {
-  margin-bottom: 0;
-}
-
-.schema-browser__toolbar {
-  margin: 0;
-}
-
-.schema-directory-list {
-  max-height: 7.5rem;
-  overflow: auto;
-}
-
-.schema-file-select {
-  min-height: 0;
-  height: 100%;
-}
-
-.schema-browser__actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.55rem;
 }
 
 .schema-workbench {
@@ -52,19 +19,91 @@
   gap: 0.75rem;
 }
 
-.schema-workbench__head {
-  align-items: end;
+.schema-workbench:focus {
+  outline: none;
 }
 
-.schema-save {
+.schema-workflow {
   display: grid;
-  grid-template-columns: minmax(260px, 34vw) auto;
-  align-items: end;
-  gap: 0.65rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.85rem;
+  background:
+    linear-gradient(135deg, rgba(75, 141, 255, 0.15), rgba(183, 255, 90, 0.06)),
+    rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(75, 141, 255, 0.24);
+  border-radius: var(--radius-sm);
 }
 
-.schema-save__path {
+.schema-workflow__left {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.schema-workflow__save {
+  justify-self: end;
+}
+
+.schema-workbench--ready .schema-workflow {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: var(--border);
+}
+
+.schema-workflow .button,
+.schema-workflow .button--primary,
+.schema-workflow .button--secondary {
+  color: var(--accent-strong);
+  background: rgba(75, 141, 255, 0.08);
+  border: 1px solid rgba(75, 141, 255, 0.16);
+}
+
+.schema-workflow .button:hover:not(:disabled),
+.schema-workflow .button:focus-visible:not(:disabled) {
+  color: #061005;
+  background: var(--ok);
+  border-color: rgba(183, 255, 90, 0.72);
+}
+
+.schema-picker__head-actions {
+  display: flex;
+  gap: 0.55rem;
+}
+
+.picker-panel {
+  grid-template-rows: auto auto auto auto minmax(0, auto) minmax(8rem, 1fr) auto;
+}
+
+.draft-location-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.45fr) minmax(0, 1fr);
+  align-items: end;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.draft-location-panel .field-control {
   margin: 0;
+}
+
+.schema-picker__file-list {
+  min-height: 0;
+}
+
+.schema-picker__list-label {
+  margin: 0 0 0.4rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.schema-picker__file-list .file-select:disabled {
+  opacity: 0.72;
 }
 
 .schema-message {
@@ -233,6 +272,50 @@
   box-shadow: var(--focus-ring);
 }
 
+.schema-list-editor {
+  align-self: start;
+  align-content: start;
+  gap: 0.45rem;
+}
+
+.schema-list-editor__head,
+.schema-list-editor__rows,
+.allowed-value-row,
+.inline-replace-row {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.schema-list-editor__head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.schema-list-editor__rows {
+  gap: 0.45rem;
+}
+
+.allowed-value-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.inline-replace-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.allowed-value-row input,
+.inline-replace-row input {
+  min-width: 0;
+}
+
+.schema-list-row__remove {
+  min-width: 4.4rem;
+}
+
 @media (max-width: 980px) {
   body {
     overflow: auto;
@@ -244,18 +327,32 @@
   }
 
   .schema-layout,
+  .schema-workflow,
   .schema-editor-grid,
   .schema-config-grid,
   .schema-textareas {
     grid-template-columns: 1fr;
   }
 
-  .schema-save {
-    grid-template-columns: 1fr;
+  .schema-workflow .button {
     width: 100%;
   }
 
-  .schema-workbench__head {
-    align-items: stretch;
+  .schema-workflow__left {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .schema-workflow__save {
+    justify-self: stretch;
+  }
+
+  .draft-location-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .allowed-value-row,
+  .inline-replace-row {
+    grid-template-columns: 1fr;
   }
 }

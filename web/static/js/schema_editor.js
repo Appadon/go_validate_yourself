@@ -9,6 +9,10 @@
     parentPath: "",
     entries: [],
     selectedFile: "",
+    filter: "",
+    pickerOpen: false,
+    pickerMode: "load",
+    draftName: "new.schema.json",
     loadedPath: "",
     schema: deepClone(blankSchema),
     activeIndex: -1,
@@ -18,15 +22,27 @@
   };
 
   const els = {
+    workbench: document.getElementById("schema-workbench"),
     refreshButton: document.getElementById("refresh-button"),
+    pickerModal: document.getElementById("schema-picker-modal"),
+    pickerBackdrop: document.getElementById("picker-backdrop"),
+    pickerTitle: document.getElementById("picker-title"),
+    pickerSubtitle: document.getElementById("picker-subtitle"),
+    pickerCloseButton: document.getElementById("picker-close-button"),
+    pickerFilterInput: document.getElementById("picker-filter-input"),
+    pickerSelectionSummary: document.getElementById("picker-selection-summary"),
+    pickerChooseButton: document.getElementById("picker-choose-button"),
+    pickerListLabel: document.getElementById("picker-list-label"),
+    draftLocationPanel: document.getElementById("draft-location-panel"),
+    schemaNameLabel: document.getElementById("schema-name-label"),
+    draftNameInput: document.getElementById("draft-name-input"),
+    draftPathPreview: document.getElementById("draft-path-preview"),
     currentPath: document.getElementById("current-path"),
     upButton: document.getElementById("up-button"),
     directoryList: document.getElementById("directory-list"),
     schemaFileSelect: document.getElementById("schema-file-select"),
     loadButton: document.getElementById("load-button"),
     newButton: document.getElementById("new-button"),
-    loadedPath: document.getElementById("loaded-path"),
-    savePathInput: document.getElementById("save-path-input"),
     saveButton: document.getElementById("save-button"),
     message: document.getElementById("message"),
     fieldCount: document.getElementById("field-count"),
@@ -43,13 +59,15 @@
     fieldDefaultInput: document.getElementById("field-default-input"),
     fieldOverrideInput: document.getElementById("field-override-input"),
     fieldRequiredInput: document.getElementById("field-required-input"),
-    fieldExcludeMissingInput: document.getElementById("field-exclude-missing-input"),
     fieldLowerInput: document.getElementById("field-lower-input"),
     fieldNonZeroInput: document.getElementById("field-non-zero-input"),
-    fieldAllowedInput: document.getElementById("field-allowed-input"),
-    fieldInlineReplaceInput: document.getElementById("field-inline-replace-input"),
+    fieldAllowedAdd: document.getElementById("field-allowed-add"),
+    fieldAllowedRows: document.getElementById("field-allowed-rows"),
+    fieldInlineReplaceAdd: document.getElementById("field-inline-replace-add"),
+    fieldInlineReplaceRows: document.getElementById("field-inline-replace-rows"),
     fieldDateFormatsInput: document.getElementById("field-date-formats-input"),
     fieldDatetimeFormatsInput: document.getElementById("field-datetime-formats-input"),
+    typeSpecificOptions: Array.from(document.querySelectorAll("[data-field-types]")),
   };
 
   function init() {
@@ -62,19 +80,79 @@
     els.refreshButton.addEventListener("click", function () {
       loadFileList(state.currentPath);
     });
+    els.pickerBackdrop.addEventListener("click", closeSchemaPicker);
+    els.pickerCloseButton.addEventListener("click", closeSchemaPicker);
+    els.pickerFilterInput.addEventListener("input", function () {
+      state.filter = els.pickerFilterInput.value.trim().toLowerCase();
+      renderPicker();
+    });
+    els.draftNameInput.addEventListener("input", function () {
+      state.draftName = els.draftNameInput.value;
+      renderPicker();
+    });
     els.upButton.addEventListener("click", function () {
       loadFileList(state.parentPath || "");
     });
     els.schemaFileSelect.addEventListener("change", function () {
       state.selectedFile = els.schemaFileSelect.value || "";
+      if (state.pickerMode === "save" && state.selectedFile) {
+        state.draftName = baseName(state.selectedFile);
+      }
       render();
     });
-    els.schemaFileSelect.addEventListener("dblclick", loadSelectedSchema);
-    els.loadButton.addEventListener("click", loadSelectedSchema);
-    els.newButton.addEventListener("click", newDraft);
-    els.saveButton.addEventListener("click", saveSchema);
+    els.schemaFileSelect.addEventListener("dblclick", function () {
+      if (state.pickerMode === "load") {
+        loadSelectedSchema();
+      }
+    });
+    els.loadButton.addEventListener("click", function () {
+      openSchemaPicker("load");
+    });
+    els.pickerChooseButton.addEventListener("click", function () {
+      if (state.pickerMode === "new") {
+        createDraftFromPicker();
+        return;
+      }
+      if (state.pickerMode === "save") {
+        saveSchemaFromPicker();
+        return;
+      }
+      loadSelectedSchema();
+    });
+    els.newButton.addEventListener("click", function () {
+      openSchemaPicker("new");
+    });
+    els.saveButton.addEventListener("click", openSavePicker);
     els.addFieldButton.addEventListener("click", addField);
     els.deleteFieldButton.addEventListener("click", deleteActiveField);
+    els.fieldAllowedAdd.addEventListener("click", addAllowedValueRowAndUpdate);
+    els.fieldAllowedRows.addEventListener("input", updateActiveFieldFromForm);
+    els.fieldAllowedRows.addEventListener("change", updateActiveFieldFromForm);
+    els.fieldAllowedRows.addEventListener("click", function (event) {
+      const button = event.target.closest("[data-allowed-value-remove]");
+      if (!button) {
+        return;
+      }
+      const row = button.closest(".allowed-value-row");
+      if (row) {
+        row.remove();
+      }
+      updateActiveFieldFromForm();
+    });
+    els.fieldInlineReplaceAdd.addEventListener("click", addInlineReplaceRowAndUpdate);
+    els.fieldInlineReplaceRows.addEventListener("input", updateActiveFieldFromForm);
+    els.fieldInlineReplaceRows.addEventListener("change", updateActiveFieldFromForm);
+    els.fieldInlineReplaceRows.addEventListener("click", function (event) {
+      const button = event.target.closest("[data-inline-replace-remove]");
+      if (!button) {
+        return;
+      }
+      const row = button.closest(".inline-replace-row");
+      if (row) {
+        row.remove();
+      }
+      updateActiveFieldFromForm();
+    });
 
     fieldControls().forEach(function (control) {
       control.addEventListener("input", updateActiveFieldFromForm);
@@ -91,11 +169,8 @@
       els.fieldDefaultInput,
       els.fieldOverrideInput,
       els.fieldRequiredInput,
-      els.fieldExcludeMissingInput,
       els.fieldLowerInput,
       els.fieldNonZeroInput,
-      els.fieldAllowedInput,
-      els.fieldInlineReplaceInput,
       els.fieldDateFormatsInput,
       els.fieldDatetimeFormatsInput,
     ];
@@ -145,22 +220,105 @@
       state.loadedPath = payload.relative_path || state.selectedFile;
       state.activeIndex = state.schema.fields.length ? 0 : -1;
       state.dirty = false;
-      els.savePathInput.value = state.loadedPath;
       setMessage("Schema loaded.", "ok");
+      closeSchemaPicker();
       render();
+      focusWorkbench();
     } catch (error) {
       setMessage(error.message || "Could not load schema", "error");
       render();
     }
   }
 
-  function newDraft() {
+  function openSchemaPicker(mode) {
+    state.pickerMode = mode === "new" || mode === "save" ? mode : "load";
+    state.pickerOpen = true;
+    state.filter = "";
+    if (state.pickerMode === "load") {
+      state.selectedFile = "";
+    }
+    if (!state.entries.length) {
+      loadFileList(state.currentPath);
+    }
+    renderPicker();
+  }
+
+  function closeSchemaPicker() {
+    state.pickerOpen = false;
+    renderPicker();
+  }
+
+  function filteredEntries(wantDirectory) {
+    return state.entries.filter(function (entry) {
+      if (Boolean(entry.is_dir) !== wantDirectory) {
+        return false;
+      }
+      if (!state.filter) {
+        return true;
+      }
+      return String(entry.relative_path || entry.name || "").toLowerCase().indexOf(state.filter) >= 0;
+    });
+  }
+
+  function hasFileEntries() {
+    return state.entries.some(function (entry) {
+      return !entry.is_dir;
+    });
+  }
+
+  function createDraftFromPicker() {
+    const path = draftRelativePath();
+    if (!path) {
+      setMessage("Enter a .json filename for the draft.", "warn");
+      return;
+    }
+    if (/[\\/]/.test(String(state.draftName || ""))) {
+      setMessage("Enter only the draft filename; choose the folder in the picker.", "warn");
+      return;
+    }
+    newDraft(path);
+    closeSchemaPicker();
+    focusWorkbench();
+  }
+
+  function openSavePicker() {
+    ensureSchemaShape();
+    const localError = localSchemaError();
+    if (localError) {
+      setMessage(localError, "error");
+      render();
+      return;
+    }
+    const current = state.loadedPath || "new.schema.json";
+    state.draftName = baseName(current) || "new.schema.json";
+    state.selectedFile = current;
+    const directory = dirName(current);
+    state.pickerMode = "save";
+    state.pickerOpen = true;
+    state.filter = "";
+    loadFileList(directory);
+    renderPicker();
+  }
+
+  function saveSchemaFromPicker() {
+    const path = draftRelativePath();
+    if (!path) {
+      setMessage("Enter a .json filename for the schema.", "warn");
+      return;
+    }
+    if (/[\\/]/.test(String(state.draftName || ""))) {
+      setMessage("Enter only the schema filename; choose the folder in the picker.", "warn");
+      return;
+    }
+    saveSchema(path);
+  }
+
+  function newDraft(path) {
     state.schema = deepClone(blankSchema);
-    state.loadedPath = "";
+    state.loadedPath = path;
     state.activeIndex = -1;
-    state.dirty = false;
-    els.savePathInput.value = "schemas/new.schema.json";
-    setMessage("New empty schema draft created.", "info");
+    state.dirty = true;
+    setMessage("Draft ready. Add a field, then save it to " + path + ".", "info");
     render();
   }
 
@@ -195,13 +353,8 @@
     render();
   }
 
-  async function saveSchema() {
+  async function saveSchema(path) {
     ensureSchemaShape();
-    const path = els.savePathInput.value.trim();
-    if (!path) {
-      setMessage("Enter a .json save path.", "warn");
-      return;
-    }
     const localError = localSchemaError();
     if (localError) {
       setMessage(localError, "error");
@@ -226,10 +379,11 @@
       state.schema = normalizeSchema(payload.schema || state.schema);
       state.loadedPath = payload.relative_path || path;
       state.dirty = false;
-      els.savePathInput.value = state.loadedPath;
-      setMessage("Schema saved.", "ok");
+      closeSchemaPicker();
       await loadFileList(state.currentPath);
+      setMessage("Schema saved.", "ok");
       render();
+      focusWorkbench();
     } catch (error) {
       setMessage(error.message || "Could not save schema", "error");
       render();
@@ -246,20 +400,28 @@
     field.parquet_name = els.fieldParquetInput.value;
     field.type = els.fieldTypeInput.value;
     field.required = els.fieldRequiredInput.checked;
-    field.exclude_if_missing = els.fieldExcludeMissingInput.checked;
-    field.lower = els.fieldLowerInput.checked;
-    field.non_zero = els.fieldNonZeroInput.checked;
-    setNumberProperty(field, "min_length", els.fieldMinLengthInput.value);
     setScalarProperty(field, "default", els.fieldDefaultInput.value, field.type);
     setScalarProperty(field, "override", els.fieldOverrideInput.value, field.type);
-    setArrayProperty(field, "allowed_values", linesFromText(els.fieldAllowedInput.value));
-    setMapProperty(field, "inline_replace", mapFromText(els.fieldInlineReplaceInput.value));
-    setArrayProperty(field, "date_formats", linesFromText(els.fieldDateFormatsInput.value));
-    setArrayProperty(field, "datetime_formats", linesFromText(els.fieldDatetimeFormatsInput.value));
+    if (field.type === "string") {
+      field.lower = els.fieldLowerInput.checked;
+      setNumberProperty(field, "min_length", els.fieldMinLengthInput.value);
+      setArrayProperty(field, "allowed_values", arrayFromAllowedValueRows());
+      setMapProperty(field, "inline_replace", mapFromInlineReplaceRows());
+    }
+    if (field.type === "int") {
+      field.non_zero = els.fieldNonZeroInput.checked;
+    }
+    if (field.type === "date") {
+      setArrayProperty(field, "date_formats", linesFromText(els.fieldDateFormatsInput.value));
+    }
+    if (field.type === "datetime") {
+      setArrayProperty(field, "datetime_formats", linesFromText(els.fieldDatetimeFormatsInput.value));
+    }
     state.dirty = true;
     setMessage("", "");
     renderFieldTable();
     renderMeta();
+    renderTypeSpecificOptions(field.type);
   }
 
   function buildSchemaForSave() {
@@ -271,16 +433,23 @@
         stringProperty(out, "parquet_name", field.parquet_name);
         stringProperty(out, "type", field.type || "string");
         booleanProperty(out, "required", field.required);
-        booleanProperty(out, "exclude_if_missing", field.exclude_if_missing);
-        numberProperty(out, "min_length", field.min_length);
-        booleanProperty(out, "lower", field.lower);
-        arrayProperty(out, "allowed_values", field.allowed_values);
-        mapProperty(out, "inline_replace", field.inline_replace);
         valueProperty(out, "default", field.default);
         valueProperty(out, "override", field.override);
-        booleanProperty(out, "non_zero", field.non_zero);
-        arrayProperty(out, "date_formats", field.date_formats);
-        arrayProperty(out, "datetime_formats", field.datetime_formats);
+        if ((field.type || "string") === "string") {
+          numberProperty(out, "min_length", field.min_length);
+          booleanProperty(out, "lower", field.lower);
+          arrayProperty(out, "allowed_values", field.allowed_values);
+          mapProperty(out, "inline_replace", field.inline_replace);
+        }
+        if (field.type === "int") {
+          booleanProperty(out, "non_zero", field.non_zero);
+        }
+        if (field.type === "date") {
+          arrayProperty(out, "date_formats", field.date_formats);
+        }
+        if (field.type === "datetime") {
+          arrayProperty(out, "datetime_formats", field.datetime_formats);
+        }
         return out;
       }),
     };
@@ -310,16 +479,35 @@
   }
 
   function render() {
-    renderBrowser();
+    renderPicker();
     renderMeta();
     renderFieldTable();
     renderFieldEditor();
     renderMessage();
   }
 
-  function renderBrowser() {
-    const directories = state.entries.filter(function (entry) { return entry.is_dir; });
-    const files = state.entries.filter(function (entry) { return !entry.is_dir; });
+  function renderPicker() {
+    els.pickerModal.hidden = !state.pickerOpen;
+    els.pickerFilterInput.value = state.filter;
+    els.draftNameInput.value = state.draftName;
+
+    const isNewDraft = state.pickerMode === "new";
+    const isSave = state.pickerMode === "save";
+    const usesFilename = isNewDraft || isSave;
+    els.pickerTitle.textContent = isNewDraft ? "New Schema" : isSave ? "Save Schema" : "Load Schema";
+    els.pickerSubtitle.textContent = isNewDraft
+      ? "Choose a folder and filename."
+      : isSave
+        ? "Choose the same filename, or enter a new one to save a copy."
+        : "Select an existing schema file.";
+    els.draftLocationPanel.hidden = !usesFilename;
+    els.schemaFileSelect.disabled = isNewDraft;
+    els.schemaNameLabel.textContent = isNewDraft ? "New schema filename" : "Save as";
+    els.pickerListLabel.textContent = usesFilename ? "Existing schema files in this folder" : "Schema files";
+    els.pickerChooseButton.textContent = isNewDraft ? "Create Schema" : isSave ? "Save Here" : "Load Schema";
+
+    const directories = filteredEntries(true);
+    const files = filteredEntries(false);
 
     els.currentPath.textContent = "/" + (state.currentPath || "");
     els.upButton.disabled = !state.currentPath && !state.parentPath;
@@ -341,7 +529,7 @@
     if (!files.length) {
       const option = document.createElement("option");
       option.disabled = true;
-      option.textContent = "No schema JSON files in this directory";
+      option.textContent = hasFileEntries() ? "No files match the current filter" : "No schema JSON files in this directory";
       els.schemaFileSelect.appendChild(option);
     } else {
       files.forEach(function (entry) {
@@ -353,20 +541,32 @@
       });
     }
 
-    els.loadButton.disabled = !state.selectedFile;
+    if (usesFilename) {
+      const draftPath = draftRelativePath();
+      els.draftPathPreview.textContent = draftPath ? "Target: " + draftPath : "Enter a schema filename.";
+      els.pickerSelectionSummary.textContent = draftPath || "No filename set.";
+      els.pickerChooseButton.disabled = !draftPath;
+      return;
+    }
+
+    els.draftPathPreview.textContent = "";
+    els.pickerSelectionSummary.textContent = state.selectedFile || "No file selected.";
+    els.pickerChooseButton.disabled = !state.selectedFile;
   }
 
   function renderMeta() {
     const count = state.schema.fields.length;
-    els.loadedPath.textContent = state.loadedPath ? "Loaded: " + state.loadedPath + (state.dirty ? " (unsaved)" : "") : "No schema loaded.";
+    els.workbench.classList.toggle("schema-workbench--ready", Boolean(state.loadedPath));
     els.fieldCount.textContent = count + (count === 1 ? " field" : " fields");
+    els.addFieldButton.disabled = !state.loadedPath;
     els.saveButton.disabled = !state.schema.fields.length;
   }
 
   function renderFieldTable() {
     ensureSchemaShape();
     if (!state.schema.fields.length) {
-      els.fieldTableBody.innerHTML = '<tr><td colspan="3">Load or create a schema to begin.</td></tr>';
+      const message = state.loadedPath ? "Add a field to begin this draft." : "Load or create a schema to begin.";
+      els.fieldTableBody.innerHTML = '<tr><td colspan="3">' + escapeHTML(message) + '</td></tr>';
       return;
     }
     els.fieldTableBody.innerHTML = state.schema.fields.map(function (field, index) {
@@ -396,7 +596,8 @@
     els.deleteFieldButton.disabled = !hasField;
 
     if (!hasField) {
-      els.fieldDetailSubtitle.textContent = "Select a column to edit its rules.";
+      els.fieldDetailSubtitle.textContent = state.loadedPath ? "Select a column to edit its rules." : "Load or create a schema first.";
+      els.fieldEditorEmpty.textContent = state.loadedPath ? "Select a field from the table, or add a new field." : "Load a schema file or create a draft to start editing.";
       return;
     }
 
@@ -408,13 +609,77 @@
     els.fieldDefaultInput.value = valueText(field.default);
     els.fieldOverrideInput.value = valueText(field.override);
     els.fieldRequiredInput.checked = Boolean(field.required);
-    els.fieldExcludeMissingInput.checked = Boolean(field.exclude_if_missing);
     els.fieldLowerInput.checked = Boolean(field.lower);
     els.fieldNonZeroInput.checked = Boolean(field.non_zero);
-    els.fieldAllowedInput.value = arrayText(field.allowed_values);
-    els.fieldInlineReplaceInput.value = mapText(field.inline_replace);
+    renderAllowedValueRows(field.allowed_values);
+    renderInlineReplaceRows(field.inline_replace);
     els.fieldDateFormatsInput.value = arrayText(field.date_formats);
     els.fieldDatetimeFormatsInput.value = arrayText(field.datetime_formats);
+    renderTypeSpecificOptions(els.fieldTypeInput.value);
+  }
+
+  function renderTypeSpecificOptions(type) {
+    els.typeSpecificOptions.forEach(function (option) {
+      const allowedTypes = String(option.getAttribute("data-field-types") || "").split(/\s+/);
+      option.hidden = allowedTypes.indexOf(type || "string") < 0;
+    });
+  }
+
+  function renderAllowedValueRows(values) {
+    els.fieldAllowedRows.innerHTML = "";
+    const rows = Array.isArray(values) ? values : [];
+    rows.forEach(function (value) {
+      addAllowedValueRow(value);
+    });
+  }
+
+  function addAllowedValueRowAndUpdate() {
+    const row = addAllowedValueRow("");
+    const input = row.querySelector("[data-allowed-value]");
+    if (input) {
+      input.focus();
+    }
+    updateActiveFieldFromForm();
+  }
+
+  function addAllowedValueRow(value) {
+    const row = document.createElement("div");
+    row.className = "allowed-value-row";
+    row.innerHTML = [
+      '<input type="text" autocomplete="off" data-allowed-value placeholder="Value" value="' + escapeHTML(value) + '">',
+      '<button class="button button--secondary button--small schema-list-row__remove" type="button" data-allowed-value-remove title="Remove allowed value" aria-label="Remove allowed value">Remove</button>',
+    ].join("");
+    els.fieldAllowedRows.appendChild(row);
+    return row;
+  }
+
+  function renderInlineReplaceRows(value) {
+    els.fieldInlineReplaceRows.innerHTML = "";
+    const keys = value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort() : [];
+    keys.forEach(function (key) {
+      addInlineReplaceRow(key, value[key]);
+    });
+  }
+
+  function addInlineReplaceRowAndUpdate() {
+    const row = addInlineReplaceRow("", "");
+    const input = row.querySelector("[data-inline-replace-from]");
+    if (input) {
+      input.focus();
+    }
+    updateActiveFieldFromForm();
+  }
+
+  function addInlineReplaceRow(from, to) {
+    const row = document.createElement("div");
+    row.className = "inline-replace-row";
+    row.innerHTML = [
+      '<input type="text" autocomplete="off" data-inline-replace-from placeholder="From" value="' + escapeHTML(from) + '">',
+      '<input type="text" autocomplete="off" data-inline-replace-to placeholder="To" value="' + escapeHTML(to) + '">',
+      '<button class="button button--secondary button--small schema-list-row__remove" type="button" data-inline-replace-remove title="Remove replacement" aria-label="Remove replacement">Remove</button>',
+    ].join("");
+    els.fieldInlineReplaceRows.appendChild(row);
+    return row;
   }
 
   function renderMessage() {
@@ -552,16 +817,24 @@
       .filter(Boolean);
   }
 
-  function mapFromText(text) {
-    const out = {};
-    linesFromText(text).forEach(function (line) {
-      const separator = line.indexOf("=>") >= 0 ? "=>" : "=";
-      const index = line.indexOf(separator);
-      if (index < 0) {
-        return;
+  function arrayFromAllowedValueRows() {
+    const out = [];
+    els.fieldAllowedRows.querySelectorAll("[data-allowed-value]").forEach(function (input) {
+      const value = input.value.trim();
+      if (value) {
+        out.push(value);
       }
-      const key = line.slice(0, index).trim();
-      const value = line.slice(index + separator.length).trim();
+    });
+    return out;
+  }
+
+  function mapFromInlineReplaceRows() {
+    const out = {};
+    els.fieldInlineReplaceRows.querySelectorAll(".inline-replace-row").forEach(function (row) {
+      const keyInput = row.querySelector("[data-inline-replace-from]");
+      const valueInput = row.querySelector("[data-inline-replace-to]");
+      const key = keyInput ? keyInput.value.trim() : "";
+      const value = valueInput ? valueInput.value.trim() : "";
       if (key) {
         out[key] = value;
       }
@@ -573,20 +846,52 @@
     return Array.isArray(value) ? value.join("\n") : "";
   }
 
-  function mapText(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return "";
-    }
-    return Object.keys(value).sort().map(function (key) {
-      return key + " => " + value[key];
-    }).join("\n");
-  }
-
   function valueText(value) {
     if (value === undefined || value === null) {
       return "";
     }
     return String(value);
+  }
+
+  function draftRelativePath() {
+    const name = normalizedDraftName();
+    if (!name) {
+      return "";
+    }
+    return state.currentPath ? state.currentPath.replace(/\/+$/, "") + "/" + name : name;
+  }
+
+  function normalizedDraftName() {
+    const clean = String(state.draftName || "").trim();
+    if (!clean || /[\\/]/.test(clean)) {
+      return "";
+    }
+    return /\.json$/i.test(clean) ? clean : clean + ".json";
+  }
+
+  function baseName(path) {
+    const clean = String(path || "").replace(/\/+$/, "");
+    const index = clean.lastIndexOf("/");
+    return index >= 0 ? clean.slice(index + 1) : clean;
+  }
+
+  function dirName(path) {
+    const clean = String(path || "").replace(/\/+$/, "");
+    const index = clean.lastIndexOf("/");
+    return index >= 0 ? clean.slice(0, index) : "";
+  }
+
+  function focusWorkbench() {
+    window.setTimeout(function () {
+      const target = !els.fieldEditor.hidden ? els.fieldNameInput : els.addFieldButton;
+      if (target) {
+        target.focus({ preventScroll: false });
+        return;
+      }
+      if (els.workbench) {
+        els.workbench.focus({ preventScroll: false });
+      }
+    }, 0);
   }
 
   function deepClone(value) {
