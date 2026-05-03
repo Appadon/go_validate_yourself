@@ -1110,7 +1110,7 @@
     const snapshot = state.snapshot;
     if (!snapshot) {
       els.runIDValue.textContent = state.runId || "Waiting for submission";
-      els.runStageValue.textContent = state.health.busy ? "Attached elsewhere" : "Idle";
+      els.runStageValue.textContent = "Not available";
       els.runProgressValue.textContent = "Not started";
       els.stageDetail.textContent = "Stage";
       els.phaseHeading.textContent = state.pendingConfigRun ? "Starting run" : state.health.busy ? "Server busy" : "Ready";
@@ -1128,8 +1128,8 @@
     const detail = snapshot.state === "completed" ? "All selected stages completed." : latestEvent && latestEvent.message ? latestEvent.message : describeState(snapshot.state);
 
     els.runIDValue.textContent = snapshot.run_id;
-    els.runStageValue.textContent = stageInfo.label;
-    els.runProgressValue.textContent = progressPercent == null ? describeState(snapshot.state) : progressPercent + "%";
+    els.runStageValue.textContent = totalRowsText();
+    els.runProgressValue.textContent = runTimeText(snapshot);
     els.stageDetail.textContent = "Stage";
     els.phaseHeading.textContent = phaseText;
     els.phaseDetail.textContent = detail;
@@ -1177,9 +1177,7 @@
 
   function renderSummary() {
     const snapshot = state.snapshot;
-    const workspace = snapshot && snapshot.workspace ? snapshot.workspace : null;
     const final = finalResultInfo();
-    const resolved = final.resolved || state.lastSubmittedResolved || null;
     const result = final.pipeline || null;
     const cards = [];
     const splitSummary = field(result, "split_summary") || {};
@@ -1189,17 +1187,6 @@
 
     if (!snapshot) {
       els.summaryCards.innerHTML = "";
-      return;
-    }
-
-    if (!result && !isTerminalState(snapshot.state)) {
-      const plan = resolved && resolved.plan ? resolved.plan : {};
-      cards.push(cardHTML("Run context", [
-        rowHTML("Workflow", listText(plan.phases || currentResolvedPhases())),
-        rowHTML("Workers", valueText(resolved && resolved.effective_workers)),
-        rowHTML("Output", valueText(plan.validation_success_dir || plan.batch_output_dir || (workspace && workspace.success_dir))),
-      ]));
-      els.summaryCards.innerHTML = cards.join("");
       return;
     }
 
@@ -1573,6 +1560,71 @@
     return { tone: "waiting", label: "Waiting" };
   }
 
+  function runTimeText(snapshot) {
+    const seconds = runDurationSeconds(snapshot);
+    return seconds == null ? "Not started" : formatDurationShort(seconds);
+  }
+
+  function totalRowsText() {
+    const rows = rowsValidatedCount();
+    if (rows == null) {
+      return "Not available";
+    }
+    return compactNumber(rows);
+  }
+
+  function runDurationSeconds(snapshot) {
+    if (!snapshot) {
+      return null;
+    }
+    const startValue = snapshot.started_at || snapshot.created_at;
+    if (!startValue) {
+      return null;
+    }
+    const start = new Date(startValue);
+    if (Number.isNaN(start.getTime())) {
+      return null;
+    }
+    const endValue = snapshot.finished_at || null;
+    const end = endValue ? new Date(endValue) : new Date();
+    if (Number.isNaN(end.getTime())) {
+      return null;
+    }
+    return Math.max(0, (end.getTime() - start.getTime()) / 1000);
+  }
+
+  function rowsValidatedCount() {
+    const final = finalResultInfo();
+    const result = final.pipeline || {};
+    const validationDir = result.validation_dir || field(result, "validation", "Validation");
+    const validationFile = result.validation_file || {};
+    const dirSummary = validationDir && validationDir.summary ? validationDir.summary : {};
+    const fileStats = validationFile && validationFile.stats ? validationFile.stats : {};
+    const finalRows = metricNumber(
+      field(dirSummary, "total_rows", "TotalRows"),
+      field(fileStats, "total_rows", "TotalRows")
+    );
+    if (finalRows != null) {
+      return finalRows;
+    }
+
+    for (let i = state.events.length - 1; i >= 0; i -= 1) {
+      const event = state.events[i];
+      if (dataPhaseForEvent(event) !== "validate") {
+        continue;
+      }
+      const metrics = event.metrics || {};
+      const validRows = metricNumber(field(metrics, "valid_rows", "ValidRows"));
+      const invalidRows = metricNumber(field(metrics, "invalid_rows", "InvalidRows"));
+      const combinedRows = validRows != null || invalidRows != null ? (validRows || 0) + (invalidRows || 0) : null;
+      const eventRows = metricNumber(field(metrics, "total_rows", "TotalRows"), combinedRows);
+      if (eventRows != null) {
+        return eventRows;
+      }
+    }
+    return null;
+  }
+
   function lastResolvedPhase() {
     const phases = currentResolvedPhases();
     return phases.length ? phases[phases.length - 1] : "";
@@ -1699,6 +1751,68 @@
       return "0";
     }
     return String(value);
+  }
+
+  function metricNumber() {
+    for (let index = 0; index < arguments.length; index += 1) {
+      const value = arguments[index];
+      if (value == null || value === "") {
+        continue;
+      }
+      const number = Number(value);
+      if (Number.isFinite(number)) {
+        return number;
+      }
+    }
+    return null;
+  }
+
+  function compactNumber(value) {
+    const number = metricNumber(value);
+    if (number == null) {
+      return "0";
+    }
+    const absolute = Math.abs(number);
+    const units = [
+      { value: 1000000000, suffix: "B" },
+      { value: 1000000, suffix: "M" },
+      { value: 1000, suffix: "K" },
+    ];
+    for (let index = 0; index < units.length; index += 1) {
+      const unit = units[index];
+      if (absolute >= unit.value) {
+        return trimTrailingDecimal(number / unit.value) + unit.suffix;
+      }
+    }
+    return String(Math.round(number));
+  }
+
+  function trimTrailingDecimal(value) {
+    return value.toFixed(1).replace(/\.0$/, "");
+  }
+
+  function formatDurationShort(seconds) {
+    const totalSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+    if (totalSeconds < 60) {
+      return totalSeconds + "s";
+    }
+    const minutes = Math.floor(totalSeconds / 60);
+    const remainingSeconds = totalSeconds % 60;
+    if (minutes < 60) {
+      return minutes + "m " + pad2(remainingSeconds) + "s";
+    }
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    if (hours < 24) {
+      return hours + "h " + pad2(remainingMinutes) + "m";
+    }
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    return days + "d " + pad2(remainingHours) + "h";
+  }
+
+  function pad2(value) {
+    return String(value).padStart(2, "0");
   }
 
   function valueText(value) {
