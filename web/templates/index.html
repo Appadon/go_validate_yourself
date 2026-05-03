@@ -397,6 +397,38 @@
       </section>
     </div>
 
+    <div id="schema-draft-modal" class="picker-modal" hidden>
+      <div id="schema-draft-backdrop" class="picker-modal__backdrop"></div>
+      <section class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="schema-draft-title">
+        <div class="panel__head">
+          <div>
+            <p class="eyebrow">Schema</p>
+            <h2 id="schema-draft-title">New Schema</h2>
+          </div>
+          <button id="schema-draft-close-button" class="button button--secondary button--small" type="button">Close</button>
+        </div>
+
+        <label class="filter-field schema-draft-name-field" for="schema-draft-name-input">
+          <span>Schema filename</span>
+          <input id="schema-draft-name-input" type="text" placeholder="new.schema.json" autocomplete="off">
+        </label>
+        <p id="schema-draft-path-preview" class="selection-summary">Schema will be saved in this folder.</p>
+
+        <div class="browser-toolbar">
+          <code id="schema-draft-path-value">/</code>
+          <button id="schema-draft-up-button" class="button button--secondary button--small" type="button">Up</button>
+        </div>
+
+        <div id="schema-draft-directories" class="directory-list" aria-live="polite"></div>
+        <select id="schema-draft-file-select" class="file-select file-select--modal" size="8" aria-label="Existing schema files"></select>
+
+        <div class="picker-actions">
+          <p id="schema-draft-selection-summary" class="selection-summary">new.schema.json</p>
+          <button id="schema-draft-create-button" class="button button--primary" type="button">Create Schema</button>
+        </div>
+      </section>
+    </div>
+
     <script>
       window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
     </script>

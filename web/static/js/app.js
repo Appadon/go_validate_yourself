@@ -71,6 +71,14 @@
       lastSavedAt: Date.now(),
       open: false,
     },
+    schemaDraft: {
+      open: false,
+      currentPath: "",
+      parentPath: "",
+      entries: [],
+      draftName: "new.schema.json",
+      selectedFile: "",
+    },
     wizard: {
       activeStep: 0,
       maxStep: 4,
@@ -122,6 +130,17 @@
     schemaEditorBackdrop: document.getElementById("schema-editor-backdrop"),
     schemaEditorCloseButton: document.getElementById("schema-editor-close-button"),
     schemaEditorFrame: document.getElementById("schema-editor-frame"),
+    schemaDraftModal: document.getElementById("schema-draft-modal"),
+    schemaDraftBackdrop: document.getElementById("schema-draft-backdrop"),
+    schemaDraftCloseButton: document.getElementById("schema-draft-close-button"),
+    schemaDraftPathValue: document.getElementById("schema-draft-path-value"),
+    schemaDraftUpButton: document.getElementById("schema-draft-up-button"),
+    schemaDraftNameInput: document.getElementById("schema-draft-name-input"),
+    schemaDraftPathPreview: document.getElementById("schema-draft-path-preview"),
+    schemaDraftDirectories: document.getElementById("schema-draft-directories"),
+    schemaDraftFileSelect: document.getElementById("schema-draft-file-select"),
+    schemaDraftSelectionSummary: document.getElementById("schema-draft-selection-summary"),
+    schemaDraftCreateButton: document.getElementById("schema-draft-create-button"),
     csvCount: document.getElementById("csv-count"),
     schemaCount: document.getElementById("schema-count"),
     csvSelectionSummary: document.getElementById("csv-selection-summary"),
@@ -192,7 +211,7 @@
     });
 
     els.schemaEditorNewButton.addEventListener("click", function () {
-      openSchemaEditor("new");
+      openSchemaDraftPicker();
     });
 
     els.validateCSVOpenButton.addEventListener("click", function () {
@@ -267,6 +286,23 @@
     window.addEventListener("focus", readSavedSchemaEditorState);
     els.schemaEditorCloseButton.addEventListener("click", closeSchemaEditor);
     els.schemaEditorBackdrop.addEventListener("click", closeSchemaEditor);
+    els.schemaDraftBackdrop.addEventListener("click", closeSchemaDraftPicker);
+    els.schemaDraftCloseButton.addEventListener("click", closeSchemaDraftPicker);
+    els.schemaDraftNameInput.addEventListener("input", function () {
+      state.schemaDraft.draftName = els.schemaDraftNameInput.value;
+      renderSchemaDraftPicker();
+    });
+    els.schemaDraftFileSelect.addEventListener("change", function () {
+      state.schemaDraft.selectedFile = els.schemaDraftFileSelect.value || "";
+      if (state.schemaDraft.selectedFile) {
+        state.schemaDraft.draftName = displayFileName(state.schemaDraft.selectedFile);
+      }
+      renderSchemaDraftPicker();
+    });
+    els.schemaDraftUpButton.addEventListener("click", function () {
+      loadSchemaDraftFileList(state.schemaDraft.parentPath || "");
+    });
+    els.schemaDraftCreateButton.addEventListener("click", createSchemaDraftFromPicker);
   }
 
   function configControlElements() {
@@ -875,6 +911,7 @@
     updateSubmitState();
     renderPicker();
     renderSchemaEditorModal();
+    renderSchemaDraftPicker();
   }
 
   function setWizardStep(step) {
@@ -1380,6 +1417,19 @@
     renderSchemaEditorModal();
   }
 
+  function openSchemaEditorDraft(path) {
+    const clean = String(path || "").replace(/^\/+/, "");
+    if (!clean) {
+      return;
+    }
+    const params = new URLSearchParams();
+    params.set("embed", "1");
+    params.set("draft", clean);
+    state.schemaEditor.open = true;
+    els.schemaEditorFrame.src = "/schema-editor?" + params.toString();
+    renderSchemaEditorModal();
+  }
+
   function closeSchemaEditor() {
     state.schemaEditor.open = false;
     els.schemaEditorFrame.removeAttribute("src");
@@ -1389,6 +1439,123 @@
 
   function renderSchemaEditorModal() {
     els.schemaEditorModal.hidden = !state.schemaEditor.open;
+  }
+
+  function openSchemaDraftPicker() {
+    state.schemaDraft.open = true;
+    state.schemaDraft.selectedFile = "";
+    state.schemaDraft.draftName = normalizedDraftName(state.schemaDraft.draftName) || "new.schema.json";
+    if (!state.schemaDraft.entries.length) {
+      loadSchemaDraftFileList(state.schemaDraft.currentPath);
+    }
+    renderSchemaDraftPicker();
+  }
+
+  function closeSchemaDraftPicker() {
+    state.schemaDraft.open = false;
+    renderSchemaDraftPicker();
+  }
+
+  async function loadSchemaDraftFileList(path) {
+    try {
+      const params = new URLSearchParams();
+      params.set("kind", "schema");
+      if (path) {
+        params.set("path", path);
+      }
+      const response = await fetch("/api/files?" + params.toString());
+      const payload = await parseJSON(response);
+      if (!response.ok) {
+        throw new Error(payload && payload.message ? payload.message : "Could not load schema files");
+      }
+      state.schemaDraft.currentPath = payload.current_path || "";
+      state.schemaDraft.parentPath = payload.parent_path || "";
+      state.schemaDraft.entries = payload.entries || [];
+      state.schemaDraft.selectedFile = "";
+      renderSchemaDraftPicker();
+    } catch (error) {
+      state.schemaDraft.entries = [];
+      setFormMessage(error.message || "Could not load schema folders", "error");
+      renderSchemaDraftPicker();
+    }
+  }
+
+  function renderSchemaDraftPicker() {
+    els.schemaDraftModal.hidden = !state.schemaDraft.open;
+    if (!state.schemaDraft.open) {
+      return;
+    }
+
+    const directories = filteredSchemaDraftEntries(true);
+    const files = filteredSchemaDraftEntries(false);
+    const draftPath = schemaDraftRelativePath();
+
+    els.schemaDraftNameInput.value = state.schemaDraft.draftName;
+    els.schemaDraftPathValue.textContent = "/" + (state.schemaDraft.currentPath || "");
+    els.schemaDraftUpButton.disabled = !state.schemaDraft.currentPath && !state.schemaDraft.parentPath;
+    els.schemaDraftPathPreview.textContent = draftPath ? "Target: " + draftPath : "Enter a schema filename.";
+    els.schemaDraftSelectionSummary.textContent = draftPath || "No filename set.";
+    els.schemaDraftCreateButton.disabled = !draftPath;
+
+    if (!directories.length) {
+      els.schemaDraftDirectories.innerHTML = '<span class="directory-empty">No subdirectories here.</span>';
+    } else {
+      els.schemaDraftDirectories.innerHTML = directories.map(function (entry) {
+        return '<button class="directory-chip" type="button" data-path="' + escapeHTML(entry.relative_path) + '">/' + escapeHTML(entry.name) + '</button>';
+      }).join("");
+      els.schemaDraftDirectories.querySelectorAll("[data-path]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          loadSchemaDraftFileList(button.getAttribute("data-path") || "");
+        });
+      });
+    }
+
+    els.schemaDraftFileSelect.innerHTML = "";
+    if (!files.length) {
+      const option = document.createElement("option");
+      option.disabled = true;
+      option.textContent = "No schema JSON files in this folder";
+      els.schemaDraftFileSelect.appendChild(option);
+    } else {
+      files.forEach(function (entry) {
+        const option = document.createElement("option");
+        option.value = entry.relative_path;
+        option.textContent = entry.name;
+        option.selected = entry.relative_path === state.schemaDraft.selectedFile;
+        els.schemaDraftFileSelect.appendChild(option);
+      });
+    }
+  }
+
+  function filteredSchemaDraftEntries(wantDirectory) {
+    return state.schemaDraft.entries.filter(function (entry) {
+      return Boolean(entry.is_dir) === wantDirectory;
+    });
+  }
+
+  function createSchemaDraftFromPicker() {
+    const draftPath = schemaDraftRelativePath();
+    if (!draftPath) {
+      return;
+    }
+    closeSchemaDraftPicker();
+    openSchemaEditorDraft(draftPath);
+  }
+
+  function schemaDraftRelativePath() {
+    const name = normalizedDraftName(state.schemaDraft.draftName);
+    if (!name) {
+      return "";
+    }
+    return state.schemaDraft.currentPath ? state.schemaDraft.currentPath.replace(/\/+$/, "") + "/" + name : name;
+  }
+
+  function normalizedDraftName(value) {
+    const clean = String(value || "").trim();
+    if (!clean || /[\\/]/.test(clean)) {
+      return "";
+    }
+    return /\.json$/i.test(clean) ? clean : clean + ".json";
   }
 
   function readSavedSchemaEditorState() {

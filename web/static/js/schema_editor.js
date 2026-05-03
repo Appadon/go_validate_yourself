@@ -183,9 +183,16 @@
     const params = new URLSearchParams(window.location.search || "");
     const mode = params.get("mode") || "";
     const path = cleanRelativePath(params.get("path") || "");
+    const draft = cleanRelativePath(params.get("draft") || "");
 
     if (path) {
       loadSchemaByPath(path);
+      return true;
+    }
+    if (draft) {
+      loadFileList(dirName(draft)).then(function () {
+        newDraft(draft);
+      });
       return true;
     }
     if (mode === "new") {

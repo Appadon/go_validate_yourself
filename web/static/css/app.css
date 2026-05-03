@@ -822,6 +822,21 @@ body::before {
   background: var(--bg-panel);
 }
 
+.draft-location-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.45fr) minmax(0, 1fr);
+  align-items: end;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.draft-location-panel .field-control {
+  margin: 0;
+}
+
 .picker-panel {
   position: relative;
   z-index: 1;
@@ -1429,6 +1444,10 @@ code {
   .schema-editor-card {
     height: calc(100dvh - 0.9rem);
     min-height: 0;
+  }
+
+  .draft-location-panel {
+    grid-template-columns: 1fr;
   }
 
   .picker-panel {

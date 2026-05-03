@@ -182,6 +182,14 @@
           </div>
         </div>
 
+        <div id="draft-location-panel" class="draft-location-panel" hidden>
+          <label class="field-control" for="draft-name-input">
+            <span id="schema-name-label">Schema filename</span>
+            <input id="draft-name-input" type="text" autocomplete="off" placeholder="new.schema.json">
+          </label>
+          <p id="draft-path-preview" class="selection-summary">Schema will be saved in this folder.</p>
+        </div>
+
         <label class="filter-field" for="picker-filter-input">
           <span>Filter files</span>
           <input id="picker-filter-input" type="search" placeholder="Filter by filename or folder" autocomplete="off">
@@ -190,14 +198,6 @@
         <div class="browser-toolbar">
           <code id="current-path">/</code>
           <button id="up-button" class="button button--secondary button--small" type="button">Up</button>
-        </div>
-
-        <div id="draft-location-panel" class="draft-location-panel" hidden>
-          <label class="field-control" for="draft-name-input">
-            <span id="schema-name-label">Schema filename</span>
-            <input id="draft-name-input" type="text" autocomplete="off" placeholder="new.schema.json">
-          </label>
-          <p id="draft-path-preview" class="selection-summary">Schema will be saved in this folder.</p>
         </div>
 
         <div id="directory-list" class="directory-list" aria-live="polite"></div>
