@@ -3,6 +3,7 @@
 
   const bootstrap = window.GVY_UI_BOOTSTRAP || {};
   const phaseOrder = ["split", "validate", "batch"];
+  const schemaEditorStorageKey = "gvy.schemaEditor.savedSchema";
   const pickerProfiles = {
     csv: { apiKind: "csv", mode: "file", title: "Select main CSV", subtitle: "Browse the working directory and choose one CSV file.", target: "selectedCsv" },
     schema: { apiKind: "schema", mode: "file", title: "Select schema JSON", subtitle: "Browse the working directory and choose one schema JSON file.", target: "selectedSchema" },
@@ -66,6 +67,10 @@
     attachingRunId: "",
     resolveTimer: 0,
     resolveSequence: 0,
+    schemaEditor: {
+      lastSavedAt: Date.now(),
+      open: false,
+    },
     wizard: {
       activeStep: 0,
       maxStep: 4,
@@ -111,6 +116,12 @@
     resolvedPreview: document.getElementById("resolved-preview"),
     csvOpenButton: document.getElementById("csv-open-button"),
     schemaOpenButton: document.getElementById("schema-open-button"),
+    schemaEditorOpenButton: document.getElementById("schema-editor-open-button"),
+    schemaEditorNewButton: document.getElementById("schema-editor-new-button"),
+    schemaEditorModal: document.getElementById("schema-editor-modal"),
+    schemaEditorBackdrop: document.getElementById("schema-editor-backdrop"),
+    schemaEditorCloseButton: document.getElementById("schema-editor-close-button"),
+    schemaEditorFrame: document.getElementById("schema-editor-frame"),
     csvCount: document.getElementById("csv-count"),
     schemaCount: document.getElementById("schema-count"),
     csvSelectionSummary: document.getElementById("csv-selection-summary"),
@@ -176,6 +187,14 @@
       openPicker("schema");
     });
 
+    els.schemaEditorOpenButton.addEventListener("click", function () {
+      openSchemaEditor("edit");
+    });
+
+    els.schemaEditorNewButton.addEventListener("click", function () {
+      openSchemaEditor("new");
+    });
+
     els.validateCSVOpenButton.addEventListener("click", function () {
       openPicker("validateCsv");
     });
@@ -239,6 +258,15 @@
 
     els.pickerCloseButton.addEventListener("click", closePicker);
     els.pickerBackdrop.addEventListener("click", closePicker);
+
+    window.addEventListener("storage", function (event) {
+      if (event.key === schemaEditorStorageKey) {
+        applySavedSchemaEditorState(event.newValue);
+      }
+    });
+    window.addEventListener("focus", readSavedSchemaEditorState);
+    els.schemaEditorCloseButton.addEventListener("click", closeSchemaEditor);
+    els.schemaEditorBackdrop.addEventListener("click", closeSchemaEditor);
   }
 
   function configControlElements() {
@@ -846,6 +874,7 @@
     renderEvents();
     updateSubmitState();
     renderPicker();
+    renderSchemaEditorModal();
   }
 
   function setWizardStep(step) {
@@ -936,6 +965,9 @@
   function renderSelectionSummary(kind) {
     const summary = kind === "csv" ? els.csvSelectionSummary : els.schemaSelectionSummary;
     summary.textContent = state.selected[kind] ? displayFileName(state.selected[kind]) : "No " + kind + " selected";
+    if (kind === "schema") {
+      els.schemaEditorOpenButton.disabled = !state.selected.schema;
+    }
   }
 
   function renderPreview() {
@@ -1331,6 +1363,73 @@
       loadFileList(kind, state.browser[profile.apiKind].currentPath);
     }
     renderPicker();
+  }
+
+  function openSchemaEditor(mode) {
+    const params = new URLSearchParams();
+    params.set("embed", "1");
+    if (mode === "new") {
+      params.set("mode", "new");
+    } else if (state.selected.schema) {
+      params.set("path", state.selected.schema);
+    } else {
+      params.set("mode", "load");
+    }
+    state.schemaEditor.open = true;
+    els.schemaEditorFrame.src = "/schema-editor?" + params.toString();
+    renderSchemaEditorModal();
+  }
+
+  function closeSchemaEditor() {
+    state.schemaEditor.open = false;
+    els.schemaEditorFrame.removeAttribute("src");
+    renderSchemaEditorModal();
+    readSavedSchemaEditorState();
+  }
+
+  function renderSchemaEditorModal() {
+    els.schemaEditorModal.hidden = !state.schemaEditor.open;
+  }
+
+  function readSavedSchemaEditorState() {
+    let value = "";
+    try {
+      value = window.localStorage.getItem(schemaEditorStorageKey) || "";
+    } catch (error) {
+      return;
+    }
+    applySavedSchemaEditorState(value);
+  }
+
+  function applySavedSchemaEditorState(value) {
+    if (!value) {
+      return;
+    }
+    let payload = null;
+    try {
+      payload = JSON.parse(value);
+    } catch (error) {
+      return;
+    }
+    const savedAt = Number(payload && payload.saved_at);
+    const path = String(payload && payload.path || "").trim();
+    if (!path || !Number.isFinite(savedAt) || savedAt <= state.schemaEditor.lastSavedAt) {
+      return;
+    }
+    state.schemaEditor.lastSavedAt = savedAt;
+    selectSchemaPath(path);
+  }
+
+  async function selectSchemaPath(relativePath) {
+    const clean = String(relativePath || "").replace(/^\/+/, "");
+    if (!clean) {
+      return;
+    }
+    clearFormMessage();
+    await loadFileList("schema", dirName(clean));
+    state.selected.schema = clean;
+    render();
+    scheduleResolvePreview(0);
   }
 
   function closePicker() {
@@ -1864,6 +1963,12 @@
     }
     const segments = String(relativePath).split("/");
     return segments[segments.length - 1] || relativePath;
+  }
+
+  function dirName(path) {
+    const clean = String(path || "").replace(/\/+$/, "");
+    const index = clean.lastIndexOf("/");
+    return index >= 0 ? clean.slice(0, index) : "";
   }
 
   function cardHTML(title, rows) {

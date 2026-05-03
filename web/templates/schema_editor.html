@@ -9,12 +9,13 @@
     <link rel="stylesheet" href="/static/css/schema_editor.css?v={{.Version}}-schema-editor">
   </head>
   <body>
-    <div class="app-shell schema-shell">
+    <div class="app-shell schema-shell {{if .SchemaEditorEmbed}}schema-shell--embed{{end}}">
+      {{if not .SchemaEditorEmbed}}
       <header class="topbar">
         <div class="topbar__copy">
-          <p class="eyebrow">POC</p>
+          <p class="eyebrow">Schema</p>
           <h1>Schema Editor</h1>
-          <p class="lede">Edit validation schema fields without working directly in JSON.</p>
+          <p class="lede">Columns, rules, and saved JSON.</p>
         </div>
         <div class="topbar__status">
           <section class="status-card">
@@ -23,6 +24,7 @@
           </section>
         </div>
       </header>
+      {{end}}
 
       <main class="schema-layout">
         <section id="schema-workbench" class="panel schema-workbench" aria-label="Schema editor" tabindex="-1">

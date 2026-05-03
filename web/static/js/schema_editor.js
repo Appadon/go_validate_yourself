@@ -3,6 +3,7 @@
 
   const blankSchema = { fields: [] };
   const supportedTypes = ["string", "int", "float", "date", "datetime"];
+  const schemaEditorStorageKey = "gvy.schemaEditor.savedSchema";
 
   const state = {
     currentPath: "",
@@ -73,7 +74,9 @@
   function init() {
     bindEvents();
     render();
-    loadFileList("");
+    if (!applyStartupIntent()) {
+      loadFileList("");
+    }
   }
 
   function bindEvents() {
@@ -174,6 +177,40 @@
       els.fieldDateFormatsInput,
       els.fieldDatetimeFormatsInput,
     ];
+  }
+
+  function applyStartupIntent() {
+    const params = new URLSearchParams(window.location.search || "");
+    const mode = params.get("mode") || "";
+    const path = cleanRelativePath(params.get("path") || "");
+
+    if (path) {
+      loadSchemaByPath(path);
+      return true;
+    }
+    if (mode === "new") {
+      loadFileList("").then(function () {
+        openSchemaPicker("new");
+      });
+      return true;
+    } else if (mode === "load") {
+      loadFileList("").then(function () {
+        openSchemaPicker("load");
+      });
+      return true;
+    }
+    return false;
+  }
+
+  async function loadSchemaByPath(path) {
+    const relativePath = cleanRelativePath(path);
+    if (!relativePath) {
+      return;
+    }
+    state.selectedFile = relativePath;
+    await loadFileList(dirName(relativePath));
+    state.selectedFile = relativePath;
+    await loadSelectedSchema();
   }
 
   async function loadFileList(path) {
@@ -381,6 +418,7 @@
       state.dirty = false;
       closeSchemaPicker();
       await loadFileList(state.currentPath);
+      notifySchemaSaved(state.loadedPath);
       setMessage("Schema saved.", "ok");
       render();
       focusWorkbench();
@@ -879,6 +917,35 @@
     const clean = String(path || "").replace(/\/+$/, "");
     const index = clean.lastIndexOf("/");
     return index >= 0 ? clean.slice(0, index) : "";
+  }
+
+  function cleanRelativePath(path) {
+    return String(path || "")
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, "")
+      .replace(/\/{2,}/g, "/")
+      .trim();
+  }
+
+  function notifySchemaSaved(path) {
+    const relativePath = cleanRelativePath(path);
+    if (!relativePath) {
+      return;
+    }
+    const payload = JSON.stringify({
+      path: relativePath,
+      saved_at: Date.now(),
+    });
+    try {
+      window.localStorage.setItem(schemaEditorStorageKey, payload);
+    } catch (error) {
+      return;
+    }
+    try {
+      window.dispatchEvent(new CustomEvent("gvy:schema-saved", { detail: JSON.parse(payload) }));
+    } catch (error) {
+      return;
+    }
   }
 
   function focusWorkbench() {

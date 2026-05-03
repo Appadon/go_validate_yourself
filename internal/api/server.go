@@ -182,13 +182,14 @@ type SchemaSaveResponse struct {
 }
 
 type uiPageData struct {
-	Title          string
-	Version        string
-	ServerBusy     bool
-	WorkingRoot    string
-	LatestRunID    string
-	LatestRunState runs.State
-	BootstrapJSON  template.JS
+	Title             string
+	Version           string
+	ServerBusy        bool
+	WorkingRoot       string
+	LatestRunID       string
+	LatestRunState    runs.State
+	SchemaEditorEmbed bool
+	BootstrapJSON     template.JS
 }
 
 type uiBootstrap struct {
@@ -284,13 +285,14 @@ func (s *Server) handleSchemaEditorUI(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "schema_editor.html", uiPageData{
-		Title:          "GVY Schema Editor",
-		Version:        version,
-		ServerBusy:     health.Busy,
-		WorkingRoot:    s.workingRoot,
-		LatestRunID:    health.LatestRunID,
-		LatestRunState: health.LatestRunState,
-		BootstrapJSON:  template.JS(bootstrap),
+		Title:             "GVY Schema Editor",
+		Version:           version,
+		ServerBusy:        health.Busy,
+		WorkingRoot:       s.workingRoot,
+		LatestRunID:       health.LatestRunID,
+		LatestRunState:    health.LatestRunState,
+		SchemaEditorEmbed: strings.TrimSpace(r.URL.Query().Get("embed")) == "1",
+		BootstrapJSON:     template.JS(bootstrap),
 	}); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "UI_RENDER_FAILED", err.Error())
 		return
