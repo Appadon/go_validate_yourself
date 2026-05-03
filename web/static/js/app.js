@@ -532,12 +532,14 @@
       return;
     }
 
+    const previousRunId = state.runId;
     closeStream();
     els.submitButton.disabled = true;
     const config = buildCurrentConfig();
     state.lastSubmittedConfig = deepClone(config);
     state.lastSubmittedResolved = state.preview.resolved ? deepClone(state.preview.resolved) : null;
     setFormMessage("Creating config-driven run from the current pipeline settings…", "info");
+    setWizardStep(4);
     startPendingConfigRunAttach();
 
     try {
@@ -554,7 +556,12 @@
         state.health.busy = true;
         setFormMessage("The server is already running another validation. The current run remains inspectable until it finishes.", "warn");
         if (state.health.latest_run_id) {
-          syncRun(state.health.latest_run_id);
+          await syncRun(state.health.latest_run_id);
+        }
+        if (state.snapshot && state.snapshot.run_id) {
+          setWizardStep(4);
+        } else {
+          setWizardStep(3);
         }
         render();
         return;
@@ -580,6 +587,9 @@
       refreshHealth();
     } catch (error) {
       setFormMessage(error.message || "Run creation failed", "error");
+      if (!(state.runId && state.runId !== previousRunId)) {
+        setWizardStep(3);
+      }
     } finally {
       stopPendingConfigRunAttach();
       render();
@@ -925,32 +935,90 @@
 
     const resolved = state.preview.resolved;
     if (!resolved) {
-      els.resolvedPreview.innerHTML = rowHTML("Status", state.preview.error || "Choose inputs to preview the effective pipeline.");
+      els.resolvedPreview.innerHTML = previewSectionHTML("Resolver", [
+        rowHTML("Status", resolverStatusText()),
+        rowHTML("Details", state.preview.error || "Choose inputs to preview the effective pipeline."),
+      ]);
       return;
     }
 
     const plan = resolved.plan || {};
-    const rows = [
-      rowHTML("Phases", listText(plan.phases)),
-      rowHTML("Resume policy", valueText(plan.resume_policy)),
-      rowHTML("Workers", valueText(resolved.effective_workers)),
+    const inputs = resolved.inputs || {};
+    const outputs = resolved.outputs || {};
+    const split = resolved.split || {};
+    const validation = resolved.validation || {};
+    const batch = resolved.batch || {};
+    const runtime = resolved.runtime || {};
+    const hasSplit = phaseInPlan(resolved, "split");
+    const hasValidate = phaseInPlan(resolved, "validate");
+    const hasBatch = phaseInPlan(resolved, "batch");
+    const sections = [
+      previewSectionHTML("Resolver", [
+        rowHTML("Status", resolverStatusText()),
+        rowHTML("Errors", state.preview.error ? state.preview.error : "None"),
+      ]),
+      previewSectionHTML("Workflow", [
+        rowHTML("Phases", listText(plan.phases)),
+        rowHTML("Resume policy", valueText(plan.resume_policy)),
+        rowHTML("Worker setting", valueText(runtime.workers)),
+        rowHTML("Effective workers", valueText(resolved.effective_workers)),
+      ]),
     ];
-    if (phaseInPlan(resolved, "split")) {
-      rows.push(rowHTML("Primary key", splitPrimaryKeyText(resolved)));
-      rows.push(rowHTML("Split input", valueText(plan.split_input_csv)));
-      rows.push(rowHTML("Split output", valueText(plan.split_output_dir)));
+
+    const inputRows = [];
+    if (hasSplit) {
+      inputRows.push(rowHTML("Selected CSV/source", valueText(plan.split_input_csv || inputs.main_csv)));
     }
-    if (phaseInPlan(resolved, "validate")) {
-      rows.push(rowHTML("Validate input", valueText(plan.validate_input_csv || plan.validate_input_dir)));
-      rows.push(rowHTML("Schema", valueText(plan.validate_schema)));
-      rows.push(rowHTML("Success output", valueText(plan.validation_success_dir)));
-      rows.push(rowHTML("Error output", valueText(plan.validation_error_dir)));
+    if (hasValidate) {
+      inputRows.push(rowHTML("Selected schema", valueText(plan.validate_schema || inputs.schema)));
+      inputRows.push(rowHTML("Validation source", valueText(plan.validate_input_csv || plan.validate_input_dir || inputs.validate_csv || inputs.validate_dir)));
     }
-    if (phaseInPlan(resolved, "batch")) {
-      rows.push(rowHTML("Batch input", valueText(plan.batch_input_dir)));
-      rows.push(rowHTML("Batch output", valueText(plan.batch_output_dir)));
+    if (hasBatch) {
+      inputRows.push(rowHTML("Batch source", valueText(plan.batch_input_dir || batch.input_dir)));
     }
-    els.resolvedPreview.innerHTML = rows.join("");
+    sections.push(previewSectionHTML("Inputs", inputRows.length ? inputRows : [
+      rowHTML("Source", "No phase source selected"),
+    ]));
+
+    const outputRows = [];
+    if (hasSplit) {
+      outputRows.push(rowHTML("Split output", valueText(plan.split_output_dir || outputs.split_dir)));
+    }
+    if (hasValidate) {
+      outputRows.push(rowHTML("Success directory", valueText(plan.validation_success_dir || outputs.success_dir)));
+      outputRows.push(rowHTML("Error directory", valueText(plan.validation_error_dir || outputs.error_dir)));
+    }
+    if (hasBatch) {
+      outputRows.push(rowHTML("Batch export", valueText(plan.batch_output_dir || outputs.batch_export_dir)));
+    }
+    sections.push(previewSectionHTML("Output Directories", outputRows.length ? outputRows : [
+      rowHTML("Outputs", "No output directories for the selected phases"),
+    ]));
+
+    if (hasSplit) {
+      sections.push(previewSectionHTML("Split", [
+        rowHTML("Primary key", splitPrimaryKeyText(resolved)),
+        rowHTML("Max open writers", valueText(split.max_open_writers)),
+        rowHTML("Missing keys file", valueText(split.missing_keys_file)),
+        rowHTML("Reuse cache", booleanText(split.reuse_cache)),
+      ]));
+    }
+
+    if (hasValidate) {
+      sections.push(previewSectionHTML("Validation Options", [
+        rowHTML("Write empty error files", booleanText(validation.write_empty_error)),
+        rowHTML("Clear validation outputs", booleanText(validation.clear_outputs)),
+      ]));
+    }
+
+    if (hasBatch) {
+      sections.push(previewSectionHTML("Batch / Export", [
+        rowHTML("Batch size", valueText(batch.size)),
+        rowHTML("Clear batch output", booleanText(batch.clear_output)),
+      ]));
+    }
+
+    els.resolvedPreview.innerHTML = sections.join("");
   }
 
   function renderPicker() {
@@ -1572,6 +1640,23 @@
     return Array.isArray(value) && value.length ? value.join(" -> ") : "None";
   }
 
+  function booleanText(value) {
+    return value ? "Yes" : "No";
+  }
+
+  function resolverStatusText() {
+    switch (state.preview.status) {
+      case "pending":
+        return "Resolving";
+      case "ok":
+        return "Ready";
+      case "error":
+        return "Invalid";
+      default:
+        return "Waiting";
+    }
+  }
+
   function displayFileName(relativePath) {
     if (!relativePath) {
       return "";
@@ -1588,6 +1673,19 @@
       rows.join(""),
       "</dl>",
       "</section>",
+    ].join("");
+  }
+
+  function previewSectionHTML(title, rows) {
+    return [
+      '<div class="preview-group">',
+      '<dt class="preview-group__title">' + escapeHTML(title) + "</dt>",
+      "<dd>",
+      '<dl class="preview-group__items">',
+      rows.join(""),
+      "</dl>",
+      "</dd>",
+      "</div>",
     ].join("");
   }
 
