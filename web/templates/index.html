@@ -143,6 +143,7 @@
                     <strong id="schema-selection-summary" class="selection-compact__value">No schema selected</strong>
                     <div class="selection-actions">
                       <button id="schema-open-button" class="button button--secondary" type="button">Select file</button>
+                      <button id="schema-infer-open-button" class="button button--secondary" type="button">Infer</button>
                       <button id="schema-editor-open-button" class="button button--secondary" type="button">Edit</button>
                       <button id="schema-editor-new-button" class="button button--primary" type="button">New</button>
                     </div>
@@ -380,6 +381,20 @@
           <button id="picker-current-dir-button" class="button button--secondary" type="button">Use current directory</button>
           <button id="picker-choose-button" class="button button--primary" type="button">Use selected file</button>
         </div>
+      </section>
+    </div>
+
+    <div id="schema-infer-modal" class="schema-editor-modal" hidden>
+      <div id="schema-infer-backdrop" class="schema-editor-modal__backdrop"></div>
+      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-labelledby="schema-infer-title">
+        <div class="schema-editor-card__bar">
+          <div>
+            <p class="eyebrow">Schema</p>
+            <h2 id="schema-infer-title">Schema Inference</h2>
+          </div>
+          <button id="schema-infer-close-button" class="button button--secondary button--small" type="button">Close</button>
+        </div>
+        <iframe id="schema-infer-frame" class="schema-editor-frame" title="Schema inference"></iframe>
       </section>
     </div>
 

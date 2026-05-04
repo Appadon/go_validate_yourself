@@ -72,6 +72,9 @@
       lastSavedAt: Date.now(),
       open: false,
     },
+    schemaInfer: {
+      open: false,
+    },
     schemaDraft: {
       open: false,
       currentPath: "",
@@ -126,6 +129,11 @@
     resolvedPreview: document.getElementById("resolved-preview"),
     csvOpenButton: document.getElementById("csv-open-button"),
     schemaOpenButton: document.getElementById("schema-open-button"),
+    schemaInferOpenButton: document.getElementById("schema-infer-open-button"),
+    schemaInferModal: document.getElementById("schema-infer-modal"),
+    schemaInferBackdrop: document.getElementById("schema-infer-backdrop"),
+    schemaInferCloseButton: document.getElementById("schema-infer-close-button"),
+    schemaInferFrame: document.getElementById("schema-infer-frame"),
     schemaEditorOpenButton: document.getElementById("schema-editor-open-button"),
     schemaEditorNewButton: document.getElementById("schema-editor-new-button"),
     schemaEditorModal: document.getElementById("schema-editor-modal"),
@@ -178,6 +186,7 @@
   };
 
   function init() {
+    window.GVYOpenInferredSchema = openSchemaEditorPath;
     bindEvents();
     render();
     loadConfigDefaults();
@@ -207,6 +216,10 @@
 
     els.schemaOpenButton.addEventListener("click", function () {
       openPicker("schema");
+    });
+
+    els.schemaInferOpenButton.addEventListener("click", function () {
+      openSchemaInfer();
     });
 
     els.schemaEditorOpenButton.addEventListener("click", function () {
@@ -287,6 +300,9 @@
       }
     });
     window.addEventListener("focus", readSavedSchemaEditorState);
+    window.addEventListener("message", handleFrameMessage);
+    els.schemaInferCloseButton.addEventListener("click", closeSchemaInfer);
+    els.schemaInferBackdrop.addEventListener("click", closeSchemaInfer);
     els.schemaEditorCloseButton.addEventListener("click", closeSchemaEditor);
     els.schemaEditorBackdrop.addEventListener("click", closeSchemaEditor);
     els.schemaDraftBackdrop.addEventListener("click", closeSchemaDraftPicker);
@@ -1387,6 +1403,42 @@
     renderPicker();
   }
 
+  function openSchemaInfer() {
+    const params = new URLSearchParams();
+    params.set("embed", "1");
+    if (state.selected.csv) {
+      params.set("csv", state.selected.csv);
+    }
+    state.schemaInfer.open = true;
+    els.schemaInferFrame.src = "/schema-infer?" + params.toString();
+    renderSchemaInferModal();
+  }
+
+  function closeSchemaInfer() {
+    state.schemaInfer.open = false;
+    els.schemaInferFrame.removeAttribute("src");
+    renderSchemaInferModal();
+  }
+
+  function renderSchemaInferModal() {
+    els.schemaInferModal.hidden = !state.schemaInfer.open;
+  }
+
+  function handleFrameMessage(event) {
+    if (event.origin !== window.location.origin) {
+      return;
+    }
+    const data = event.data || {};
+    if (data.type !== "gvy:schema-infer-open-schema") {
+      return;
+    }
+    const path = cleanRelativePath(data.path || "");
+    if (!path) {
+      return;
+    }
+    openSchemaEditorPath(path);
+  }
+
   function openSchemaEditor(mode) {
     const params = new URLSearchParams();
     params.set("embed", "1");
@@ -1397,6 +1449,21 @@
     } else {
       params.set("mode", "load");
     }
+    state.schemaEditor.open = true;
+    els.schemaEditorFrame.src = "/schema-editor?" + params.toString();
+    renderSchemaEditorModal();
+  }
+
+  async function openSchemaEditorPath(path) {
+    const clean = cleanRelativePath(path);
+    if (!clean) {
+      return;
+    }
+    closeSchemaInfer();
+    await selectSchemaPath(clean);
+    const params = new URLSearchParams();
+    params.set("embed", "1");
+    params.set("path", clean);
     state.schemaEditor.open = true;
     els.schemaEditorFrame.src = "/schema-editor?" + params.toString();
     renderSchemaEditorModal();

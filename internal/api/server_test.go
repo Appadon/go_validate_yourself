@@ -355,6 +355,26 @@ func TestHandleSchemaEditorUIRendersWorkingRootPage(t *testing.T) {
 	}
 }
 
+func TestHandleSchemaInferUIRendersWorkingRootPage(t *testing.T) {
+	server := newSelectionTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/schema-infer", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleSchemaInferUI(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "Schema Inference") {
+		t.Fatalf("body missing schema inference heading: %s", body)
+	}
+	if !strings.Contains(body, server.workingRoot) {
+		t.Fatalf("body missing working root %q: %s", server.workingRoot, body)
+	}
+}
+
 func TestHandleSchemaDocumentReadReturnsValidatedSchema(t *testing.T) {
 	server := newSelectionTestServer(t)
 	writeTestFile(t, filepath.Join(server.workingRoot, "schemas", "schema.json"), `{
@@ -435,6 +455,55 @@ func TestHandleSchemaDocumentSaveRejectsOutOfRootPath(t *testing.T) {
 	server.handleSchemaDocument(recorder, request)
 
 	assertAPIErrorCode(t, recorder, http.StatusBadRequest, "INVALID_SCHEMA_PATH")
+}
+
+func TestHandleSchemaInferReturnsDraftSchemaAndSampleParquet(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workingRoot, "incoming", "input.csv"), strings.Join([]string{
+		"id,amount,event_date,created_at,status,optional_note",
+		"1,10.50,2026-05-04,2026-05-04T12:00:00Z,active,present",
+		"2,11.25,2026-05-05,2026-05-05T12:00:00Z,pending,",
+		"3,12.00,2026-05-06,2026-05-06T12:00:00Z,active,present",
+		"",
+	}, "\n"))
+
+	body := `{
+		"csv_path": "incoming/input.csv",
+		"sample_size": 3,
+		"strategy": "head",
+		"write_sample_parquet": true
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/api/schema/infer", strings.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleSchemaInfer(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response SchemaInferResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("expected ok response: %+v", response)
+	}
+	if response.CSVRelativePath != "incoming/input.csv" {
+		t.Fatalf("csv relative path = %q", response.CSVRelativePath)
+	}
+	if response.Inference.Schema.Fields[0].Type != "int" {
+		t.Fatalf("id type = %q, want int", response.Inference.Schema.Fields[0].Type)
+	}
+	if response.Inference.Schema.Fields[1].Type != "float" {
+		t.Fatalf("amount type = %q, want float", response.Inference.Schema.Fields[1].Type)
+	}
+	if response.SampleParquetRelativePath != ".gvy/schema_samples/input.sample.parquet" {
+		t.Fatalf("sample parquet relative path = %q", response.SampleParquetRelativePath)
+	}
+	if _, err := os.Stat(response.SampleParquetPath); err != nil {
+		t.Fatalf("sample parquet was not written: %v", err)
+	}
 }
 
 func TestHandleFileListReturnsEligibleWorkingRootFiles(t *testing.T) {

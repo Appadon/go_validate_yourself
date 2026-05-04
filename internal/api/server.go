@@ -22,12 +22,13 @@ import (
 	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/runs"
 	"go_validate_yourself/internal/schemaeditor"
+	"go_validate_yourself/internal/schemainfer"
 	"go_validate_yourself/internal/service"
 	"go_validate_yourself/internal/workspace"
 	"go_validate_yourself/web"
 )
 
-const version = "v1"
+const version = "v2"
 const maxUploadBodyBytes = 64 << 20
 
 /* Server provides a localhost-only HTTP API around the workflow service. */
@@ -181,6 +182,26 @@ type SchemaSaveResponse struct {
 	Message      string                `json:"message"`
 }
 
+/* SchemaInferRequest defines inputs accepted by POST /api/schema/infer. */
+type SchemaInferRequest struct {
+	CSVPath            string `json:"csv_path"`
+	SampleSize         int    `json:"sample_size"`
+	Strategy           string `json:"strategy"`
+	KeepSamples        *bool  `json:"keep_samples"`
+	WriteSampleParquet *bool  `json:"write_sample_parquet"`
+	SampleOutputPath   string `json:"sample_output_path"`
+}
+
+/* SchemaInferResponse returns an inferred schema plus optional sample parquet metadata. */
+type SchemaInferResponse struct {
+	OK                        bool               `json:"ok"`
+	CSVPath                   string             `json:"csv_path"`
+	CSVRelativePath           string             `json:"csv_relative_path"`
+	SampleParquetPath         string             `json:"sample_parquet_path,omitempty"`
+	SampleParquetRelativePath string             `json:"sample_parquet_relative_path,omitempty"`
+	Inference                 schemainfer.Result `json:"inference"`
+}
+
 type uiPageData struct {
 	Title             string
 	Version           string
@@ -239,6 +260,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.handleUI)
+	mux.HandleFunc("/schema-infer", server.handleSchemaInferUI)
 	mux.HandleFunc("/schema-editor", server.handleSchemaEditorUI)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
 	mux.HandleFunc("/health", server.handleHealth)
@@ -247,6 +269,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 	mux.HandleFunc("/api/config/defaults", server.handleConfigDefaults)
 	mux.HandleFunc("/api/config/resolve", server.handleConfigResolve)
 	mux.HandleFunc("/api/files", server.handleFileList)
+	mux.HandleFunc("/api/schema/infer", server.handleSchemaInfer)
 	mux.HandleFunc("/api/schema", server.handleSchemaDocument)
 	mux.HandleFunc("/api/runs", server.handleRuns)
 	mux.HandleFunc("/api/runs/config", server.handleConfigRun)
@@ -258,6 +281,45 @@ func NewServer(host string, port int, svc service.Service) *Server {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return server
+}
+
+/* handleSchemaInferUI renders the standalone schema inference proof of concept. */
+func (s *Server) handleSchemaInferUI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/schema-infer" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	health := s.currentHealth()
+	bootstrap, err := json.Marshal(uiBootstrap{
+		Server:      health,
+		LatestRunID: health.LatestRunID,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_BOOTSTRAP_FAILED", err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "schema_infer.html", uiPageData{
+		Title:             "GVY Schema Inference",
+		Version:           version,
+		ServerBusy:        health.Busy,
+		WorkingRoot:       s.workingRoot,
+		LatestRunID:       health.LatestRunID,
+		LatestRunState:    health.LatestRunState,
+		SchemaEditorEmbed: strings.TrimSpace(r.URL.Query().Get("embed")) == "1",
+		BootstrapJSON:     template.JS(bootstrap),
+	}); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_RENDER_FAILED", err.Error())
+		return
+	}
 }
 
 /* handleSchemaEditorUI renders the standalone schema editor proof of concept. */
@@ -667,6 +729,78 @@ func (s *Server) handleSchemaSave(w http.ResponseWriter, r *http.Request) {
 		Schema:       schema,
 		Message:      "schema saved",
 	})
+}
+
+/* handleSchemaInfer samples a working-root-scoped CSV and returns a draft schema. */
+func (s *Server) handleSchemaInfer(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/api/schema/infer" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodPost) {
+		return
+	}
+
+	req, err := decodeSchemaInferRequest(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	csvPath, err := s.resolveSelectedFile(req.CSVPath, ".csv", "csv_path")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_CSV_PATH", err.Error())
+		return
+	}
+
+	keepSamples := true
+	if req.KeepSamples != nil {
+		keepSamples = *req.KeepSamples
+	}
+	writeSampleParquet := false
+	if req.WriteSampleParquet != nil {
+		writeSampleParquet = *req.WriteSampleParquet
+		if writeSampleParquet {
+			keepSamples = true
+		}
+	}
+
+	result, err := schemainfer.Infer(r.Context(), csvPath, schemainfer.Options{
+		SampleSize:  req.SampleSize,
+		Strategy:    strings.TrimSpace(req.Strategy),
+		KeepSamples: keepSamples,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "SCHEMA_INFERENCE_FAILED", err.Error())
+		return
+	}
+
+	sampleParquetPath := ""
+	if writeSampleParquet {
+		sampleParquetPath, err = s.resolveSchemaSampleParquetPath(req.SampleOutputPath, csvPath)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_SAMPLE_OUTPUT_PATH", err.Error())
+			return
+		}
+		if err := schemainfer.WriteSamplesParquet(sampleParquetPath, result); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "SAMPLE_PARQUET_FAILED", err.Error())
+			return
+		}
+	}
+
+	response := SchemaInferResponse{
+		OK:              true,
+		CSVPath:         csvPath,
+		CSVRelativePath: s.relativeWorkingPath(csvPath),
+		Inference:       result,
+	}
+	if sampleParquetPath != "" {
+		response.SampleParquetPath = sampleParquetPath
+		response.SampleParquetRelativePath = s.relativeWorkingPath(sampleParquetPath)
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 /* handleRunByID dispatches run snapshot, result, and SSE routes. */
@@ -1372,6 +1506,22 @@ func decodeSchemaSaveRequest(r *http.Request) (SchemaSaveRequest, error) {
 	return req, nil
 }
 
+/* decodeSchemaInferRequest decodes the JSON request body for schema inference. */
+func decodeSchemaInferRequest(r *http.Request) (SchemaInferRequest, error) {
+	defer r.Body.Close()
+
+	var req SchemaInferRequest
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		return SchemaInferRequest{}, err
+	}
+	if err := decoder.Decode(new(struct{})); err != io.EOF {
+		return SchemaInferRequest{}, fmt.Errorf("request body must contain a single JSON object")
+	}
+	return req, nil
+}
+
 /* parseRunRoute extracts a run id and supported sub-route suffix from /api/runs paths. */
 func parseRunRoute(path string) (string, string, bool) {
 	trimmed := strings.TrimPrefix(path, "/api/runs/")
@@ -1702,6 +1852,49 @@ func (s *Server) resolveSchemaSavePath(rawPath string) (string, error) {
 	parentResolved := resolveRealPath(parent)
 	if parentResolved == "" || !isWithinRoot(s.workingRootReal, parentResolved) {
 		return "", fmt.Errorf("path must stay within the server working directory")
+	}
+	return absolutePath, nil
+}
+
+func (s *Server) resolveSchemaSampleParquetPath(rawPath, csvPath string) (string, error) {
+	clean := strings.TrimSpace(rawPath)
+	if clean == "" {
+		base := strings.TrimSuffix(filepath.Base(csvPath), filepath.Ext(csvPath))
+		clean = filepath.Join(".gvy", "schema_samples", base+".sample.parquet")
+	}
+
+	candidate := clean
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(s.workingRoot, filepath.FromSlash(clean))
+	}
+	absolutePath, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("sample_output_path must resolve to a valid file")
+	}
+	if !strings.EqualFold(filepath.Ext(absolutePath), ".parquet") {
+		return "", fmt.Errorf("sample_output_path must use .parquet extension")
+	}
+
+	if info, err := os.Stat(absolutePath); err == nil {
+		if info.IsDir() {
+			return "", fmt.Errorf("sample_output_path must be a file")
+		}
+		resolved := resolveRealPath(absolutePath)
+		if resolved == "" || !isWithinRoot(s.workingRootReal, resolved) {
+			return "", fmt.Errorf("sample_output_path must stay within the server working directory")
+		}
+		return absolutePath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("failed checking sample_output_path")
+	}
+
+	parent := filepath.Dir(absolutePath)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return "", fmt.Errorf("create sample output directory: %w", err)
+	}
+	parentResolved := resolveRealPath(parent)
+	if parentResolved == "" || !isWithinRoot(s.workingRootReal, parentResolved) {
+		return "", fmt.Errorf("sample_output_path must stay within the server working directory")
 	}
 	return absolutePath, nil
 }
