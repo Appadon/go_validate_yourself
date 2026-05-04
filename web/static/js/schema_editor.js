@@ -4,6 +4,7 @@
   const blankSchema = { fields: [] };
   const supportedTypes = ["string", "int", "float", "date", "datetime"];
   const schemaEditorStorageKey = "gvy.schemaEditor.savedSchema";
+  const fileBrowser = window.GVYFileBrowser;
 
   const state = {
     currentPath: "",
@@ -86,7 +87,7 @@
     els.pickerBackdrop.addEventListener("click", closeSchemaPicker);
     els.pickerCloseButton.addEventListener("click", closeSchemaPicker);
     els.pickerFilterInput.addEventListener("input", function () {
-      state.filter = els.pickerFilterInput.value.trim().toLowerCase();
+      state.filter = fileBrowser.normalizeFilter(els.pickerFilterInput.value);
       renderPicker();
     });
     els.draftNameInput.addEventListener("input", function () {
@@ -293,21 +294,14 @@
   }
 
   function filteredEntries(wantDirectory) {
-    return state.entries.filter(function (entry) {
-      if (Boolean(entry.is_dir) !== wantDirectory) {
-        return false;
-      }
-      if (!state.filter) {
-        return true;
-      }
-      return String(entry.relative_path || entry.name || "").toLowerCase().indexOf(state.filter) >= 0;
+    return fileBrowser.filteredEntries(state.entries, {
+      filter: state.filter,
+      wantDirectory: wantDirectory,
     });
   }
 
   function hasFileEntries() {
-    return state.entries.some(function (entry) {
-      return !entry.is_dir;
-    });
+    return fileBrowser.hasFileEntries(state.entries);
   }
 
   function createDraftFromPicker() {
@@ -557,34 +551,14 @@
     els.currentPath.textContent = "/" + (state.currentPath || "");
     els.upButton.disabled = !state.currentPath && !state.parentPath;
 
-    if (!directories.length) {
-      els.directoryList.innerHTML = '<span class="directory-empty">No subdirectories here.</span>';
-    } else {
-      els.directoryList.innerHTML = directories.map(function (entry) {
-        return '<button class="directory-chip" type="button" data-path="' + escapeHTML(entry.relative_path) + '">/' + escapeHTML(entry.name) + '</button>';
-      }).join("");
-      els.directoryList.querySelectorAll("[data-path]").forEach(function (button) {
-        button.addEventListener("click", function () {
-          loadFileList(button.getAttribute("data-path") || "");
-        });
-      });
-    }
+    fileBrowser.renderDirectoryList(els.directoryList, directories, {
+      onChoose: loadFileList,
+    });
 
-    els.schemaFileSelect.innerHTML = "";
-    if (!files.length) {
-      const option = document.createElement("option");
-      option.disabled = true;
-      option.textContent = hasFileEntries() ? "No files match the current filter" : "No schema JSON files in this directory";
-      els.schemaFileSelect.appendChild(option);
-    } else {
-      files.forEach(function (entry) {
-        const option = document.createElement("option");
-        option.value = entry.relative_path;
-        option.textContent = entry.name;
-        option.selected = entry.relative_path === state.selectedFile;
-        els.schemaFileSelect.appendChild(option);
-      });
-    }
+    fileBrowser.populateSelect(els.schemaFileSelect, files, {
+      selectedValue: state.selectedFile,
+      emptyText: hasFileEntries() ? "No files match the current filter" : "No schema JSON files in this directory",
+    });
 
     if (usesFilename) {
       const draftPath = draftRelativePath();
@@ -899,39 +873,23 @@
   }
 
   function draftRelativePath() {
-    const name = normalizedDraftName();
-    if (!name) {
-      return "";
-    }
-    return state.currentPath ? state.currentPath.replace(/\/+$/, "") + "/" + name : name;
+    return fileBrowser.relativeDraftPath(state.currentPath, state.draftName, "json");
   }
 
   function normalizedDraftName() {
-    const clean = String(state.draftName || "").trim();
-    if (!clean || /[\\/]/.test(clean)) {
-      return "";
-    }
-    return /\.json$/i.test(clean) ? clean : clean + ".json";
+    return fileBrowser.normalizedFilename(state.draftName, "json");
   }
 
   function baseName(path) {
-    const clean = String(path || "").replace(/\/+$/, "");
-    const index = clean.lastIndexOf("/");
-    return index >= 0 ? clean.slice(index + 1) : clean;
+    return fileBrowser.baseName(path);
   }
 
   function dirName(path) {
-    const clean = String(path || "").replace(/\/+$/, "");
-    const index = clean.lastIndexOf("/");
-    return index >= 0 ? clean.slice(0, index) : "";
+    return fileBrowser.dirName(path);
   }
 
   function cleanRelativePath(path) {
-    return String(path || "")
-      .replace(/\\/g, "/")
-      .replace(/^\/+/, "")
-      .replace(/\/{2,}/g, "/")
-      .trim();
+    return fileBrowser.cleanRelativePath(path);
   }
 
   function notifySchemaSaved(path) {

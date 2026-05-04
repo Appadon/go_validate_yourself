@@ -4,6 +4,7 @@
   const bootstrap = window.GVY_UI_BOOTSTRAP || {};
   const phaseOrder = ["split", "validate", "batch"];
   const schemaEditorStorageKey = "gvy.schemaEditor.savedSchema";
+  const fileBrowser = window.GVYFileBrowser;
   const pickerProfiles = {
     csv: { apiKind: "csv", mode: "file", title: "Select main CSV", subtitle: "Browse the working directory and choose one CSV file.", target: "selectedCsv" },
     schema: { apiKind: "schema", mode: "file", title: "Select schema JSON", subtitle: "Browse the working directory and choose one schema JSON file.", target: "selectedSchema" },
@@ -76,6 +77,7 @@
       currentPath: "",
       parentPath: "",
       entries: [],
+      filter: "",
       draftName: "new.schema.json",
       selectedFile: "",
     },
@@ -135,6 +137,7 @@
     schemaDraftCloseButton: document.getElementById("schema-draft-close-button"),
     schemaDraftPathValue: document.getElementById("schema-draft-path-value"),
     schemaDraftUpButton: document.getElementById("schema-draft-up-button"),
+    schemaDraftFilterInput: document.getElementById("schema-draft-filter-input"),
     schemaDraftNameInput: document.getElementById("schema-draft-name-input"),
     schemaDraftPathPreview: document.getElementById("schema-draft-path-preview"),
     schemaDraftDirectories: document.getElementById("schema-draft-directories"),
@@ -236,7 +239,7 @@
       if (!kind) {
         return;
       }
-      state.filters[kind] = els.pickerFilterInput.value.trim().toLowerCase();
+      state.filters[kind] = fileBrowser.normalizeFilter(els.pickerFilterInput.value);
       renderPicker();
     });
 
@@ -290,6 +293,10 @@
     els.schemaDraftCloseButton.addEventListener("click", closeSchemaDraftPicker);
     els.schemaDraftNameInput.addEventListener("input", function () {
       state.schemaDraft.draftName = els.schemaDraftNameInput.value;
+      renderSchemaDraftPicker();
+    });
+    els.schemaDraftFilterInput.addEventListener("input", function () {
+      state.schemaDraft.filter = fileBrowser.normalizeFilter(els.schemaDraftFilterInput.value);
       renderSchemaDraftPicker();
     });
     els.schemaDraftFileSelect.addEventListener("change", function () {
@@ -1137,39 +1144,22 @@
     els.pickerCurrentDirButton.hidden = profile.mode !== "dir";
     els.pickerChooseButton.textContent = profile.mode === "dir" ? "Use selected directory" : "Use selected file";
 
-    if (!directories.length) {
-      els.pickerDirectories.innerHTML = '<span class="directory-empty">No subdirectories here.</span>';
-    } else {
-      els.pickerDirectories.innerHTML = directories.map(function (entry) {
-        return '<button class="directory-chip" type="button" data-kind="' + kind + '" data-path="' + escapeHTML(entry.relative_path) + '">/' + escapeHTML(entry.name) + '</button>';
-      }).join("");
-      els.pickerDirectories.querySelectorAll("[data-path]").forEach(function (button) {
-        button.addEventListener("click", function () {
-          loadFileList(kind, button.getAttribute("data-path"));
-        });
-      });
-    }
+    fileBrowser.renderDirectoryList(els.pickerDirectories, directories, {
+      kind: kind,
+      onChoose: function (path) {
+        loadFileList(kind, path);
+      },
+    });
 
-    select.innerHTML = "";
-    if (!files.length) {
-      const option = document.createElement("option");
-      option.disabled = true;
-      option.textContent = profile.mode === "dir" ? "No subdirectories match the current filter" : hasFileEntries(kind) ? "No files match the current filter" : "No matching files in this directory";
-      select.appendChild(option);
-    } else {
-      files.forEach(function (entry) {
-        const option = document.createElement("option");
-        option.value = entry.relative_path;
-        option.textContent = entry.name;
-        if (entry.relative_path === selectedValue) {
-          option.selected = true;
-        }
-        select.appendChild(option);
-      });
-      if (!selectedValue && files.length) {
-        select.selectedIndex = -1;
-      }
-    }
+    fileBrowser.populateSelect(select, files, {
+      selectedValue: selectedValue,
+      clearWhenEmptySelection: true,
+      emptyText: profile.mode === "dir"
+        ? "No subdirectories match the current filter"
+        : hasFileEntries(kind)
+          ? "No files match the current filter"
+          : "No matching files in this directory",
+    });
 
     updateFileCount(apiKind, directories.length + " dirs · " + selectableFileEntries(kind).length + " files");
     updatePickerSelectionState();
@@ -1331,32 +1321,27 @@
 
   function filteredFiles(kind) {
     const profile = pickerProfiles[kind] || pickerProfiles.csv;
-    const filter = state.filters[kind];
-    const files = selectableFileEntries(kind);
-    if (!filter) {
-      return files;
-    }
-    return files.filter(function (entry) {
-      return entry.relative_path.toLowerCase().indexOf(filter) >= 0;
+    return fileBrowser.filteredEntries(state.browser[profile.apiKind].entries, {
+      filter: state.filters[kind],
+      wantDirectory: false,
+      exclude: function (entry) {
+        return kind === "schema" && entry.relative_path === "schema.example.json";
+      },
     });
   }
 
   function filteredDirectories(kind) {
     const profile = pickerProfiles[kind] || pickerProfiles.csv;
-    const filter = state.filters[kind];
-    const directories = directoryEntries(profile.apiKind);
-    if (!filter) {
-      return directories;
-    }
-    return directories.filter(function (entry) {
-      return entry.relative_path.toLowerCase().indexOf(filter) >= 0;
+    return fileBrowser.filteredEntries(state.browser[profile.apiKind].entries, {
+      filter: state.filters[kind],
+      wantDirectory: true,
     });
   }
 
   function fileEntries(kind) {
     const profile = pickerProfiles[kind] || pickerProfiles.csv;
-    return (state.browser[profile.apiKind].entries || []).filter(function (entry) {
-      return !entry.is_dir;
+    return fileBrowser.filteredEntries(state.browser[profile.apiKind].entries, {
+      wantDirectory: false,
     });
   }
 
@@ -1368,8 +1353,8 @@
 
   function directoryEntries(kind) {
     const apiKind = pickerProfiles[kind] ? pickerProfiles[kind].apiKind : kind;
-    return (state.browser[apiKind].entries || []).filter(function (entry) {
-      return entry.is_dir;
+    return fileBrowser.filteredEntries(state.browser[apiKind].entries, {
+      wantDirectory: true,
     });
   }
 
@@ -1444,6 +1429,7 @@
   function openSchemaDraftPicker() {
     state.schemaDraft.open = true;
     state.schemaDraft.selectedFile = "";
+    state.schemaDraft.filter = "";
     state.schemaDraft.draftName = normalizedDraftName(state.schemaDraft.draftName) || "new.schema.json";
     if (!state.schemaDraft.entries.length) {
       loadSchemaDraftFileList(state.schemaDraft.currentPath);
@@ -1491,45 +1477,27 @@
     const draftPath = schemaDraftRelativePath();
 
     els.schemaDraftNameInput.value = state.schemaDraft.draftName;
+    els.schemaDraftFilterInput.value = state.schemaDraft.filter;
     els.schemaDraftPathValue.textContent = "/" + (state.schemaDraft.currentPath || "");
     els.schemaDraftUpButton.disabled = !state.schemaDraft.currentPath && !state.schemaDraft.parentPath;
     els.schemaDraftPathPreview.textContent = draftPath ? "Target: " + draftPath : "Enter a schema filename.";
     els.schemaDraftSelectionSummary.textContent = draftPath || "No filename set.";
     els.schemaDraftCreateButton.disabled = !draftPath;
 
-    if (!directories.length) {
-      els.schemaDraftDirectories.innerHTML = '<span class="directory-empty">No subdirectories here.</span>';
-    } else {
-      els.schemaDraftDirectories.innerHTML = directories.map(function (entry) {
-        return '<button class="directory-chip" type="button" data-path="' + escapeHTML(entry.relative_path) + '">/' + escapeHTML(entry.name) + '</button>';
-      }).join("");
-      els.schemaDraftDirectories.querySelectorAll("[data-path]").forEach(function (button) {
-        button.addEventListener("click", function () {
-          loadSchemaDraftFileList(button.getAttribute("data-path") || "");
-        });
-      });
-    }
+    fileBrowser.renderDirectoryList(els.schemaDraftDirectories, directories, {
+      onChoose: loadSchemaDraftFileList,
+    });
 
-    els.schemaDraftFileSelect.innerHTML = "";
-    if (!files.length) {
-      const option = document.createElement("option");
-      option.disabled = true;
-      option.textContent = "No schema JSON files in this folder";
-      els.schemaDraftFileSelect.appendChild(option);
-    } else {
-      files.forEach(function (entry) {
-        const option = document.createElement("option");
-        option.value = entry.relative_path;
-        option.textContent = entry.name;
-        option.selected = entry.relative_path === state.schemaDraft.selectedFile;
-        els.schemaDraftFileSelect.appendChild(option);
-      });
-    }
+    fileBrowser.populateSelect(els.schemaDraftFileSelect, files, {
+      selectedValue: state.schemaDraft.selectedFile,
+      emptyText: "No schema JSON files in this folder",
+    });
   }
 
   function filteredSchemaDraftEntries(wantDirectory) {
-    return state.schemaDraft.entries.filter(function (entry) {
-      return Boolean(entry.is_dir) === wantDirectory;
+    return fileBrowser.filteredEntries(state.schemaDraft.entries, {
+      filter: state.schemaDraft.filter,
+      wantDirectory: wantDirectory,
     });
   }
 
@@ -1543,19 +1511,11 @@
   }
 
   function schemaDraftRelativePath() {
-    const name = normalizedDraftName(state.schemaDraft.draftName);
-    if (!name) {
-      return "";
-    }
-    return state.schemaDraft.currentPath ? state.schemaDraft.currentPath.replace(/\/+$/, "") + "/" + name : name;
+    return fileBrowser.relativeDraftPath(state.schemaDraft.currentPath, state.schemaDraft.draftName, "json");
   }
 
   function normalizedDraftName(value) {
-    const clean = String(value || "").trim();
-    if (!clean || /[\\/]/.test(clean)) {
-      return "";
-    }
-    return /\.json$/i.test(clean) ? clean : clean + ".json";
+    return fileBrowser.normalizedFilename(value, "json");
   }
 
   function readSavedSchemaEditorState() {
@@ -2125,17 +2085,11 @@
   }
 
   function displayFileName(relativePath) {
-    if (!relativePath) {
-      return "";
-    }
-    const segments = String(relativePath).split("/");
-    return segments[segments.length - 1] || relativePath;
+    return fileBrowser.baseName(relativePath);
   }
 
   function dirName(path) {
-    const clean = String(path || "").replace(/\/+$/, "");
-    const index = clean.lastIndexOf("/");
-    return index >= 0 ? clean.slice(0, index) : "";
+    return fileBrowser.dirName(path);
   }
 
   function cardHTML(title, rows) {

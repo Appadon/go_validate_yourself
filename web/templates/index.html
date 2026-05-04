@@ -402,8 +402,9 @@
       <section class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="schema-draft-title">
         <div class="panel__head">
           <div>
-            <p class="eyebrow">Schema</p>
+            <p class="eyebrow">File Picker</p>
             <h2 id="schema-draft-title">New Schema</h2>
+            <p class="panel-note">Browse the working directory and choose where the schema JSON should be created.</p>
           </div>
           <button id="schema-draft-close-button" class="button button--secondary button--small" type="button">Close</button>
         </div>
@@ -414,13 +415,18 @@
         </label>
         <p id="schema-draft-path-preview" class="selection-summary">Schema will be saved in this folder.</p>
 
+        <label class="filter-field" for="schema-draft-filter-input">
+          <span>Filter files</span>
+          <input id="schema-draft-filter-input" type="search" placeholder="Filter by filename or folder" autocomplete="off">
+        </label>
+
         <div class="browser-toolbar">
           <code id="schema-draft-path-value">/</code>
           <button id="schema-draft-up-button" class="button button--secondary button--small" type="button">Up</button>
         </div>
 
         <div id="schema-draft-directories" class="directory-list" aria-live="polite"></div>
-        <select id="schema-draft-file-select" class="file-select file-select--modal" size="8" aria-label="Existing schema files"></select>
+        <select id="schema-draft-file-select" class="file-select file-select--modal" size="12" aria-label="Existing schema files"></select>
 
         <div class="picker-actions">
           <p id="schema-draft-selection-summary" class="selection-summary">new.schema.json</p>
@@ -432,6 +438,7 @@
     <script>
       window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
     </script>
+    <script src="/static/js/file_browser.js?v={{.Version}}-stage6" defer></script>
     <script src="/static/js/app.js?v={{.Version}}-stage6" defer></script>
   </body>
 </html>
