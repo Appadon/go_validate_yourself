@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{.Title}}</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/static/css/app.css?v={{.Version}}-schema-editor">
+    <link rel="stylesheet" href="/static/css/schema_editor.css?v={{.Version}}-schema-editor">
+  </head>
+  <body>
+    <div class="app-shell schema-shell {{if .SchemaEditorEmbed}}schema-shell--embed{{end}}">
+      {{if not .SchemaEditorEmbed}}
+      <header class="topbar">
+        <div class="topbar__copy">
+          <p class="eyebrow">Schema</p>
+          <h1>Schema Editor</h1>
+          <p class="lede">Columns, rules, and saved JSON.</p>
+        </div>
+        <div class="topbar__status">
+          <section class="status-card">
+            <span class="status-card__label">Root</span>
+            <strong class="status-card__path">{{.WorkingRoot}}</strong>
+          </section>
+        </div>
+      </header>
+      {{end}}
+
+      <main class="schema-layout">
+        <section id="schema-workbench" class="panel schema-workbench" aria-label="Schema editor" tabindex="-1">
+          <div class="schema-workflow" aria-label="Schema file actions">
+            <div class="schema-workflow__left">
+              <button id="load-button" class="button button--primary" type="button">Load</button>
+              <button id="new-button" class="button button--secondary" type="button">New</button>
+            </div>
+            <button id="save-button" class="button button--primary schema-workflow__save" type="button">Save</button>
+          </div>
+
+          <p id="message" class="form-message schema-message" aria-live="polite"></p>
+
+          <div class="schema-editor-grid">
+            <section class="schema-field-list" aria-labelledby="field-list-title">
+              <div class="schema-section-head">
+                <div>
+                  <h3 id="field-list-title">Columns</h3>
+                  <p id="field-count">0 fields</p>
+                </div>
+                <button id="add-field-button" class="button button--secondary button--small" type="button">Add field</button>
+              </div>
+
+              <div class="field-table-wrap">
+                <table class="field-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Type</th>
+                      <th>Required</th>
+                    </tr>
+                  </thead>
+                  <tbody id="field-table-body">
+                    <tr>
+                      <td colspan="3">Load or create a schema to begin.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="schema-field-detail" aria-labelledby="field-detail-title">
+              <div class="schema-section-head">
+                <div>
+                  <h3 id="field-detail-title">Column options</h3>
+                  <p id="field-detail-subtitle">Select a column to edit its rules.</p>
+                </div>
+                <button id="delete-field-button" class="button button--secondary button--small" type="button">Delete</button>
+              </div>
+
+              <div id="field-editor-empty" class="schema-empty">
+                Select a field from the table, or add a new field.
+              </div>
+
+              <div id="field-editor" class="field-editor" hidden>
+                <div class="config-grid config-grid--settings schema-config-grid">
+                  <label class="field-control" for="field-name-input">
+                    <span>Input Column Name</span>
+                    <input id="field-name-input" type="text" autocomplete="off">
+                  </label>
+
+                  <label class="field-control" for="field-parquet-input">
+                    <span>Output Column Name</span>
+                    <input id="field-parquet-input" type="text" autocomplete="off">
+                  </label>
+
+                  <label class="field-control" for="field-type-input">
+                    <span>Type</span>
+                    <select id="field-type-input">
+                      <option value="string">string</option>
+                      <option value="int">int</option>
+                      <option value="float">float</option>
+                      <option value="date">date</option>
+                      <option value="datetime">datetime</option>
+                    </select>
+                  </label>
+
+                  <label class="field-control" for="field-min-length-input" data-field-types="string">
+                    <span>Min length</span>
+                    <input id="field-min-length-input" type="number" min="0" step="1">
+                  </label>
+
+                  <label class="field-control" for="field-default-input">
+                    <span>Default</span>
+                    <input id="field-default-input" type="text" autocomplete="off">
+                  </label>
+
+                  <label class="field-control" for="field-override-input">
+                    <span>Override</span>
+                    <input id="field-override-input" type="text" autocomplete="off">
+                  </label>
+                </div>
+
+                <div class="toggle-row toggle-row--settings schema-toggle-row">
+                  <label class="toggle-control">
+                    <input id="field-required-input" type="checkbox">
+                    <span>Required</span>
+                  </label>
+                  <label class="toggle-control" data-field-types="string">
+                    <input id="field-lower-input" type="checkbox">
+                    <span>Lower case</span>
+                  </label>
+                  <label class="toggle-control" data-field-types="int">
+                    <input id="field-non-zero-input" type="checkbox">
+                    <span>Non-zero</span>
+                  </label>
+                </div>
+
+                <div class="schema-textareas">
+                  <div class="field-control schema-list-editor allowed-values-editor" data-field-types="string">
+                    <div class="schema-list-editor__head">
+                      <span>Allowed values</span>
+                      <button id="field-allowed-add" class="button button--secondary button--small" type="button">Add</button>
+                    </div>
+                    <div id="field-allowed-rows" class="schema-list-editor__rows"></div>
+                  </div>
+
+                  <div class="field-control schema-list-editor inline-replace-editor" data-field-types="string">
+                    <div class="schema-list-editor__head">
+                      <span>Inline replacements</span>
+                      <button id="field-inline-replace-add" class="button button--secondary button--small" type="button">Add</button>
+                    </div>
+                    <div id="field-inline-replace-rows" class="schema-list-editor__rows"></div>
+                  </div>
+
+                  <label class="field-control" for="field-date-formats-input" data-field-types="date">
+                    <span>Date formats</span>
+                    <textarea id="field-date-formats-input" rows="4" placeholder="2006-01-02"></textarea>
+                  </label>
+
+                  <label class="field-control" for="field-datetime-formats-input" data-field-types="datetime">
+                    <span>Datetime formats</span>
+                    <textarea id="field-datetime-formats-input" rows="4" placeholder="2006-01-02 15:04:05"></textarea>
+                  </label>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="schema-picker-modal" class="picker-modal" hidden>
+      <div id="picker-backdrop" class="picker-modal__backdrop"></div>
+      <section class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+        <div class="panel__head">
+          <div>
+            <p class="eyebrow">File Picker</p>
+            <h2 id="picker-title">Select schema JSON</h2>
+            <p id="picker-subtitle" class="panel-note">Browse the working directory and choose one schema JSON file.</p>
+          </div>
+          <div class="schema-picker__head-actions">
+            <button id="refresh-button" class="button button--secondary button--small" type="button">Refresh</button>
+            <button id="picker-close-button" class="button button--secondary button--small" type="button">Close</button>
+          </div>
+        </div>
+
+        <div id="draft-location-panel" class="draft-location-panel" hidden>
+          <label class="field-control" for="draft-name-input">
+            <span id="schema-name-label">Schema filename</span>
+            <input id="draft-name-input" type="text" autocomplete="off" placeholder="new.schema.json">
+          </label>
+          <p id="draft-path-preview" class="selection-summary">Schema will be saved in this folder.</p>
+        </div>
+
+        <label class="filter-field" for="picker-filter-input">
+          <span>Filter files</span>
+          <input id="picker-filter-input" type="search" placeholder="Filter by filename or folder" autocomplete="off">
+        </label>
+
+        <div class="browser-toolbar">
+          <code id="current-path">/</code>
+          <button id="up-button" class="button button--secondary button--small" type="button">Up</button>
+        </div>
+
+        <div id="directory-list" class="directory-list" aria-live="polite"></div>
+        <div class="schema-picker__file-list">
+          <p id="picker-list-label" class="schema-picker__list-label">Schema files</p>
+          <select id="schema-file-select" class="file-select file-select--modal" size="12"></select>
+        </div>
+
+        <div class="picker-actions">
+          <p id="picker-selection-summary" class="selection-summary">No file selected.</p>
+          <button id="picker-choose-button" class="button button--primary" type="button">Use selected file</button>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
+    </script>
+    <script src="/static/js/file_browser.js?v={{.Version}}-schema-editor" defer></script>
+    <script src="/static/js/schema_editor.js?v={{.Version}}-schema-editor" defer></script>
+  </body>
+</html>

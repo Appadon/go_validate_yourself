@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{.Title}}</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/static/css/app.css?v={{.Version}}-schema-infer">
+    <link rel="stylesheet" href="/static/css/schema_infer.css?v={{.Version}}-schema-infer">
+  </head>
+  <body>
+    <div class="app-shell infer-shell {{if .SchemaEditorEmbed}}infer-shell--embed{{end}}">
+      {{if not .SchemaEditorEmbed}}
+      <header class="topbar">
+        <div class="topbar__copy">
+          <p class="eyebrow">Schema</p>
+          <h1>Schema Inference</h1>
+          <p class="lede">Sample a CSV and generate a draft schema.</p>
+        </div>
+        <div class="topbar__status">
+          <section class="status-card">
+            <span class="status-card__label">Root</span>
+            <strong class="status-card__path">{{.WorkingRoot}}</strong>
+          </section>
+        </div>
+      </header>
+      {{end}}
+
+      <main class="infer-layout">
+        <section class="panel infer-panel infer-panel--controls" aria-labelledby="infer-controls-title">
+          <div class="panel__head">
+            <div>
+              <h2 id="infer-controls-title">Inference setup</h2>
+              <p class="panel-note">Browsing is limited to <code>{{.WorkingRoot}}</code></p>
+            </div>
+            <button id="refresh-files-button" class="button button--secondary button--small" type="button">Refresh</button>
+          </div>
+
+          <div class="selection-compact infer-selection">
+            <span class="selection-compact__label">Selected CSV</span>
+            <strong id="csv-selection-summary" class="selection-compact__value">No CSV selected</strong>
+            <button id="csv-open-button" class="button button--primary" type="button">Select CSV</button>
+          </div>
+
+          <div class="config-grid infer-config-grid">
+            <label class="field-control" for="sample-size-input">
+              <span>Sample size</span>
+              <input id="sample-size-input" type="number" min="1" step="1" value="100">
+            </label>
+
+            <label class="field-control" for="strategy-input">
+              <span>Strategy</span>
+              <select id="strategy-input">
+                <option value="byte-spread">byte-spread</option>
+                <option value="head">head</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="toggle-row toggle-row--settings">
+            <label class="toggle-control">
+              <input id="keep-samples-input" type="checkbox" checked>
+              <span>Keep samples</span>
+            </label>
+            <label class="toggle-control">
+              <input id="write-parquet-input" type="checkbox" checked>
+              <span>Write sample parquet</span>
+            </label>
+          </div>
+
+          <div class="infer-actions">
+            <button id="run-inference-button" class="button button--primary" type="button">Run inference</button>
+            <button id="open-editor-primary-button" class="button button--secondary" type="button" disabled>Open in schema editor</button>
+            <p id="infer-message" class="form-message" aria-live="polite"></p>
+          </div>
+        </section>
+
+        <section class="panel infer-panel infer-panel--summary" aria-labelledby="infer-summary-title">
+          <div class="panel__head">
+            <div>
+              <h2 id="infer-summary-title">Result</h2>
+              <p id="result-note" class="panel-note">Run inference to see detected fields.</p>
+            </div>
+            <span id="duration-badge" class="badge badge--muted">Not run</span>
+          </div>
+
+          <div id="summary-grid" class="infer-summary-grid">
+            <section class="infer-metric">
+              <span>Rows sampled</span>
+              <strong id="sampled-rows-value">-</strong>
+            </section>
+            <section class="infer-metric">
+              <span>File size</span>
+              <strong id="file-size-value">-</strong>
+            </section>
+            <section class="infer-metric">
+              <span>Sample parquet</span>
+              <strong id="sample-parquet-value">-</strong>
+            </section>
+          </div>
+
+          <div class="infer-tabs" role="tablist" aria-label="Inference result views">
+            <button class="infer-tab infer-tab--active" type="button" data-view="fields">Fields</button>
+            <button class="infer-tab" type="button" data-view="schema">Schema JSON</button>
+            <button class="infer-tab" type="button" data-view="samples">Samples</button>
+            <button class="infer-tab" type="button" data-view="warnings">Warnings</button>
+          </div>
+
+          <section id="fields-view" class="infer-view infer-view--active" aria-labelledby="fields-title">
+            <div class="infer-table-wrap">
+              <table class="infer-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Required</th>
+                    <th>Confidence</th>
+                    <th>Blank</th>
+                    <th>Samples</th>
+                  </tr>
+                </thead>
+                <tbody id="fields-table-body">
+                  <tr><td colspan="6">No inference result yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="schema-view" class="infer-view" aria-labelledby="schema-title">
+            <div class="code-block-head">
+              <h3 id="schema-title">Draft schema</h3>
+              <div class="code-block-actions">
+                <button id="open-editor-button" class="button button--primary button--small" type="button" disabled>Open in editor</button>
+                <button id="copy-schema-button" class="button button--secondary button--small" type="button">Copy JSON</button>
+              </div>
+            </div>
+            <pre id="schema-json-output" class="json-output">{}</pre>
+          </section>
+
+          <section id="samples-view" class="infer-view" aria-labelledby="samples-title">
+            <h3 id="samples-title">Sample rows</h3>
+            <div id="samples-output" class="samples-output">No retained samples yet.</div>
+          </section>
+
+          <section id="warnings-view" class="infer-view" aria-labelledby="warnings-title">
+            <h3 id="warnings-title">Warnings</h3>
+            <ul id="warnings-list" class="warnings-list">
+              <li>No warnings yet.</li>
+            </ul>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="csv-picker-modal" class="picker-modal" hidden>
+      <div id="picker-backdrop" class="picker-modal__backdrop"></div>
+      <section class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+        <div class="panel__head">
+          <div>
+            <p class="eyebrow">File Picker</p>
+            <h2 id="picker-title">Select CSV</h2>
+            <p class="panel-note">Browse the working directory and choose one CSV file.</p>
+          </div>
+          <button id="picker-close-button" class="button button--secondary button--small" type="button">Close</button>
+        </div>
+
+        <label class="filter-field" for="picker-filter-input">
+          <span>Filter files</span>
+          <input id="picker-filter-input" type="search" placeholder="Filter by filename or folder" autocomplete="off">
+        </label>
+
+        <div class="browser-toolbar">
+          <code id="current-path">/</code>
+          <button id="up-button" class="button button--secondary button--small" type="button">Up</button>
+        </div>
+
+        <div id="directory-list" class="directory-list" aria-live="polite"></div>
+        <select id="csv-file-select" class="file-select file-select--modal" size="12"></select>
+
+        <div class="picker-actions">
+          <p id="picker-selection-summary" class="selection-summary">No file selected.</p>
+          <button id="picker-choose-button" class="button button--primary" type="button">Use selected file</button>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
+    </script>
+    <script src="/static/js/file_browser.js?v={{.Version}}-schema-infer" defer></script>
+    <script src="/static/js/schema_infer.js?v={{.Version}}-schema-infer" defer></script>
+  </body>
+</html>

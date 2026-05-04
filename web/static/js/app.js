@@ -3,6 +3,8 @@
 
   const bootstrap = window.GVY_UI_BOOTSTRAP || {};
   const phaseOrder = ["split", "validate", "batch"];
+  const schemaEditorStorageKey = "gvy.schemaEditor.savedSchema";
+  const fileBrowser = window.GVYFileBrowser;
   const pickerProfiles = {
     csv: { apiKind: "csv", mode: "file", title: "Select main CSV", subtitle: "Browse the working directory and choose one CSV file.", target: "selectedCsv" },
     schema: { apiKind: "schema", mode: "file", title: "Select schema JSON", subtitle: "Browse the working directory and choose one schema JSON file.", target: "selectedSchema" },
@@ -66,10 +68,35 @@
     attachingRunId: "",
     resolveTimer: 0,
     resolveSequence: 0,
+    schemaEditor: {
+      lastSavedAt: Date.now(),
+      open: false,
+    },
+    schemaInfer: {
+      open: false,
+    },
+    schemaDraft: {
+      open: false,
+      currentPath: "",
+      parentPath: "",
+      entries: [],
+      filter: "",
+      draftName: "new.schema.json",
+      selectedFile: "",
+    },
+    wizard: {
+      activeStep: 0,
+      maxStep: 4,
+    },
   };
 
   const els = {
     form: document.getElementById("run-form"),
+    wizardCards: document.querySelectorAll(".wizard-card[data-step]"),
+    wizardStepButtons: document.querySelectorAll("[data-wizard-step]"),
+    wizardBackButton: document.getElementById("wizard-back-button"),
+    wizardNextButton: document.getElementById("wizard-next-button"),
+    wizardStepStatus: document.getElementById("wizard-step-status"),
     refreshFilesButton: document.getElementById("refresh-files-button"),
     defaultsStatus: document.getElementById("defaults-status"),
     phaseSplit: document.getElementById("phase-split"),
@@ -102,12 +129,33 @@
     resolvedPreview: document.getElementById("resolved-preview"),
     csvOpenButton: document.getElementById("csv-open-button"),
     schemaOpenButton: document.getElementById("schema-open-button"),
+    schemaInferOpenButton: document.getElementById("schema-infer-open-button"),
+    schemaInferModal: document.getElementById("schema-infer-modal"),
+    schemaInferBackdrop: document.getElementById("schema-infer-backdrop"),
+    schemaInferCloseButton: document.getElementById("schema-infer-close-button"),
+    schemaInferFrame: document.getElementById("schema-infer-frame"),
+    schemaEditorOpenButton: document.getElementById("schema-editor-open-button"),
+    schemaEditorNewButton: document.getElementById("schema-editor-new-button"),
+    schemaEditorModal: document.getElementById("schema-editor-modal"),
+    schemaEditorBackdrop: document.getElementById("schema-editor-backdrop"),
+    schemaEditorCloseButton: document.getElementById("schema-editor-close-button"),
+    schemaEditorFrame: document.getElementById("schema-editor-frame"),
+    schemaDraftModal: document.getElementById("schema-draft-modal"),
+    schemaDraftBackdrop: document.getElementById("schema-draft-backdrop"),
+    schemaDraftCloseButton: document.getElementById("schema-draft-close-button"),
+    schemaDraftPathValue: document.getElementById("schema-draft-path-value"),
+    schemaDraftUpButton: document.getElementById("schema-draft-up-button"),
+    schemaDraftFilterInput: document.getElementById("schema-draft-filter-input"),
+    schemaDraftNameInput: document.getElementById("schema-draft-name-input"),
+    schemaDraftPathPreview: document.getElementById("schema-draft-path-preview"),
+    schemaDraftDirectories: document.getElementById("schema-draft-directories"),
+    schemaDraftFileSelect: document.getElementById("schema-draft-file-select"),
+    schemaDraftSelectionSummary: document.getElementById("schema-draft-selection-summary"),
+    schemaDraftCreateButton: document.getElementById("schema-draft-create-button"),
     csvCount: document.getElementById("csv-count"),
     schemaCount: document.getElementById("schema-count"),
     csvSelectionSummary: document.getElementById("csv-selection-summary"),
     schemaSelectionSummary: document.getElementById("schema-selection-summary"),
-    submitButton: document.getElementById("submit-button"),
-    refreshButton: document.getElementById("refresh-button"),
     formMessage: document.getElementById("form-message"),
     serverStatusText: document.getElementById("server-status-text"),
     serverStatusBadge: document.getElementById("server-status-badge"),
@@ -119,6 +167,7 @@
     phaseHeading: document.getElementById("phase-heading"),
     phaseDetail: document.getElementById("phase-detail"),
     progressFill: document.getElementById("progress-fill"),
+    phaseTimeline: document.getElementById("phase-timeline"),
     summaryCards: document.getElementById("summary-cards"),
     eventLog: document.getElementById("event-log"),
     pickerModal: document.getElementById("picker-modal"),
@@ -137,6 +186,7 @@
   };
 
   function init() {
+    window.GVYOpenInferredSchema = openSchemaEditorPath;
     bindEvents();
     render();
     loadConfigDefaults();
@@ -152,12 +202,32 @@
       refreshFileLists();
     });
 
+    els.wizardBackButton.addEventListener("click", previousWizardStep);
+    els.wizardNextButton.addEventListener("click", nextWizardStep);
+    els.wizardStepButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        setWizardStep(integerValue(button.getAttribute("data-wizard-step")));
+      });
+    });
+
     els.csvOpenButton.addEventListener("click", function () {
       openPicker("csv");
     });
 
     els.schemaOpenButton.addEventListener("click", function () {
       openPicker("schema");
+    });
+
+    els.schemaInferOpenButton.addEventListener("click", function () {
+      openSchemaInfer();
+    });
+
+    els.schemaEditorOpenButton.addEventListener("click", function () {
+      openSchemaEditor("edit");
+    });
+
+    els.schemaEditorNewButton.addEventListener("click", function () {
+      openSchemaDraftPicker();
     });
 
     els.validateCSVOpenButton.addEventListener("click", function () {
@@ -182,7 +252,7 @@
       if (!kind) {
         return;
       }
-      state.filters[kind] = els.pickerFilterInput.value.trim().toLowerCase();
+      state.filters[kind] = fileBrowser.normalizeFilter(els.pickerFilterInput.value);
       renderPicker();
     });
 
@@ -210,16 +280,11 @@
       }
     });
 
-    els.refreshButton.addEventListener("click", function () {
-      refreshHealth();
-      if (state.runId) {
-        syncRun(state.runId);
-      }
-    });
-
     els.form.addEventListener("submit", function (event) {
       event.preventDefault();
-      submitRun();
+      if (state.wizard.activeStep === 3) {
+        submitRun();
+      }
     });
 
     els.pickerChooseButton.addEventListener("click", function () {
@@ -228,6 +293,39 @@
 
     els.pickerCloseButton.addEventListener("click", closePicker);
     els.pickerBackdrop.addEventListener("click", closePicker);
+
+    window.addEventListener("storage", function (event) {
+      if (event.key === schemaEditorStorageKey) {
+        applySavedSchemaEditorState(event.newValue);
+      }
+    });
+    window.addEventListener("focus", readSavedSchemaEditorState);
+    window.addEventListener("message", handleFrameMessage);
+    els.schemaInferCloseButton.addEventListener("click", closeSchemaInfer);
+    els.schemaInferBackdrop.addEventListener("click", closeSchemaInfer);
+    els.schemaEditorCloseButton.addEventListener("click", closeSchemaEditor);
+    els.schemaEditorBackdrop.addEventListener("click", closeSchemaEditor);
+    els.schemaDraftBackdrop.addEventListener("click", closeSchemaDraftPicker);
+    els.schemaDraftCloseButton.addEventListener("click", closeSchemaDraftPicker);
+    els.schemaDraftNameInput.addEventListener("input", function () {
+      state.schemaDraft.draftName = els.schemaDraftNameInput.value;
+      renderSchemaDraftPicker();
+    });
+    els.schemaDraftFilterInput.addEventListener("input", function () {
+      state.schemaDraft.filter = fileBrowser.normalizeFilter(els.schemaDraftFilterInput.value);
+      renderSchemaDraftPicker();
+    });
+    els.schemaDraftFileSelect.addEventListener("change", function () {
+      state.schemaDraft.selectedFile = els.schemaDraftFileSelect.value || "";
+      if (state.schemaDraft.selectedFile) {
+        state.schemaDraft.draftName = displayFileName(state.schemaDraft.selectedFile);
+      }
+      renderSchemaDraftPicker();
+    });
+    els.schemaDraftUpButton.addEventListener("click", function () {
+      loadSchemaDraftFileList(state.schemaDraft.parentPath || "");
+    });
+    els.schemaDraftCreateButton.addEventListener("click", createSchemaDraftFromPicker);
   }
 
   function configControlElements() {
@@ -451,8 +549,24 @@
   }
 
   function localConfigError() {
-    if (!selectedPhases().length) {
+    const phases = selectedPhases();
+    const split = phases.indexOf("split") >= 0;
+    const validate = phases.indexOf("validate") >= 0;
+    const batch = phases.indexOf("batch") >= 0;
+    if (!phases.length) {
       return "Select at least one pipeline phase.";
+    }
+    if (split && !state.selected.csv) {
+      return "Select a main CSV before resolving this workflow.";
+    }
+    if (validate && !state.selected.schema) {
+      return "Select a schema JSON before resolving this workflow.";
+    }
+    if (validate && !split && !els.validateCSVInput.value.trim() && !els.validateDirInput.value.trim()) {
+      return "Select a validation file or directory, or include the split phase.";
+    }
+    if (batch && !validate && !els.batchInputDirInput.value.trim()) {
+      return "Select a batch input directory, or include the validate phase.";
     }
     return "";
   }
@@ -515,12 +629,14 @@
       return;
     }
 
+    const previousRunId = state.runId;
     closeStream();
-    els.submitButton.disabled = true;
+    els.wizardNextButton.disabled = true;
     const config = buildCurrentConfig();
     state.lastSubmittedConfig = deepClone(config);
     state.lastSubmittedResolved = state.preview.resolved ? deepClone(state.preview.resolved) : null;
     setFormMessage("Creating config-driven run from the current pipeline settings…", "info");
+    setWizardStep(4);
     startPendingConfigRunAttach();
 
     try {
@@ -537,7 +653,12 @@
         state.health.busy = true;
         setFormMessage("The server is already running another validation. The current run remains inspectable until it finishes.", "warn");
         if (state.health.latest_run_id) {
-          syncRun(state.health.latest_run_id);
+          await syncRun(state.health.latest_run_id);
+        }
+        if (state.snapshot && state.snapshot.run_id) {
+          setWizardStep(4);
+        } else {
+          setWizardStep(3);
         }
         render();
         return;
@@ -563,6 +684,9 @@
       refreshHealth();
     } catch (error) {
       setFormMessage(error.message || "Run creation failed", "error");
+      if (!(state.runId && state.runId !== previousRunId)) {
+        setWizardStep(3);
+      }
     } finally {
       stopPendingConfigRunAttach();
       render();
@@ -756,9 +880,9 @@
         pushEvent(event);
         if (state.snapshot) {
           state.snapshot.latest_event = event;
-          if (event.type === "completed") {
+          if (event.type === "completed" && isRunLevelEvent(event)) {
             state.snapshot.state = "completed";
-          } else if (event.type === "failed") {
+          } else if (event.type === "failed" && isRunLevelEvent(event)) {
             state.snapshot.state = "failed";
           }
         }
@@ -798,6 +922,7 @@
   }
 
   function render() {
+    renderWizard();
     renderServerState();
     renderConfigVisibility();
     renderSelectionSummary("csv");
@@ -808,6 +933,74 @@
     renderEvents();
     updateSubmitState();
     renderPicker();
+    renderSchemaEditorModal();
+    renderSchemaDraftPicker();
+  }
+
+  function setWizardStep(step) {
+    const nextStep = clampStep(step);
+    if (state.wizard.activeStep === nextStep) {
+      renderWizard();
+      return;
+    }
+    state.wizard.activeStep = nextStep;
+    renderWizard();
+  }
+
+  function nextWizardStep() {
+    if (state.wizard.activeStep === 3) {
+      submitRun();
+      return;
+    }
+    setWizardStep(state.wizard.activeStep + 1);
+  }
+
+  function previousWizardStep() {
+    setWizardStep(state.wizard.activeStep - 1);
+  }
+
+  function renderWizard() {
+    const activeStep = clampStep(state.wizard.activeStep);
+    state.wizard.activeStep = activeStep;
+
+    els.wizardCards.forEach(function (card) {
+      const step = integerValue(card.getAttribute("data-step"));
+      const active = step === activeStep;
+      card.classList.toggle("wizard-card--active", active);
+      card.setAttribute("aria-hidden", active ? "false" : "true");
+    });
+
+    els.wizardStepButtons.forEach(function (button) {
+      const step = integerValue(button.getAttribute("data-wizard-step"));
+      const active = step === activeStep;
+      button.classList.toggle("wizard-step--active", active);
+      if (active) {
+        button.setAttribute("aria-current", "step");
+      } else {
+        button.removeAttribute("aria-current");
+      }
+    });
+
+    els.wizardBackButton.disabled = activeStep === 0;
+    syncWizardNextButtonState();
+    els.wizardStepStatus.textContent = "Step " + (activeStep + 1) + " of " + (state.wizard.maxStep + 1);
+  }
+
+  function syncWizardNextButtonState() {
+    const activeStep = clampStep(state.wizard.activeStep);
+    const confirmStep = activeStep === 3;
+    const busy = Boolean(state.health && state.health.busy);
+    const runningThisPage = state.snapshot && state.snapshot.state === "running";
+    const previewOK = state.preview.status === "ok";
+    els.wizardNextButton.textContent = confirmStep ? "Start run" : "Next";
+    els.wizardNextButton.disabled = activeStep === state.wizard.maxStep || (confirmStep && (!previewOK || (busy && !runningThisPage)));
+  }
+
+  function clampStep(step) {
+    if (!Number.isFinite(step)) {
+      return 0;
+    }
+    return Math.min(Math.max(step, 0), state.wizard.maxStep);
   }
 
   function renderServerState() {
@@ -832,6 +1025,9 @@
   function renderSelectionSummary(kind) {
     const summary = kind === "csv" ? els.csvSelectionSummary : els.schemaSelectionSummary;
     summary.textContent = state.selected[kind] ? displayFileName(state.selected[kind]) : "No " + kind + " selected";
+    if (kind === "schema") {
+      els.schemaEditorOpenButton.disabled = !state.selected.schema;
+    }
   }
 
   function renderPreview() {
@@ -855,32 +1051,90 @@
 
     const resolved = state.preview.resolved;
     if (!resolved) {
-      els.resolvedPreview.innerHTML = rowHTML("Status", state.preview.error || "Choose inputs to preview the effective pipeline.");
+      els.resolvedPreview.innerHTML = previewSectionHTML("Resolver", [
+        rowHTML("Status", resolverStatusText()),
+        rowHTML("Details", state.preview.error || "Choose inputs to preview the effective pipeline."),
+      ]);
       return;
     }
 
     const plan = resolved.plan || {};
-    const rows = [
-      rowHTML("Phases", listText(plan.phases)),
-      rowHTML("Resume policy", valueText(plan.resume_policy)),
-      rowHTML("Workers", valueText(resolved.effective_workers)),
+    const inputs = resolved.inputs || {};
+    const outputs = resolved.outputs || {};
+    const split = resolved.split || {};
+    const validation = resolved.validation || {};
+    const batch = resolved.batch || {};
+    const runtime = resolved.runtime || {};
+    const hasSplit = phaseInPlan(resolved, "split");
+    const hasValidate = phaseInPlan(resolved, "validate");
+    const hasBatch = phaseInPlan(resolved, "batch");
+    const sections = [
+      previewSectionHTML("Resolver", [
+        rowHTML("Status", resolverStatusText()),
+        rowHTML("Errors", state.preview.error ? state.preview.error : "None"),
+      ]),
+      previewSectionHTML("Workflow", [
+        rowHTML("Phases", listText(plan.phases)),
+        rowHTML("Resume policy", valueText(plan.resume_policy)),
+        rowHTML("Worker setting", valueText(runtime.workers)),
+        rowHTML("Effective workers", valueText(resolved.effective_workers)),
+      ]),
     ];
-    if (phaseInPlan(resolved, "split")) {
-      rows.push(rowHTML("Primary key", splitPrimaryKeyText(resolved)));
-      rows.push(rowHTML("Split input", valueText(plan.split_input_csv)));
-      rows.push(rowHTML("Split output", valueText(plan.split_output_dir)));
+
+    const inputRows = [];
+    if (hasSplit) {
+      inputRows.push(rowHTML("Selected CSV/source", valueText(plan.split_input_csv || inputs.main_csv)));
     }
-    if (phaseInPlan(resolved, "validate")) {
-      rows.push(rowHTML("Validate input", valueText(plan.validate_input_csv || plan.validate_input_dir)));
-      rows.push(rowHTML("Schema", valueText(plan.validate_schema)));
-      rows.push(rowHTML("Success output", valueText(plan.validation_success_dir)));
-      rows.push(rowHTML("Error output", valueText(plan.validation_error_dir)));
+    if (hasValidate) {
+      inputRows.push(rowHTML("Selected schema", valueText(plan.validate_schema || inputs.schema)));
+      inputRows.push(rowHTML("Validation source", valueText(plan.validate_input_csv || plan.validate_input_dir || inputs.validate_csv || inputs.validate_dir)));
     }
-    if (phaseInPlan(resolved, "batch")) {
-      rows.push(rowHTML("Batch input", valueText(plan.batch_input_dir)));
-      rows.push(rowHTML("Batch output", valueText(plan.batch_output_dir)));
+    if (hasBatch) {
+      inputRows.push(rowHTML("Batch source", valueText(plan.batch_input_dir || batch.input_dir)));
     }
-    els.resolvedPreview.innerHTML = rows.join("");
+    sections.push(previewSectionHTML("Inputs", inputRows.length ? inputRows : [
+      rowHTML("Source", "No phase source selected"),
+    ]));
+
+    const outputRows = [];
+    if (hasSplit) {
+      outputRows.push(rowHTML("Split output", valueText(plan.split_output_dir || outputs.split_dir)));
+    }
+    if (hasValidate) {
+      outputRows.push(rowHTML("Success directory", valueText(plan.validation_success_dir || outputs.success_dir)));
+      outputRows.push(rowHTML("Error directory", valueText(plan.validation_error_dir || outputs.error_dir)));
+    }
+    if (hasBatch) {
+      outputRows.push(rowHTML("Batch export", valueText(plan.batch_output_dir || outputs.batch_export_dir)));
+    }
+    sections.push(previewSectionHTML("Output Directories", outputRows.length ? outputRows : [
+      rowHTML("Outputs", "No output directories for the selected phases"),
+    ]));
+
+    if (hasSplit) {
+      sections.push(previewSectionHTML("Split", [
+        rowHTML("Primary key", splitPrimaryKeyText(resolved)),
+        rowHTML("Max open writers", valueText(split.max_open_writers)),
+        rowHTML("Missing keys file", valueText(split.missing_keys_file)),
+        rowHTML("Reuse cache", booleanText(split.reuse_cache)),
+      ]));
+    }
+
+    if (hasValidate) {
+      sections.push(previewSectionHTML("Validation Options", [
+        rowHTML("Write empty error files", booleanText(validation.write_empty_error)),
+        rowHTML("Clear validation outputs", booleanText(validation.clear_outputs)),
+      ]));
+    }
+
+    if (hasBatch) {
+      sections.push(previewSectionHTML("Batch / Export", [
+        rowHTML("Batch size", valueText(batch.size)),
+        rowHTML("Clear batch output", booleanText(batch.clear_output)),
+      ]));
+    }
+
+    els.resolvedPreview.innerHTML = sections.join("");
   }
 
   function renderPicker() {
@@ -906,39 +1160,22 @@
     els.pickerCurrentDirButton.hidden = profile.mode !== "dir";
     els.pickerChooseButton.textContent = profile.mode === "dir" ? "Use selected directory" : "Use selected file";
 
-    if (!directories.length) {
-      els.pickerDirectories.innerHTML = '<span class="directory-empty">No subdirectories here.</span>';
-    } else {
-      els.pickerDirectories.innerHTML = directories.map(function (entry) {
-        return '<button class="directory-chip" type="button" data-kind="' + kind + '" data-path="' + escapeHTML(entry.relative_path) + '">/' + escapeHTML(entry.name) + '</button>';
-      }).join("");
-      els.pickerDirectories.querySelectorAll("[data-path]").forEach(function (button) {
-        button.addEventListener("click", function () {
-          loadFileList(kind, button.getAttribute("data-path"));
-        });
-      });
-    }
+    fileBrowser.renderDirectoryList(els.pickerDirectories, directories, {
+      kind: kind,
+      onChoose: function (path) {
+        loadFileList(kind, path);
+      },
+    });
 
-    select.innerHTML = "";
-    if (!files.length) {
-      const option = document.createElement("option");
-      option.disabled = true;
-      option.textContent = profile.mode === "dir" ? "No subdirectories match the current filter" : hasFileEntries(kind) ? "No files match the current filter" : "No matching files in this directory";
-      select.appendChild(option);
-    } else {
-      files.forEach(function (entry) {
-        const option = document.createElement("option");
-        option.value = entry.relative_path;
-        option.textContent = entry.name;
-        if (entry.relative_path === selectedValue) {
-          option.selected = true;
-        }
-        select.appendChild(option);
-      });
-      if (!selectedValue && files.length) {
-        select.selectedIndex = -1;
-      }
-    }
+    fileBrowser.populateSelect(select, files, {
+      selectedValue: selectedValue,
+      clearWhenEmptySelection: true,
+      emptyText: profile.mode === "dir"
+        ? "No subdirectories match the current filter"
+        : hasFileEntries(kind)
+          ? "No files match the current filter"
+          : "No matching files in this directory",
+    });
 
     updateFileCount(apiKind, directories.length + " dirs · " + selectableFileEntries(kind).length + " files");
     updatePickerSelectionState();
@@ -948,12 +1185,13 @@
     const snapshot = state.snapshot;
     if (!snapshot) {
       els.runIDValue.textContent = state.runId || "Waiting for submission";
-      els.runStageValue.textContent = state.health.busy ? "Attached elsewhere" : "Idle";
+      els.runStageValue.textContent = "Not available";
       els.runProgressValue.textContent = "Not started";
-      els.stageDetail.textContent = state.pendingConfigRun ? "Attaching" : state.health.busy ? "Run in progress" : "Preparing";
+      els.stageDetail.textContent = "Stage";
       els.phaseHeading.textContent = state.pendingConfigRun ? "Starting run" : state.health.busy ? "Server busy" : "Ready";
       els.phaseDetail.textContent = state.pendingConfigRun ? "Waiting for the run snapshot and progress stream." : state.health.busy ? "A run exists, but this page has not attached to its snapshot yet." : "No active run.";
       els.progressFill.style.width = "0%";
+      renderPhaseTimeline(null, null);
       setBadge(els.runStateBadge, state.health.busy ? "Busy" : "No run selected", state.health.busy ? "warn" : "muted");
       return;
     }
@@ -961,24 +1199,60 @@
     const latestEvent = snapshot.latest_event || newestEvent();
     const progressPercent = getProgressPercent(snapshot, latestEvent);
     const stageInfo = getStageInfo(snapshot, latestEvent);
-    const phaseText = stageInfo.phase ? formatPhase(stageInfo.phase) : latestEvent ? formatPhase(latestEvent.phase) : formatState(snapshot.state);
-    const detail = latestEvent && latestEvent.message ? latestEvent.message : describeState(snapshot.state);
+    const phaseText = snapshot.state === "completed" ? "Complete" : stageInfo.phase ? formatPhase(stageInfo.phase) : latestEvent ? formatPhase(latestEvent.phase) : formatState(snapshot.state);
+    const detail = snapshot.state === "completed" ? "All selected stages completed." : latestEvent && latestEvent.message ? latestEvent.message : describeState(snapshot.state);
 
     els.runIDValue.textContent = snapshot.run_id;
-    els.runStageValue.textContent = stageInfo.label;
-    els.runProgressValue.textContent = progressPercent == null ? describeState(snapshot.state) : progressPercent + "%";
-    els.stageDetail.textContent = stageInfo.label;
+    els.runStageValue.textContent = totalRowsText();
+    els.runProgressValue.textContent = runTimeText(snapshot);
+    els.stageDetail.textContent = "Stage";
     els.phaseHeading.textContent = phaseText;
     els.phaseDetail.textContent = detail;
     els.progressFill.style.width = (progressPercent == null ? 0 : progressPercent) + "%";
+    renderPhaseTimeline(snapshot, stageInfo);
     setBadge(els.runStateBadge, formatState(snapshot.state), toneForState(snapshot.state));
+  }
+
+  function renderPhaseTimeline(snapshot, stageInfo) {
+    const phases = timelinePhases(snapshot);
+    if (!phases.length) {
+      els.phaseTimeline.innerHTML = [
+        '<li class="phase-step phase-step--idle">',
+        '<span class="phase-step__marker">1</span>',
+        '<span class="phase-step__body">',
+        '<strong>Waiting for a run</strong>',
+        '<span>Configured stages will appear here when the run starts.</span>',
+        "</span>",
+        "</li>",
+      ].join("");
+      return;
+    }
+
+    const failed = snapshot && snapshot.state === "failed";
+    const completed = snapshot && snapshot.state === "completed";
+    const activePhase = stageInfo && stageInfo.phase ? stageInfo.phase : activeTimelinePhase(snapshot, phases);
+    let activeIndex = activePhase ? phases.indexOf(activePhase) : -1;
+    if (failed && activeIndex < 0) {
+      activeIndex = 0;
+    }
+
+    els.phaseTimeline.innerHTML = phases.map(function (phase, index) {
+      const status = phaseTimelineStatus(index, activeIndex, completed, failed);
+      return [
+        '<li class="phase-step phase-step--' + status.tone + '">',
+        '<span class="phase-step__marker">' + (index + 1) + "</span>",
+        '<span class="phase-step__body">',
+        "<strong>" + escapeHTML(formatPhase(phase)) + "</strong>",
+        "<span>" + escapeHTML(status.label) + "</span>",
+        "</span>",
+        "</li>",
+      ].join("");
+    }).join("");
   }
 
   function renderSummary() {
     const snapshot = state.snapshot;
-    const workspace = snapshot && snapshot.workspace ? snapshot.workspace : null;
     const final = finalResultInfo();
-    const resolved = final.resolved || state.lastSubmittedResolved || null;
     const result = final.pipeline || null;
     const cards = [];
     const splitSummary = field(result, "split_summary") || {};
@@ -986,39 +1260,9 @@
     const validationSummary = field(validation, "summary") || {};
     const batchSummary = field(result, "batch_summary") || {};
 
-    if (resolved) {
-      const plan = resolved.plan || {};
-      cards.push(cardHTML("Effective config", [
-        rowHTML("Phases", listText(plan.phases)),
-        rowHTML("Workers", valueText(resolved.effective_workers)),
-        rowHTML("Primary key", splitPrimaryKeyText(resolved)),
-        rowHTML("Resume", valueText(plan.resume_policy)),
-      ]));
-
-      cards.push(cardHTML("Effective inputs", [
-        rowHTML("Split CSV", valueText(plan.split_input_csv)),
-        rowHTML("Validate input", valueText(plan.validate_input_csv || plan.validate_input_dir)),
-        rowHTML("Schema", valueText(plan.validate_schema)),
-        rowHTML("Batch input", valueText(plan.batch_input_dir)),
-      ]));
-
-      cards.push(cardHTML("Effective outputs", [
-        rowHTML("Split", valueText(plan.split_output_dir)),
-        rowHTML("Success", valueText(plan.validation_success_dir)),
-        rowHTML("Errors", valueText(plan.validation_error_dir)),
-        rowHTML("Batch export", valueText(plan.batch_output_dir)),
-      ]));
-    } else {
-      cards.push(cardHTML("Inputs", [
-        rowHTML("CSV", valueText((workspace && workspace.input_csv_path) || state.selected.csv)),
-        rowHTML("Schema", valueText((workspace && workspace.schema_path) || state.selected.schema)),
-      ]));
-
-      cards.push(cardHTML("Outputs", [
-        rowHTML("Success", valueText(workspace && workspace.success_dir)),
-        rowHTML("Errors", valueText(workspace && workspace.error_dir)),
-        rowHTML("Batch export", valueText(workspace && workspace.batch_export_dir)),
-      ]));
+    if (!snapshot) {
+      els.summaryCards.innerHTML = "";
+      return;
     }
 
     if (result) {
@@ -1059,14 +1303,6 @@
       ]));
     }
 
-    if (!result && snapshot && snapshot.state === "running") {
-      cards.push(cardHTML("Outputs", [
-        rowHTML("Success", valueText(workspace && workspace.success_dir)),
-        rowHTML("Errors", valueText(workspace && workspace.error_dir)),
-        rowHTML("Batch export", valueText(workspace && workspace.batch_export_dir)),
-      ]));
-    }
-
     els.summaryCards.innerHTML = cards.join("");
   }
 
@@ -1096,40 +1332,32 @@
   }
 
   function updateSubmitState() {
-    const busy = Boolean(state.health && state.health.busy);
-    const runningThisPage = state.snapshot && state.snapshot.state === "running";
-    const previewOK = state.preview.status === "ok";
-    els.submitButton.disabled = !previewOK || (busy && !runningThisPage);
+    syncWizardNextButtonState();
   }
 
   function filteredFiles(kind) {
     const profile = pickerProfiles[kind] || pickerProfiles.csv;
-    const filter = state.filters[kind];
-    const files = selectableFileEntries(kind);
-    if (!filter) {
-      return files;
-    }
-    return files.filter(function (entry) {
-      return entry.relative_path.toLowerCase().indexOf(filter) >= 0;
+    return fileBrowser.filteredEntries(state.browser[profile.apiKind].entries, {
+      filter: state.filters[kind],
+      wantDirectory: false,
+      exclude: function (entry) {
+        return kind === "schema" && entry.relative_path === "schema.example.json";
+      },
     });
   }
 
   function filteredDirectories(kind) {
     const profile = pickerProfiles[kind] || pickerProfiles.csv;
-    const filter = state.filters[kind];
-    const directories = directoryEntries(profile.apiKind);
-    if (!filter) {
-      return directories;
-    }
-    return directories.filter(function (entry) {
-      return entry.relative_path.toLowerCase().indexOf(filter) >= 0;
+    return fileBrowser.filteredEntries(state.browser[profile.apiKind].entries, {
+      filter: state.filters[kind],
+      wantDirectory: true,
     });
   }
 
   function fileEntries(kind) {
     const profile = pickerProfiles[kind] || pickerProfiles.csv;
-    return (state.browser[profile.apiKind].entries || []).filter(function (entry) {
-      return !entry.is_dir;
+    return fileBrowser.filteredEntries(state.browser[profile.apiKind].entries, {
+      wantDirectory: false,
     });
   }
 
@@ -1141,8 +1369,8 @@
 
   function directoryEntries(kind) {
     const apiKind = pickerProfiles[kind] ? pickerProfiles[kind].apiKind : kind;
-    return (state.browser[apiKind].entries || []).filter(function (entry) {
-      return entry.is_dir;
+    return fileBrowser.filteredEntries(state.browser[apiKind].entries, {
+      wantDirectory: true,
     });
   }
 
@@ -1173,6 +1401,229 @@
       loadFileList(kind, state.browser[profile.apiKind].currentPath);
     }
     renderPicker();
+  }
+
+  function openSchemaInfer() {
+    const params = new URLSearchParams();
+    params.set("embed", "1");
+    if (state.selected.csv) {
+      params.set("csv", state.selected.csv);
+    }
+    state.schemaInfer.open = true;
+    els.schemaInferFrame.src = "/schema-infer?" + params.toString();
+    renderSchemaInferModal();
+  }
+
+  function closeSchemaInfer() {
+    state.schemaInfer.open = false;
+    els.schemaInferFrame.removeAttribute("src");
+    renderSchemaInferModal();
+  }
+
+  function renderSchemaInferModal() {
+    els.schemaInferModal.hidden = !state.schemaInfer.open;
+  }
+
+  function handleFrameMessage(event) {
+    if (event.origin !== window.location.origin) {
+      return;
+    }
+    const data = event.data || {};
+    if (data.type !== "gvy:schema-infer-open-schema") {
+      return;
+    }
+    const path = cleanRelativePath(data.path || "");
+    if (!path) {
+      return;
+    }
+    openSchemaEditorPath(path);
+  }
+
+  function openSchemaEditor(mode) {
+    const params = new URLSearchParams();
+    params.set("embed", "1");
+    if (mode === "new") {
+      params.set("mode", "new");
+    } else if (state.selected.schema) {
+      params.set("path", state.selected.schema);
+    } else {
+      params.set("mode", "load");
+    }
+    state.schemaEditor.open = true;
+    els.schemaEditorFrame.src = "/schema-editor?" + params.toString();
+    renderSchemaEditorModal();
+  }
+
+  async function openSchemaEditorPath(path) {
+    const clean = cleanRelativePath(path);
+    if (!clean) {
+      return;
+    }
+    closeSchemaInfer();
+    await selectSchemaPath(clean);
+    const params = new URLSearchParams();
+    params.set("embed", "1");
+    params.set("path", clean);
+    state.schemaEditor.open = true;
+    els.schemaEditorFrame.src = "/schema-editor?" + params.toString();
+    renderSchemaEditorModal();
+  }
+
+  function openSchemaEditorDraft(path) {
+    const clean = String(path || "").replace(/^\/+/, "");
+    if (!clean) {
+      return;
+    }
+    const params = new URLSearchParams();
+    params.set("embed", "1");
+    params.set("draft", clean);
+    state.schemaEditor.open = true;
+    els.schemaEditorFrame.src = "/schema-editor?" + params.toString();
+    renderSchemaEditorModal();
+  }
+
+  function closeSchemaEditor() {
+    state.schemaEditor.open = false;
+    els.schemaEditorFrame.removeAttribute("src");
+    renderSchemaEditorModal();
+    readSavedSchemaEditorState();
+  }
+
+  function renderSchemaEditorModal() {
+    els.schemaEditorModal.hidden = !state.schemaEditor.open;
+  }
+
+  function openSchemaDraftPicker() {
+    state.schemaDraft.open = true;
+    state.schemaDraft.selectedFile = "";
+    state.schemaDraft.filter = "";
+    state.schemaDraft.draftName = normalizedDraftName(state.schemaDraft.draftName) || "new.schema.json";
+    if (!state.schemaDraft.entries.length) {
+      loadSchemaDraftFileList(state.schemaDraft.currentPath);
+    }
+    renderSchemaDraftPicker();
+  }
+
+  function closeSchemaDraftPicker() {
+    state.schemaDraft.open = false;
+    renderSchemaDraftPicker();
+  }
+
+  async function loadSchemaDraftFileList(path) {
+    try {
+      const params = new URLSearchParams();
+      params.set("kind", "schema");
+      if (path) {
+        params.set("path", path);
+      }
+      const response = await fetch("/api/files?" + params.toString());
+      const payload = await parseJSON(response);
+      if (!response.ok) {
+        throw new Error(payload && payload.message ? payload.message : "Could not load schema files");
+      }
+      state.schemaDraft.currentPath = payload.current_path || "";
+      state.schemaDraft.parentPath = payload.parent_path || "";
+      state.schemaDraft.entries = payload.entries || [];
+      state.schemaDraft.selectedFile = "";
+      renderSchemaDraftPicker();
+    } catch (error) {
+      state.schemaDraft.entries = [];
+      setFormMessage(error.message || "Could not load schema folders", "error");
+      renderSchemaDraftPicker();
+    }
+  }
+
+  function renderSchemaDraftPicker() {
+    els.schemaDraftModal.hidden = !state.schemaDraft.open;
+    if (!state.schemaDraft.open) {
+      return;
+    }
+
+    const directories = filteredSchemaDraftEntries(true);
+    const files = filteredSchemaDraftEntries(false);
+    const draftPath = schemaDraftRelativePath();
+
+    els.schemaDraftNameInput.value = state.schemaDraft.draftName;
+    els.schemaDraftFilterInput.value = state.schemaDraft.filter;
+    els.schemaDraftPathValue.textContent = "/" + (state.schemaDraft.currentPath || "");
+    els.schemaDraftUpButton.disabled = !state.schemaDraft.currentPath && !state.schemaDraft.parentPath;
+    els.schemaDraftPathPreview.textContent = draftPath ? "Target: " + draftPath : "Enter a schema filename.";
+    els.schemaDraftSelectionSummary.textContent = draftPath || "No filename set.";
+    els.schemaDraftCreateButton.disabled = !draftPath;
+
+    fileBrowser.renderDirectoryList(els.schemaDraftDirectories, directories, {
+      onChoose: loadSchemaDraftFileList,
+    });
+
+    fileBrowser.populateSelect(els.schemaDraftFileSelect, files, {
+      selectedValue: state.schemaDraft.selectedFile,
+      emptyText: "No schema JSON files in this folder",
+    });
+  }
+
+  function filteredSchemaDraftEntries(wantDirectory) {
+    return fileBrowser.filteredEntries(state.schemaDraft.entries, {
+      filter: state.schemaDraft.filter,
+      wantDirectory: wantDirectory,
+    });
+  }
+
+  function createSchemaDraftFromPicker() {
+    const draftPath = schemaDraftRelativePath();
+    if (!draftPath) {
+      return;
+    }
+    closeSchemaDraftPicker();
+    openSchemaEditorDraft(draftPath);
+  }
+
+  function schemaDraftRelativePath() {
+    return fileBrowser.relativeDraftPath(state.schemaDraft.currentPath, state.schemaDraft.draftName, "json");
+  }
+
+  function normalizedDraftName(value) {
+    return fileBrowser.normalizedFilename(value, "json");
+  }
+
+  function readSavedSchemaEditorState() {
+    let value = "";
+    try {
+      value = window.localStorage.getItem(schemaEditorStorageKey) || "";
+    } catch (error) {
+      return;
+    }
+    applySavedSchemaEditorState(value);
+  }
+
+  function applySavedSchemaEditorState(value) {
+    if (!value) {
+      return;
+    }
+    let payload = null;
+    try {
+      payload = JSON.parse(value);
+    } catch (error) {
+      return;
+    }
+    const savedAt = Number(payload && payload.saved_at);
+    const path = String(payload && payload.path || "").trim();
+    if (!path || !Number.isFinite(savedAt) || savedAt <= state.schemaEditor.lastSavedAt) {
+      return;
+    }
+    state.schemaEditor.lastSavedAt = savedAt;
+    selectSchemaPath(path);
+  }
+
+  async function selectSchemaPath(relativePath) {
+    const clean = String(relativePath || "").replace(/^\/+/, "");
+    if (!clean) {
+      return;
+    }
+    clearFormMessage();
+    await loadFileList("schema", dirName(clean));
+    state.selected.schema = clean;
+    render();
+    scheduleResolvePreview(0);
   }
 
   function closePicker() {
@@ -1338,6 +1789,10 @@
     return isDataPhase(metricsPhase) ? metricsPhase : "";
   }
 
+  function isRunLevelEvent(event) {
+    return Boolean(event && event.phase === "run");
+  }
+
   function latestDataPhase() {
     for (let i = state.events.length - 1; i >= 0; i -= 1) {
       const phase = dataPhaseForEvent(state.events[i]);
@@ -1346,6 +1801,121 @@
       }
     }
     return "";
+  }
+
+  function timelinePhases(snapshot) {
+    const resolvedPhases = currentResolvedPhases().filter(isDataPhase);
+    if (resolvedPhases.length) {
+      return resolvedPhases;
+    }
+    const eventPhases = [];
+    state.events.forEach(function (event) {
+      const phase = dataPhaseForEvent(event);
+      if (phase && eventPhases.indexOf(phase) < 0) {
+        eventPhases.push(phase);
+      }
+    });
+    if (eventPhases.length) {
+      return phaseOrder.filter(function (phase) {
+        return eventPhases.indexOf(phase) >= 0;
+      });
+    }
+    return snapshot ? phaseOrder.slice() : selectedPhases();
+  }
+
+  function activeTimelinePhase(snapshot, phases) {
+    const phase = latestDataPhase();
+    if (phase && phases.indexOf(phase) >= 0) {
+      return phase;
+    }
+    if (snapshot && snapshot.state === "queued") {
+      return phases[0] || "";
+    }
+    return "";
+  }
+
+  function phaseTimelineStatus(index, activeIndex, completed, failed) {
+    if (completed) {
+      return { tone: "done", label: "Complete" };
+    }
+    if (failed && index === activeIndex) {
+      return { tone: "failed", label: "Needs attention" };
+    }
+    if (activeIndex < 0) {
+      return index === 0 ? { tone: "current", label: "Waiting to start" } : { tone: "waiting", label: "Waiting" };
+    }
+    if (index < activeIndex) {
+      return { tone: "done", label: "Complete" };
+    }
+    if (index === activeIndex) {
+      return { tone: "current", label: failed ? "Needs attention" : "In progress" };
+    }
+    return { tone: "waiting", label: "Waiting" };
+  }
+
+  function runTimeText(snapshot) {
+    const seconds = runDurationSeconds(snapshot);
+    return seconds == null ? "Not started" : formatDurationShort(seconds);
+  }
+
+  function totalRowsText() {
+    const rows = rowsValidatedCount();
+    if (rows == null) {
+      return "Not available";
+    }
+    return compactNumber(rows);
+  }
+
+  function runDurationSeconds(snapshot) {
+    if (!snapshot) {
+      return null;
+    }
+    const startValue = snapshot.started_at || snapshot.created_at;
+    if (!startValue) {
+      return null;
+    }
+    const start = new Date(startValue);
+    if (Number.isNaN(start.getTime())) {
+      return null;
+    }
+    const endValue = snapshot.finished_at || null;
+    const end = endValue ? new Date(endValue) : new Date();
+    if (Number.isNaN(end.getTime())) {
+      return null;
+    }
+    return Math.max(0, (end.getTime() - start.getTime()) / 1000);
+  }
+
+  function rowsValidatedCount() {
+    const final = finalResultInfo();
+    const result = final.pipeline || {};
+    const validationDir = result.validation_dir || field(result, "validation", "Validation");
+    const validationFile = result.validation_file || {};
+    const dirSummary = validationDir && validationDir.summary ? validationDir.summary : {};
+    const fileStats = validationFile && validationFile.stats ? validationFile.stats : {};
+    const finalRows = metricNumber(
+      field(dirSummary, "total_rows", "TotalRows"),
+      field(fileStats, "total_rows", "TotalRows")
+    );
+    if (finalRows != null) {
+      return finalRows;
+    }
+
+    for (let i = state.events.length - 1; i >= 0; i -= 1) {
+      const event = state.events[i];
+      if (dataPhaseForEvent(event) !== "validate") {
+        continue;
+      }
+      const metrics = event.metrics || {};
+      const validRows = metricNumber(field(metrics, "valid_rows", "ValidRows"));
+      const invalidRows = metricNumber(field(metrics, "invalid_rows", "InvalidRows"));
+      const combinedRows = validRows != null || invalidRows != null ? (validRows || 0) + (invalidRows || 0) : null;
+      const eventRows = metricNumber(field(metrics, "total_rows", "TotalRows"), combinedRows);
+      if (eventRows != null) {
+        return eventRows;
+      }
+    }
+    return null;
   }
 
   function lastResolvedPhase() {
@@ -1476,6 +2046,68 @@
     return String(value);
   }
 
+  function metricNumber() {
+    for (let index = 0; index < arguments.length; index += 1) {
+      const value = arguments[index];
+      if (value == null || value === "") {
+        continue;
+      }
+      const number = Number(value);
+      if (Number.isFinite(number)) {
+        return number;
+      }
+    }
+    return null;
+  }
+
+  function compactNumber(value) {
+    const number = metricNumber(value);
+    if (number == null) {
+      return "0";
+    }
+    const absolute = Math.abs(number);
+    const units = [
+      { value: 1000000000, suffix: "B" },
+      { value: 1000000, suffix: "M" },
+      { value: 1000, suffix: "K" },
+    ];
+    for (let index = 0; index < units.length; index += 1) {
+      const unit = units[index];
+      if (absolute >= unit.value) {
+        return trimTrailingDecimal(number / unit.value) + unit.suffix;
+      }
+    }
+    return String(Math.round(number));
+  }
+
+  function trimTrailingDecimal(value) {
+    return value.toFixed(1).replace(/\.0$/, "");
+  }
+
+  function formatDurationShort(seconds) {
+    const totalSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+    if (totalSeconds < 60) {
+      return totalSeconds + "s";
+    }
+    const minutes = Math.floor(totalSeconds / 60);
+    const remainingSeconds = totalSeconds % 60;
+    if (minutes < 60) {
+      return minutes + "m " + pad2(remainingSeconds) + "s";
+    }
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    if (hours < 24) {
+      return hours + "h " + pad2(remainingMinutes) + "m";
+    }
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    return days + "d " + pad2(remainingHours) + "h";
+  }
+
+  function pad2(value) {
+    return String(value).padStart(2, "0");
+  }
+
   function valueText(value) {
     if (value == null || value === "") {
       return "Not available";
@@ -1502,12 +2134,29 @@
     return Array.isArray(value) && value.length ? value.join(" -> ") : "None";
   }
 
-  function displayFileName(relativePath) {
-    if (!relativePath) {
-      return "";
+  function booleanText(value) {
+    return value ? "Yes" : "No";
+  }
+
+  function resolverStatusText() {
+    switch (state.preview.status) {
+      case "pending":
+        return "Resolving";
+      case "ok":
+        return "Ready";
+      case "error":
+        return "Invalid";
+      default:
+        return "Waiting";
     }
-    const segments = String(relativePath).split("/");
-    return segments[segments.length - 1] || relativePath;
+  }
+
+  function displayFileName(relativePath) {
+    return fileBrowser.baseName(relativePath);
+  }
+
+  function dirName(path) {
+    return fileBrowser.dirName(path);
   }
 
   function cardHTML(title, rows) {
@@ -1518,6 +2167,19 @@
       rows.join(""),
       "</dl>",
       "</section>",
+    ].join("");
+  }
+
+  function previewSectionHTML(title, rows) {
+    return [
+      '<div class="preview-group">',
+      '<dt class="preview-group__title">' + escapeHTML(title) + "</dt>",
+      "<dd>",
+      '<dl class="preview-group__items">',
+      rows.join(""),
+      "</dl>",
+      "</dd>",
+      "</div>",
     ].join("");
   }
 
