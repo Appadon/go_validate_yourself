@@ -705,6 +705,17 @@ body::before {
   gap: 0.55rem;
 }
 
+.selection-actions--schema {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  width: 100%;
+}
+
+.selection-actions--schema #schema-editor-open-button {
+  margin-left: auto;
+}
+
 .browser-toolbar {
   display: flex;
   align-items: center;

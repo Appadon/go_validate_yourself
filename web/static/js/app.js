@@ -226,9 +226,11 @@
       openSchemaEditor("edit");
     });
 
-    els.schemaEditorNewButton.addEventListener("click", function () {
-      openSchemaDraftPicker();
-    });
+    if (els.schemaEditorNewButton) {
+      els.schemaEditorNewButton.addEventListener("click", function () {
+        openSchemaDraftPicker();
+      });
+    }
 
     els.validateCSVOpenButton.addEventListener("click", function () {
       openPicker("validateCsv");
@@ -1656,6 +1658,9 @@
       return;
     }
     applyPickerValue(profile, value);
+    if (profile.target === "selectedCsv") {
+      setWizardStep(1);
+    }
     clearFormMessage();
     closePicker();
     render();
