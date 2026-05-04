@@ -104,6 +104,13 @@
     fieldRequiredInput: document.getElementById("field-required-input"),
     fieldLowerInput: document.getElementById("field-lower-input"),
     fieldNonZeroInput: document.getElementById("field-non-zero-input"),
+    fieldInferencePanel: document.getElementById("field-inference-panel"),
+    fieldInferenceNote: document.getElementById("field-inference-note"),
+    fieldConfidenceValue: document.getElementById("field-confidence-value"),
+    fieldBlankValue: document.getElementById("field-blank-value"),
+    fieldNonBlankValue: document.getElementById("field-non-blank-value"),
+    fieldCandidatesValue: document.getElementById("field-candidates-value"),
+    fieldSamplesOutput: document.getElementById("field-samples-output"),
     fieldAllowedAdd: document.getElementById("field-allowed-add"),
     fieldAllowedRows: document.getElementById("field-allowed-rows"),
     fieldInlineReplaceAdd: document.getElementById("field-inline-replace-add"),
@@ -690,11 +697,15 @@
       state.dirty = false;
       state.pendingSaveAndClose = false;
       closeSchemaPicker();
-      await loadFileList(state.currentPath);
       notifySchemaSaved(state.loadedPath, closeAfter);
+      if (!closeAfter) {
+        await loadFileList(state.currentPath);
+      }
       setMessage("Schema saved.", "ok");
       render();
-      focusWorkbench();
+      if (!closeAfter) {
+        focusWorkbench();
+      }
     } catch (error) {
       setMessage(error.message || "Could not save schema", "error");
       render();
@@ -883,11 +894,11 @@
     els.generateToggleButton.hidden = !state.inferenceMode;
     els.generateToggleButton.setAttribute("aria-expanded", state.inferencePanelOpen ? "true" : "false");
     els.generateToggleButton.textContent = state.inferencePanelOpen ? "Hide Generator" : "Generate Schema";
-    els.inferenceResultToggleButton.hidden = !state.inferenceMode || !state.inferenceResult;
+    els.inferenceResultToggleButton.hidden = true;
     els.inferenceResultToggleButton.setAttribute("aria-expanded", state.inferenceResultOpen ? "true" : "false");
     els.inferenceResultToggleButton.textContent = state.inferenceResultOpen ? "Hide Result" : "Inference Result";
     els.inferenceSection.hidden = !state.inferenceMode || !state.inferencePanelOpen;
-    els.inferenceResults.hidden = !state.inferenceMode || !state.inferenceResult || !state.inferenceResultOpen;
+    els.inferenceResults.hidden = true;
     els.csvSelectionSummary.textContent = state.selectedCSV ? "Selected CSV: " + state.selectedCSV : "No CSV selected.";
     els.sampleSizeInput.value = String(state.sampleSize || 100);
     els.strategyInput.value = state.strategy || "byte-spread";
@@ -974,6 +985,7 @@
     const editable = canEditSchema();
     els.workbench.classList.toggle("schema-workbench--ready", editable);
     els.workbench.classList.toggle("schema-workbench--infer", state.inferenceMode);
+    els.workbench.classList.toggle("schema-workbench--inference-open", state.inferenceMode && state.inferencePanelOpen);
     els.workbench.classList.toggle("schema-workbench--has-inference-result", false);
     els.workbench.classList.toggle("schema-workbench--column-options-open", Boolean(state.columnOptionsOpen));
     els.fieldCount.textContent = count + (count === 1 ? " field" : " fields");
@@ -1021,6 +1033,7 @@
     els.deleteFieldButton.disabled = !hasField;
 
     if (!hasField) {
+      els.fieldInferencePanel.hidden = true;
       els.fieldDetailSubtitle.textContent = canEditSchema() ? "Select a column to edit its rules." : "Load, create, or generate a schema first.";
       els.fieldEditorEmpty.textContent = canEditSchema() ? "Select a field from the table, or add a new field." : "Load a schema file, create a draft, or generate a schema to start editing.";
       return;
@@ -1041,6 +1054,36 @@
     els.fieldDateFormatsInput.value = arrayText(field.date_formats);
     els.fieldDatetimeFormatsInput.value = arrayText(field.datetime_formats);
     renderTypeSpecificOptions(els.fieldTypeInput.value);
+    renderFieldInference(field);
+  }
+
+  function renderFieldInference(field) {
+    const inferred = inferredFieldForIndex(state.activeIndex);
+    if (!field || !inferred) {
+      els.fieldInferencePanel.hidden = true;
+      return;
+    }
+
+    const sampleValues = columnSampleValues(field, inferred);
+    els.fieldInferencePanel.hidden = false;
+    els.fieldConfidenceValue.textContent = inferred.confidence !== undefined ? formatPercent(inferred.confidence) : "-";
+    els.fieldBlankValue.textContent = inferred.blank_count !== undefined ? String(inferred.blank_count || 0) : "-";
+    els.fieldNonBlankValue.textContent = inferred.non_blank_count !== undefined ? String(inferred.non_blank_count || 0) : "-";
+    els.fieldCandidatesValue.textContent = Array.isArray(inferred.candidate_types) && inferred.candidate_types.length ? inferred.candidate_types.join(", ") : "-";
+    els.fieldInferenceNote.textContent = inferred.name || field.name || "Column";
+
+    if (!sampleValues.length) {
+      els.fieldSamplesOutput.innerHTML = '<p class="schema-help">No retained samples for this column.</p>';
+      return;
+    }
+    els.fieldSamplesOutput.innerHTML = sampleValues.map(function (sample) {
+      return [
+        '<article class="field-sample">',
+        '<span>Sample ' + escapeHTML(sample.sample_index) + '</span>',
+        '<strong>' + escapeHTML(sample.value) + '</strong>',
+        '</article>',
+      ].join("");
+    }).join("");
   }
 
   function renderTypeSpecificOptions(type) {
@@ -1293,7 +1336,48 @@
     if (!fields.length) {
       return null;
     }
+    const current = state.schema && Array.isArray(state.schema.fields) ? state.schema.fields[index] : null;
+    if (current) {
+      const currentName = String(current.name || "");
+      const currentParquet = String(current.parquet_name || "");
+      const matched = fields.find(function (field) {
+        return (currentName && field.name === currentName) || (currentParquet && field.parquet_name === currentParquet);
+      });
+      if (matched) {
+        return matched;
+      }
+    }
     return fields[index] || null;
+  }
+
+  function columnSampleValues(field, inferred) {
+    const inference = state.inferenceResult && state.inferenceResult.inference;
+    const samples = inference && Array.isArray(inference.samples) ? inference.samples : [];
+    const keys = [inferred && inferred.name, field && field.name, inferred && inferred.parquet_name, field && field.parquet_name]
+      .map(function (key) { return String(key || ""); })
+      .filter(Boolean);
+    const out = [];
+    samples.forEach(function (sample) {
+      const values = sample && sample.values ? sample.values : {};
+      for (let i = 0; i < keys.length; i++) {
+        if (Object.prototype.hasOwnProperty.call(values, keys[i])) {
+          out.push({
+            sample_index: sample.sample_index,
+            value: values[keys[i]],
+          });
+          return;
+        }
+      }
+    });
+    if (!out.length && inferred && Array.isArray(inferred.sample_values)) {
+      inferred.sample_values.forEach(function (value, index) {
+        out.push({
+          sample_index: index + 1,
+          value: value,
+        });
+      });
+    }
+    return out;
   }
 
   function fieldHintHTML(field) {

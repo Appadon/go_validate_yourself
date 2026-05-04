@@ -173,7 +173,6 @@
                   <p id="field-detail-subtitle">Select a column to edit its rules.</p>
                 </div>
                 <div class="schema-section-actions">
-                  <button id="delete-field-button" class="button button--secondary button--small" type="button">Delete</button>
                   <button id="column-options-close-button" class="button button--secondary button--small" type="button">Close</button>
                 </div>
               </div>
@@ -183,86 +182,122 @@
               </div>
 
               <div id="field-editor" class="field-editor" hidden>
-                <div class="config-grid config-grid--settings schema-config-grid">
-                  <label class="field-control" for="field-name-input">
-                    <span>Input Column Name</span>
-                    <input id="field-name-input" type="text" autocomplete="off">
-                  </label>
+                <div class="field-editor__controls">
+                  <div class="config-grid config-grid--settings schema-config-grid">
+                    <label class="field-control" for="field-name-input">
+                      <span>Input Column Name</span>
+                      <input id="field-name-input" type="text" autocomplete="off">
+                    </label>
 
-                  <label class="field-control" for="field-parquet-input">
-                    <span>Output Column Name</span>
-                    <input id="field-parquet-input" type="text" autocomplete="off">
-                  </label>
+                    <label class="field-control" for="field-parquet-input">
+                      <span>Output Column Name</span>
+                      <input id="field-parquet-input" type="text" autocomplete="off">
+                    </label>
 
-                  <label class="field-control" for="field-type-input">
-                    <span>Type</span>
-                    <select id="field-type-input">
-                      <option value="string">string</option>
-                      <option value="int">int</option>
-                      <option value="float">float</option>
-                      <option value="date">date</option>
-                      <option value="datetime">datetime</option>
-                    </select>
-                  </label>
+                    <label class="field-control" for="field-type-input">
+                      <span>Type</span>
+                      <select id="field-type-input">
+                        <option value="string">string</option>
+                        <option value="int">int</option>
+                        <option value="float">float</option>
+                        <option value="date">date</option>
+                        <option value="datetime">datetime</option>
+                      </select>
+                    </label>
 
-                  <label class="field-control" for="field-min-length-input" data-field-types="string">
-                    <span>Min length</span>
-                    <input id="field-min-length-input" type="number" min="0" step="1">
-                  </label>
+                    <label class="field-control" for="field-min-length-input" data-field-types="string">
+                      <span>Min length</span>
+                      <input id="field-min-length-input" type="number" min="0" step="1">
+                    </label>
 
-                  <label class="field-control" for="field-default-input">
-                    <span>Default</span>
-                    <input id="field-default-input" type="text" autocomplete="off">
-                  </label>
+                    <label class="field-control" for="field-default-input">
+                      <span>Default</span>
+                      <input id="field-default-input" type="text" autocomplete="off">
+                    </label>
 
-                  <label class="field-control" for="field-override-input">
-                    <span>Override</span>
-                    <input id="field-override-input" type="text" autocomplete="off">
-                  </label>
-                </div>
-
-                <div class="toggle-row toggle-row--settings schema-toggle-row">
-                  <label class="toggle-control">
-                    <input id="field-required-input" type="checkbox">
-                    <span>Required</span>
-                  </label>
-                  <label class="toggle-control" data-field-types="string">
-                    <input id="field-lower-input" type="checkbox">
-                    <span>Lower case</span>
-                  </label>
-                  <label class="toggle-control" data-field-types="int">
-                    <input id="field-non-zero-input" type="checkbox">
-                    <span>Non-zero</span>
-                  </label>
-                </div>
-
-                <div class="schema-textareas">
-                  <div class="field-control schema-list-editor allowed-values-editor" data-field-types="string">
-                    <div class="schema-list-editor__head">
-                      <span>Allowed values</span>
-                      <button id="field-allowed-add" class="button button--secondary button--small" type="button">Add</button>
-                    </div>
-                    <div id="field-allowed-rows" class="schema-list-editor__rows"></div>
+                    <label class="field-control" for="field-override-input">
+                      <span>Override</span>
+                      <input id="field-override-input" type="text" autocomplete="off">
+                    </label>
                   </div>
 
-                  <div class="field-control schema-list-editor inline-replace-editor" data-field-types="string">
-                    <div class="schema-list-editor__head">
-                      <span>Inline replacements</span>
-                      <button id="field-inline-replace-add" class="button button--secondary button--small" type="button">Add</button>
-                    </div>
-                    <div id="field-inline-replace-rows" class="schema-list-editor__rows"></div>
+                  <div class="toggle-row toggle-row--settings schema-toggle-row">
+                    <label class="toggle-control">
+                      <input id="field-required-input" type="checkbox">
+                      <span>Required</span>
+                    </label>
+                    <label class="toggle-control" data-field-types="string">
+                      <input id="field-lower-input" type="checkbox">
+                      <span>Lower case</span>
+                    </label>
+                    <label class="toggle-control" data-field-types="int">
+                      <input id="field-non-zero-input" type="checkbox">
+                      <span>Non-zero</span>
+                    </label>
                   </div>
 
-                  <label class="field-control" for="field-date-formats-input" data-field-types="date">
-                    <span>Date formats</span>
-                    <textarea id="field-date-formats-input" rows="4" placeholder="2006-01-02"></textarea>
-                  </label>
+                  <div class="schema-textareas">
+                    <div class="field-control schema-list-editor allowed-values-editor" data-field-types="string">
+                      <div class="schema-list-editor__head">
+                        <span>Allowed values</span>
+                        <button id="field-allowed-add" class="button button--secondary button--small" type="button">Add</button>
+                      </div>
+                      <div id="field-allowed-rows" class="schema-list-editor__rows"></div>
+                    </div>
 
-                  <label class="field-control" for="field-datetime-formats-input" data-field-types="datetime">
-                    <span>Datetime formats</span>
-                    <textarea id="field-datetime-formats-input" rows="4" placeholder="2006-01-02 15:04:05"></textarea>
-                  </label>
+                    <div class="field-control schema-list-editor inline-replace-editor" data-field-types="string">
+                      <div class="schema-list-editor__head">
+                        <span>Inline replacements</span>
+                        <button id="field-inline-replace-add" class="button button--secondary button--small" type="button">Add</button>
+                      </div>
+                      <div id="field-inline-replace-rows" class="schema-list-editor__rows"></div>
+                    </div>
+
+                    <label class="field-control" for="field-date-formats-input" data-field-types="date">
+                      <span>Date formats</span>
+                      <textarea id="field-date-formats-input" rows="4" placeholder="2006-01-02"></textarea>
+                    </label>
+
+                    <label class="field-control" for="field-datetime-formats-input" data-field-types="datetime">
+                      <span>Datetime formats</span>
+                      <textarea id="field-datetime-formats-input" rows="4" placeholder="2006-01-02 15:04:05"></textarea>
+                    </label>
+                  </div>
                 </div>
+
+                <section id="field-inference-panel" class="field-inference-panel" aria-labelledby="field-inference-title" hidden>
+                  <div class="field-inference-panel__head">
+                    <div>
+                      <h4 id="field-inference-title">Inference</h4>
+                      <p id="field-inference-note">No retained samples for this column.</p>
+                    </div>
+                  </div>
+
+                  <div class="field-inference-metrics">
+                    <section class="schema-metric">
+                      <span>Confidence</span>
+                      <strong id="field-confidence-value">-</strong>
+                    </section>
+                    <section class="schema-metric">
+                      <span>Blank</span>
+                      <strong id="field-blank-value">-</strong>
+                    </section>
+                    <section class="schema-metric">
+                      <span>Non-blank</span>
+                      <strong id="field-non-blank-value">-</strong>
+                    </section>
+                    <section class="schema-metric">
+                      <span>Candidates</span>
+                      <strong id="field-candidates-value">-</strong>
+                    </section>
+                  </div>
+
+                  <div id="field-samples-output" class="field-samples-output"></div>
+                </section>
+              </div>
+
+              <div class="schema-field-detail__footer">
+                <button id="delete-field-button" class="button button--secondary button--small" type="button">Delete</button>
               </div>
             </section>
           </div>

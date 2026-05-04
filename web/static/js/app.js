@@ -1452,14 +1452,18 @@
     if (Number.isFinite(savedAt)) {
       state.schemaEditor.lastSavedAt = Math.max(state.schemaEditor.lastSavedAt, savedAt);
     }
-    selectSchemaPath(path).then(function () {
-      if (data.type === "gvy:schema-saved-and-close") {
-        closeSchemaEditor();
-        if (data.advance && state.wizard.activeStep === 1) {
-          setWizardStep(2);
-        }
+    if (data.type === "gvy:schema-saved-and-close") {
+      closeSchemaEditor();
+      if (data.advance && state.wizard.activeStep === 1) {
+        setWizardStep(2);
       }
-    });
+      selectSchemaPath(path).catch(function () {
+        state.selected.schema = path;
+        render();
+      });
+      return;
+    }
+    selectSchemaPath(path);
   }
 
   function openSchemaEditor(mode) {
@@ -1495,7 +1499,7 @@
   }
 
   function openSchemaEditorDraft(path) {
-    const clean = String(path || "").replace(/^\/+/, "");
+    const clean = cleanRelativePath(path);
     if (!clean) {
       return;
     }
@@ -2192,6 +2196,10 @@
 
   function dirName(path) {
     return fileBrowser.dirName(path);
+  }
+
+  function cleanRelativePath(path) {
+    return fileBrowser.cleanRelativePath(path);
   }
 
   function cardHTML(title, rows) {

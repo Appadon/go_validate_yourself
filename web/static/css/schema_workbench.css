@@ -96,6 +96,17 @@
   border-color: rgba(183, 255, 90, 0.72);
 }
 
+#generate-toggle-button {
+  position: relative;
+}
+
+.schema-workbench--infer #generate-toggle-button:not([aria-expanded="true"]) {
+  color: #ffffff;
+  background: rgba(75, 141, 255, 0.24);
+  border-color: rgba(118, 168, 255, 0.62);
+  box-shadow: 0 0 0 3px rgba(75, 141, 255, 0.16);
+}
+
 .schema-picker__head-actions {
   display: flex;
   gap: 0.55rem;
@@ -169,13 +180,28 @@
   border-radius: var(--radius-sm);
 }
 
+.schema-workbench--inference-open::before,
+.schema-workbench--column-options-open::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  background: rgba(2, 5, 10, 0.68);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+
 .schema-inference {
   position: absolute;
-  top: 4.5rem;
-  left: 0.85rem;
+  top: 50%;
+  left: 50%;
   z-index: 12;
-  width: min(52rem, calc(100% - 1.7rem));
-  box-shadow: 0 1.2rem 2.4rem rgba(0, 0, 0, 0.34);
+  width: min(76rem, calc(100% - 1.7rem));
+  max-height: calc(100% - 1.7rem);
+  overflow: auto;
+  transform: translate(-50%, -50%);
+  border-color: rgba(118, 168, 255, 0.48);
+  box-shadow: 0 1.6rem 3.4rem rgba(0, 0, 0, 0.56);
 }
 
 .schema-inference-results {
@@ -406,7 +432,7 @@
   left: 50%;
   bottom: 0.85rem;
   z-index: 13;
-  width: min(48rem, calc(100% - 1.7rem));
+  width: min(82rem, calc(100% - 1.7rem));
   transform: translateX(-50%);
   background: var(--bg-panel-strong);
   border-color: var(--border-strong);
@@ -420,8 +446,15 @@
 .schema-field-list,
 .schema-field-detail {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   gap: 0.7rem;
+}
+
+.schema-field-list {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.schema-field-detail {
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .schema-section-head {
@@ -436,6 +469,13 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.45rem;
+}
+
+.schema-field-detail__footer {
+  display: flex;
+  justify-content: flex-start;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border);
 }
 
 .schema-section-head h3 {
@@ -516,6 +556,15 @@
 }
 
 .field-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(21rem, 0.42fr);
+  gap: 0.8rem;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.field-editor__controls {
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   padding-right: 0.15rem;
@@ -527,6 +576,89 @@
 
 .schema-toggle-row {
   margin: 0.8rem 0;
+}
+
+.field-inference-panel {
+  display: grid;
+  align-self: start;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 0.65rem;
+  min-width: 0;
+  max-height: 100%;
+  margin: 0;
+  padding: 0.75rem;
+  background: rgba(75, 141, 255, 0.08);
+  border: 1px solid rgba(118, 168, 255, 0.28);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.field-inference-panel[hidden] {
+  display: none;
+}
+
+.field-inference-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.field-inference-panel__head h4 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.field-inference-panel__head p {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.field-inference-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.field-inference-metrics .schema-metric strong {
+  overflow-wrap: anywhere;
+}
+
+.field-samples-output {
+  display: grid;
+  align-content: start;
+  grid-template-columns: 1fr;
+  gap: 0.45rem;
+  min-height: 0;
+  overflow: auto;
+}
+
+.field-sample {
+  min-width: 0;
+  padding: 0.5rem;
+  background: rgba(4, 7, 12, 0.42);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.field-sample span {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.field-sample strong {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  line-height: 1.35;
 }
 
 .schema-textareas {
@@ -611,10 +743,21 @@
   .schema-workflow,
   .schema-inference__controls,
   .schema-inference-summary,
+  .field-editor,
+  .field-inference-metrics,
   .schema-editor-grid,
   .schema-config-grid,
   .schema-textareas {
     grid-template-columns: 1fr;
+  }
+
+  .field-editor {
+    overflow: auto;
+  }
+
+  .field-inference-panel {
+    max-height: none;
+    overflow: visible;
   }
 
   .schema-workflow .button {
