@@ -1408,12 +1408,13 @@
   function openSchemaInfer() {
     const params = new URLSearchParams();
     params.set("embed", "1");
+    params.set("mode", "infer");
     if (state.selected.csv) {
       params.set("csv", state.selected.csv);
     }
-    state.schemaInfer.open = true;
-    els.schemaInferFrame.src = "/schema-infer?" + params.toString();
-    renderSchemaInferModal();
+    state.schemaEditor.open = true;
+    els.schemaEditorFrame.src = "/schema-workbench?" + params.toString();
+    renderSchemaEditorModal();
   }
 
   function closeSchemaInfer() {
@@ -1431,14 +1432,34 @@
       return;
     }
     const data = event.data || {};
-    if (data.type !== "gvy:schema-infer-open-schema") {
+    if (data.type === "gvy:schema-infer-open-schema") {
+      const path = cleanRelativePath(data.path || "");
+      if (!path) {
+        return;
+      }
+      openSchemaEditorPath(path);
+      return;
+    }
+
+    if (data.type !== "gvy:schema-saved" && data.type !== "gvy:schema-saved-and-close") {
       return;
     }
     const path = cleanRelativePath(data.path || "");
     if (!path) {
       return;
     }
-    openSchemaEditorPath(path);
+    const savedAt = Number(data.saved_at || Date.now());
+    if (Number.isFinite(savedAt)) {
+      state.schemaEditor.lastSavedAt = Math.max(state.schemaEditor.lastSavedAt, savedAt);
+    }
+    selectSchemaPath(path).then(function () {
+      if (data.type === "gvy:schema-saved-and-close") {
+        closeSchemaEditor();
+        if (data.advance && state.wizard.activeStep === 1) {
+          setWizardStep(2);
+        }
+      }
+    });
   }
 
   function openSchemaEditor(mode) {

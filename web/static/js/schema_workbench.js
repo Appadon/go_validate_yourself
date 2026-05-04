@@ -15,10 +15,29 @@
     pickerOpen: false,
     pickerMode: "load",
     draftName: "new.schema.json",
+    csvCurrentPath: "",
+    csvParentPath: "",
+    csvEntries: [],
+    csvPickerOpen: false,
+    csvPickerSelection: "",
+    csvFilter: "",
     loadedPath: "",
     schema: deepClone(blankSchema),
     selectedCSV: "",
+    inferenceMode: false,
+    inferenceResult: null,
+    inferenceBusy: false,
+    inferencePanelOpen: false,
+    inferenceResultOpen: false,
+    inferenceView: "fields",
+    sampleSize: 100,
+    strategy: "byte-spread",
+    keepSamples: true,
+    writeSampleParquet: true,
+    generatedSchemaPath: "",
+    pendingSaveAndClose: false,
     activeIndex: -1,
+    columnOptionsOpen: false,
     dirty: false,
     message: "",
     messageTone: "",
@@ -44,14 +63,35 @@
     upButton: document.getElementById("up-button"),
     directoryList: document.getElementById("directory-list"),
     schemaFileSelect: document.getElementById("schema-file-select"),
-    loadButton: document.getElementById("load-button"),
-    newButton: document.getElementById("new-button"),
+    generateToggleButton: document.getElementById("generate-toggle-button"),
     saveButton: document.getElementById("save-button"),
+    saveCloseButton: document.getElementById("save-close-button"),
     message: document.getElementById("message"),
+    inferenceSection: document.getElementById("inference-section"),
+    inferenceResultToggleButton: document.getElementById("inference-result-toggle-button"),
+    csvSelectionSummary: document.getElementById("csv-selection-summary"),
+    sampleSizeInput: document.getElementById("sample-size-input"),
+    strategyInput: document.getElementById("strategy-input"),
+    keepSamplesInput: document.getElementById("keep-samples-input"),
+    writeParquetInput: document.getElementById("write-parquet-input"),
+    runInferenceButton: document.getElementById("run-inference-button"),
+    inferenceResults: document.getElementById("inference-results"),
+    inferenceResultNote: document.getElementById("inference-result-note"),
+    durationBadge: document.getElementById("duration-badge"),
+    sampledRowsValue: document.getElementById("sampled-rows-value"),
+    fileSizeValue: document.getElementById("file-size-value"),
+    sampleParquetValue: document.getElementById("sample-parquet-value"),
+    generatedSchemaPathValue: document.getElementById("generated-schema-path-value"),
+    samplesOutput: document.getElementById("samples-output"),
+    warningsList: document.getElementById("warnings-list"),
+    inferenceSummaryOutput: document.getElementById("inference-summary-output"),
+    inferenceTabs: Array.from(document.querySelectorAll("[data-inference-view]")),
+    inferenceViews: Array.from(document.querySelectorAll(".schema-inference-results .infer-view")),
     fieldCount: document.getElementById("field-count"),
     addFieldButton: document.getElementById("add-field-button"),
     fieldTableBody: document.getElementById("field-table-body"),
     deleteFieldButton: document.getElementById("delete-field-button"),
+    columnOptionsCloseButton: document.getElementById("column-options-close-button"),
     fieldDetailSubtitle: document.getElementById("field-detail-subtitle"),
     fieldEditorEmpty: document.getElementById("field-editor-empty"),
     fieldEditor: document.getElementById("field-editor"),
@@ -71,6 +111,17 @@
     fieldDateFormatsInput: document.getElementById("field-date-formats-input"),
     fieldDatetimeFormatsInput: document.getElementById("field-datetime-formats-input"),
     typeSpecificOptions: Array.from(document.querySelectorAll("[data-field-types]")),
+    csvPickerModal: document.getElementById("csv-picker-modal"),
+    csvPickerBackdrop: document.getElementById("csv-picker-backdrop"),
+    csvRefreshButton: document.getElementById("csv-refresh-button"),
+    csvPickerCloseButton: document.getElementById("csv-picker-close-button"),
+    csvPickerFilterInput: document.getElementById("csv-picker-filter-input"),
+    csvCurrentPath: document.getElementById("csv-current-path"),
+    csvUpButton: document.getElementById("csv-up-button"),
+    csvDirectoryList: document.getElementById("csv-directory-list"),
+    csvFileSelect: document.getElementById("csv-file-select"),
+    csvPickerSelectionSummary: document.getElementById("csv-picker-selection-summary"),
+    csvPickerChooseButton: document.getElementById("csv-picker-choose-button"),
   };
 
   function init() {
@@ -110,9 +161,6 @@
         loadSelectedSchema();
       }
     });
-    els.loadButton.addEventListener("click", function () {
-      openSchemaPicker("load");
-    });
     els.pickerChooseButton.addEventListener("click", function () {
       if (state.pickerMode === "new") {
         createDraftFromPicker();
@@ -124,12 +172,54 @@
       }
       loadSelectedSchema();
     });
-    els.newButton.addEventListener("click", function () {
-      openSchemaPicker("new");
+    els.generateToggleButton.addEventListener("click", toggleInferencePanel);
+    els.inferenceResultToggleButton.addEventListener("click", toggleInferenceResult);
+    els.saveButton.addEventListener("click", function () {
+      saveToDefaultOrPicker(false);
     });
-    els.saveButton.addEventListener("click", openSavePicker);
+    els.saveCloseButton.addEventListener("click", function () {
+      saveToDefaultOrPicker(true);
+    });
+    els.csvRefreshButton.addEventListener("click", function () {
+      loadCSVFileList(state.csvCurrentPath);
+    });
+    els.csvPickerBackdrop.addEventListener("click", closeCSVPicker);
+    els.csvPickerCloseButton.addEventListener("click", closeCSVPicker);
+    els.csvPickerFilterInput.addEventListener("input", function () {
+      state.csvFilter = fileBrowser.normalizeFilter(els.csvPickerFilterInput.value);
+      renderCSVPicker();
+    });
+    els.csvUpButton.addEventListener("click", function () {
+      loadCSVFileList(state.csvParentPath || "");
+    });
+    els.csvFileSelect.addEventListener("change", function () {
+      state.csvPickerSelection = els.csvFileSelect.value || "";
+      renderCSVPicker();
+    });
+    els.csvFileSelect.addEventListener("dblclick", chooseCSVPickerSelection);
+    els.csvPickerChooseButton.addEventListener("click", chooseCSVPickerSelection);
+    els.sampleSizeInput.addEventListener("input", function () {
+      state.sampleSize = parseSampleSize();
+    });
+    els.strategyInput.addEventListener("change", function () {
+      state.strategy = els.strategyInput.value || "byte-spread";
+    });
+    els.keepSamplesInput.addEventListener("change", function () {
+      state.keepSamples = els.keepSamplesInput.checked;
+    });
+    els.writeParquetInput.addEventListener("change", function () {
+      state.writeSampleParquet = els.writeParquetInput.checked;
+    });
+    els.runInferenceButton.addEventListener("click", runInference);
+    els.inferenceTabs.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        state.inferenceView = tab.getAttribute("data-inference-view") || "fields";
+        renderInferenceTabs();
+      });
+    });
     els.addFieldButton.addEventListener("click", addField);
     els.deleteFieldButton.addEventListener("click", deleteActiveField);
+    els.columnOptionsCloseButton.addEventListener("click", closeColumnOptions);
     els.fieldAllowedAdd.addEventListener("click", addAllowedValueRowAndUpdate);
     els.fieldAllowedRows.addEventListener("input", updateActiveFieldFromForm);
     els.fieldAllowedRows.addEventListener("change", updateActiveFieldFromForm);
@@ -187,6 +277,8 @@
     const path = cleanRelativePath(params.get("path") || "");
     const draft = cleanRelativePath(params.get("draft") || "");
     state.selectedCSV = cleanRelativePath(params.get("csv") || "");
+    state.csvPickerSelection = state.selectedCSV;
+    state.inferenceMode = mode === "infer";
 
     if (path) {
       loadSchemaByPath(path);
@@ -207,6 +299,13 @@
       loadFileList("").then(function () {
         openSchemaPicker("load");
       });
+      return true;
+    } else if (mode === "infer") {
+      loadFileList("");
+      loadCSVFileList(state.selectedCSV ? dirName(state.selectedCSV) : "");
+      state.inferencePanelOpen = !state.schema.fields.length;
+      setMessage(state.selectedCSV ? "Ready to generate a schema from the selected CSV." : "Select a CSV, then generate a schema.", state.selectedCSV ? "info" : "warn");
+      render();
       return true;
     }
     return false;
@@ -250,6 +349,29 @@
     }
   }
 
+  async function loadCSVFileList(path) {
+    try {
+      const params = new URLSearchParams();
+      params.set("kind", "csv");
+      if (path) {
+        params.set("path", path);
+      }
+      const response = await fetch("/api/files?" + params.toString());
+      const payload = await parseJSON(response);
+      if (!response.ok) {
+        throw new Error(payload && payload.message ? payload.message : "Could not load CSV files");
+      }
+      state.csvCurrentPath = payload.current_path || "";
+      state.csvParentPath = payload.parent_path || "";
+      state.csvEntries = payload.entries || [];
+      renderCSVPicker();
+    } catch (error) {
+      state.csvEntries = [];
+      setMessage(error.message || "Could not load CSV files", "error");
+      render();
+    }
+  }
+
   async function loadSelectedSchema() {
     if (!state.selectedFile) {
       setMessage("Select a schema file first.", "warn");
@@ -265,6 +387,7 @@
       }
       state.schema = normalizeSchema(payload.schema || blankSchema);
       state.loadedPath = payload.relative_path || state.selectedFile;
+      state.generatedSchemaPath = "";
       state.activeIndex = state.schema.fields.length ? 0 : -1;
       state.dirty = false;
       setMessage("Schema loaded.", "ok");
@@ -295,6 +418,72 @@
     renderPicker();
   }
 
+  function toggleInferencePanel() {
+    if (!state.inferenceMode) {
+      return;
+    }
+    state.inferencePanelOpen = !state.inferencePanelOpen;
+    render();
+    if (state.inferencePanelOpen) {
+      focusInferenceSection();
+    }
+  }
+
+  function toggleInferenceResult() {
+    if (!state.inferenceResult) {
+      return;
+    }
+    state.inferenceResultOpen = !state.inferenceResultOpen;
+    render();
+  }
+
+  function openColumnOptions(index) {
+    ensureSchemaShape();
+    if (index < 0 || index >= state.schema.fields.length) {
+      return;
+    }
+    state.activeIndex = index;
+    state.columnOptionsOpen = true;
+    render();
+    focusActiveColumnOptions();
+  }
+
+  function closeColumnOptions() {
+    state.columnOptionsOpen = false;
+    render();
+  }
+
+  function openCSVPicker() {
+    state.csvPickerOpen = true;
+    state.csvPickerSelection = state.selectedCSV;
+    state.csvFilter = "";
+    if (!state.csvEntries.length) {
+      loadCSVFileList(state.selectedCSV ? dirName(state.selectedCSV) : state.csvCurrentPath);
+    }
+    renderCSVPicker();
+    window.requestAnimationFrame(function () {
+      els.csvPickerFilterInput.focus();
+    });
+  }
+
+  function closeCSVPicker() {
+    state.csvPickerOpen = false;
+    renderCSVPicker();
+  }
+
+  function chooseCSVPickerSelection() {
+    if (!state.csvPickerSelection) {
+      setMessage("Select a CSV file first.", "warn");
+      return;
+    }
+    state.selectedCSV = state.csvPickerSelection;
+    state.inferenceResult = null;
+    state.generatedSchemaPath = inferredSchemaPath();
+    closeCSVPicker();
+    setMessage("Selected " + state.selectedCSV + ".", "ok");
+    render();
+  }
+
   function filteredEntries(wantDirectory) {
     return fileBrowser.filteredEntries(state.entries, {
       filter: state.filter,
@@ -321,6 +510,23 @@
     focusWorkbench();
   }
 
+  function saveToDefaultOrPicker(closeAfter) {
+    ensureSchemaShape();
+    const localError = localSchemaError();
+    if (localError) {
+      setMessage(localError, "error");
+      render();
+      return;
+    }
+    const target = state.loadedPath || state.generatedSchemaPath;
+    if (target) {
+      saveSchema(target, closeAfter);
+      return;
+    }
+    state.pendingSaveAndClose = Boolean(closeAfter);
+    openSavePicker();
+  }
+
   function openSavePicker() {
     ensureSchemaShape();
     const localError = localSchemaError();
@@ -329,7 +535,7 @@
       render();
       return;
     }
-    const current = state.loadedPath || "new.schema.json";
+    const current = state.loadedPath || state.generatedSchemaPath || "new.schema.json";
     state.draftName = baseName(current) || "new.schema.json";
     state.selectedFile = current;
     const directory = dirName(current);
@@ -350,12 +556,13 @@
       setMessage("Enter only the schema filename; choose the folder in the picker.", "warn");
       return;
     }
-    saveSchema(path);
+    saveSchema(path, state.pendingSaveAndClose);
   }
 
   function newDraft(path) {
     state.schema = deepClone(blankSchema);
     state.loadedPath = path;
+    state.generatedSchemaPath = "";
     state.activeIndex = -1;
     state.dirty = true;
     setMessage("Draft ready. Add a field, then save it to " + path + ".", "info");
@@ -372,6 +579,7 @@
       required: false,
     });
     state.activeIndex = state.schema.fields.length - 1;
+    state.columnOptionsOpen = true;
     state.dirty = true;
     setMessage("", "");
     render();
@@ -385,6 +593,7 @@
     state.schema.fields.splice(state.activeIndex, 1);
     if (state.schema.fields.length === 0) {
       state.activeIndex = -1;
+      state.columnOptionsOpen = false;
     } else {
       state.activeIndex = Math.min(state.activeIndex, state.schema.fields.length - 1);
     }
@@ -393,7 +602,66 @@
     render();
   }
 
-  async function saveSchema(path) {
+  async function runInference() {
+    if (!state.selectedCSV) {
+      setMessage("Select a CSV in the wizard first, then open Generate Schema again.", "warn");
+      renderMessage();
+      return;
+    }
+    const sampleSize = parseSampleSize();
+    if (!Number.isFinite(sampleSize) || sampleSize < 1) {
+      setMessage("Sample size must be at least 1.", "warn");
+      return;
+    }
+
+    state.sampleSize = sampleSize;
+    state.strategy = els.strategyInput.value || "byte-spread";
+    state.keepSamples = els.keepSamplesInput.checked;
+    state.writeSampleParquet = els.writeParquetInput.checked;
+    state.inferenceBusy = true;
+    setMessage("Generating schema.", "info");
+    renderInferenceControls();
+    renderMessage();
+
+    try {
+      const response = await fetch("/api/schema/infer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          csv_path: state.selectedCSV,
+          sample_size: state.sampleSize,
+          strategy: state.strategy,
+          keep_samples: state.keepSamples,
+          write_sample_parquet: state.writeSampleParquet,
+        }),
+      });
+      const payload = await parseJSON(response);
+      if (!response.ok) {
+        throw new Error(payload && payload.message ? payload.message : "Schema inference failed");
+      }
+      state.inferenceResult = payload;
+      state.schema = normalizeSchema(payload && payload.inference ? payload.inference.schema : blankSchema);
+      state.loadedPath = "";
+      state.generatedSchemaPath = inferredSchemaPath();
+      state.activeIndex = -1;
+      state.columnOptionsOpen = false;
+      state.dirty = true;
+      state.inferenceView = "fields";
+      state.inferencePanelOpen = false;
+      state.inferenceResultOpen = false;
+      setMessage("Schema generated. Review fields, edit options, then save.", "ok");
+      render();
+      focusActiveColumnOptions();
+    } catch (error) {
+      setMessage(error.message || "Schema inference failed", "error");
+      render();
+    } finally {
+      state.inferenceBusy = false;
+      renderInferenceControls();
+    }
+  }
+
+  async function saveSchema(path, closeAfter) {
     ensureSchemaShape();
     const localError = localSchemaError();
     if (localError) {
@@ -418,10 +686,12 @@
       }
       state.schema = normalizeSchema(payload.schema || state.schema);
       state.loadedPath = payload.relative_path || path;
+      state.generatedSchemaPath = "";
       state.dirty = false;
+      state.pendingSaveAndClose = false;
       closeSchemaPicker();
       await loadFileList(state.currentPath);
-      notifySchemaSaved(state.loadedPath);
+      notifySchemaSaved(state.loadedPath, closeAfter);
       setMessage("Schema saved.", "ok");
       render();
       focusWorkbench();
@@ -521,6 +791,10 @@
 
   function render() {
     renderPicker();
+    renderCSVPicker();
+    renderInferenceControls();
+    renderInferenceResult();
+    renderInferenceTabs();
     renderMeta();
     renderFieldTable();
     renderFieldEditor();
@@ -575,35 +849,164 @@
     els.pickerChooseButton.disabled = !state.selectedFile;
   }
 
+  function renderCSVPicker() {
+    els.csvPickerModal.hidden = !state.csvPickerOpen;
+    els.csvPickerFilterInput.value = state.csvFilter;
+
+    const directories = fileBrowser.filteredEntries(state.csvEntries, {
+      filter: state.csvFilter,
+      wantDirectory: true,
+    });
+    const files = fileBrowser.filteredEntries(state.csvEntries, {
+      filter: state.csvFilter,
+      wantDirectory: false,
+    });
+
+    els.csvCurrentPath.textContent = "/" + (state.csvCurrentPath || "");
+    els.csvUpButton.disabled = !state.csvCurrentPath && !state.csvParentPath;
+    fileBrowser.renderDirectoryList(els.csvDirectoryList, directories, {
+      onChoose: loadCSVFileList,
+    });
+    fileBrowser.populateSelect(els.csvFileSelect, files, {
+      selectedValue: state.csvPickerSelection,
+      clearWhenEmptySelection: true,
+      emptyText: fileBrowser.hasFileEntries(state.csvEntries) ? "No CSV files match the current filter" : "No CSV files in this directory",
+      textFor: function (entry) {
+        return entry.relative_path + (entry.size_bytes ? " (" + formatBytes(entry.size_bytes) + ")" : "");
+      },
+    });
+    els.csvPickerSelectionSummary.textContent = state.csvPickerSelection ? "Selected: " + state.csvPickerSelection : "No file selected.";
+    els.csvPickerChooseButton.disabled = !state.csvPickerSelection;
+  }
+
+  function renderInferenceControls() {
+    els.generateToggleButton.hidden = !state.inferenceMode;
+    els.generateToggleButton.setAttribute("aria-expanded", state.inferencePanelOpen ? "true" : "false");
+    els.generateToggleButton.textContent = state.inferencePanelOpen ? "Hide Generator" : "Generate Schema";
+    els.inferenceResultToggleButton.hidden = !state.inferenceMode || !state.inferenceResult;
+    els.inferenceResultToggleButton.setAttribute("aria-expanded", state.inferenceResultOpen ? "true" : "false");
+    els.inferenceResultToggleButton.textContent = state.inferenceResultOpen ? "Hide Result" : "Inference Result";
+    els.inferenceSection.hidden = !state.inferenceMode || !state.inferencePanelOpen;
+    els.inferenceResults.hidden = !state.inferenceMode || !state.inferenceResult || !state.inferenceResultOpen;
+    els.csvSelectionSummary.textContent = state.selectedCSV ? "Selected CSV: " + state.selectedCSV : "No CSV selected.";
+    els.sampleSizeInput.value = String(state.sampleSize || 100);
+    els.strategyInput.value = state.strategy || "byte-spread";
+    els.keepSamplesInput.checked = Boolean(state.keepSamples);
+    els.writeParquetInput.checked = Boolean(state.writeSampleParquet);
+    els.runInferenceButton.disabled = state.inferenceBusy;
+    els.runInferenceButton.textContent = state.inferenceBusy ? "Generating" : "Generate Schema";
+  }
+
+  function renderInferenceResult() {
+    const response = state.inferenceResult;
+    const inference = response && response.inference;
+    if (!inference) {
+      els.inferenceResultNote.textContent = "Run inference to see detected fields.";
+      els.durationBadge.textContent = "Not run";
+      els.durationBadge.className = "badge badge--muted";
+      els.sampledRowsValue.textContent = "-";
+      els.fileSizeValue.textContent = "-";
+      els.sampleParquetValue.textContent = "-";
+      els.generatedSchemaPathValue.textContent = state.generatedSchemaPath || "-";
+      els.samplesOutput.textContent = "No retained samples yet.";
+      els.warningsList.innerHTML = "<li>No warnings yet.</li>";
+      els.inferenceSummaryOutput.textContent = "{}";
+      return;
+    }
+
+    els.inferenceResultNote.textContent = (response.csv_relative_path || state.selectedCSV) + " using " + (inference.strategy || state.strategy);
+    els.durationBadge.textContent = String(inference.duration_millis || 0) + " ms";
+    els.durationBadge.className = "badge badge--ok";
+    els.sampledRowsValue.textContent = String(inference.sampled_rows || 0);
+    els.fileSizeValue.textContent = formatBytes(inference.file_size_bytes || 0);
+    els.sampleParquetValue.textContent = response.sample_parquet_relative_path || "-";
+    els.generatedSchemaPathValue.textContent = state.loadedPath || state.generatedSchemaPath || "-";
+    renderSamples(inference.samples || []);
+    renderWarnings(inference.warnings || []);
+    els.inferenceSummaryOutput.textContent = JSON.stringify({
+      csv_relative_path: response.csv_relative_path || "",
+      sample_parquet_relative_path: response.sample_parquet_relative_path || "",
+      sampled_rows: inference.sampled_rows || 0,
+      file_size_bytes: inference.file_size_bytes || 0,
+      duration_millis: inference.duration_millis || 0,
+      strategy: inference.strategy || "",
+      fields: inference.fields || [],
+    }, null, 2);
+  }
+
+  function renderInferenceTabs() {
+    els.inferenceTabs.forEach(function (tab) {
+      const active = tab.getAttribute("data-inference-view") === state.inferenceView;
+      tab.classList.toggle("infer-tab--active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    els.inferenceViews.forEach(function (view) {
+      view.classList.toggle("infer-view--active", view.id === "inference-" + state.inferenceView + "-view");
+    });
+  }
+
+  function renderSamples(samples) {
+    if (!samples.length) {
+      els.samplesOutput.textContent = "No retained samples in this result.";
+      return;
+    }
+    els.samplesOutput.innerHTML = samples.map(function (sample) {
+      const values = sample.values || {};
+      const pairs = Object.keys(values).map(function (key) {
+        return "<dt>" + escapeHTML(key) + "</dt><dd>" + escapeHTML(values[key]) + "</dd>";
+      }).join("");
+      return "<article class=\"sample-row\"><header>Sample " + escapeHTML(sample.sample_index) + "<span>byte " + escapeHTML(sample.offset_end) + "</span></header><dl>" + pairs + "</dl></article>";
+    }).join("");
+  }
+
+  function renderWarnings(warnings) {
+    if (!warnings.length) {
+      els.warningsList.innerHTML = "<li>No warnings.</li>";
+      return;
+    }
+    els.warningsList.innerHTML = warnings.map(function (warning) {
+      return "<li>" + escapeHTML(warning) + "</li>";
+    }).join("");
+  }
+
   function renderMeta() {
     const count = state.schema.fields.length;
-    els.workbench.classList.toggle("schema-workbench--ready", Boolean(state.loadedPath));
+    const editable = canEditSchema();
+    els.workbench.classList.toggle("schema-workbench--ready", editable);
+    els.workbench.classList.toggle("schema-workbench--infer", state.inferenceMode);
+    els.workbench.classList.toggle("schema-workbench--has-inference-result", false);
+    els.workbench.classList.toggle("schema-workbench--column-options-open", Boolean(state.columnOptionsOpen));
     els.fieldCount.textContent = count + (count === 1 ? " field" : " fields");
-    els.addFieldButton.disabled = !state.loadedPath;
+    els.addFieldButton.disabled = !editable;
     els.saveButton.disabled = !state.schema.fields.length;
+    els.saveCloseButton.disabled = !state.schema.fields.length;
   }
 
   function renderFieldTable() {
     ensureSchemaShape();
     if (!state.schema.fields.length) {
-      const message = state.loadedPath ? "Add a field to begin this draft." : "Load or create a schema to begin.";
-      els.fieldTableBody.innerHTML = '<tr><td colspan="3">' + escapeHTML(message) + '</td></tr>';
+      const message = canEditSchema() ? "Add a field to begin this draft." : "Load, create, or generate a schema to begin.";
+      els.fieldTableBody.innerHTML = '<tr><td colspan="7">' + escapeHTML(message) + '</td></tr>';
       return;
     }
     els.fieldTableBody.innerHTML = state.schema.fields.map(function (field, index) {
       const active = index === state.activeIndex ? " field-row--active" : "";
+      const inference = inferredFieldForIndex(index);
       return [
         '<tr class="field-row' + active + '" data-index="' + index + '">',
         "<td><strong>" + escapeHTML(field.name || "Unnamed field") + "</strong><span>" + escapeHTML(field.parquet_name || "") + "</span></td>",
         "<td>" + escapeHTML(field.type || "string") + "</td>",
         "<td>" + (field.required ? "Yes" : "No") + "</td>",
+        "<td>" + escapeHTML(inference ? formatPercent(inference.confidence) : "-") + "</td>",
+        "<td>" + escapeHTML(inference && inference.blank_count !== undefined ? String(inference.blank_count || 0) : "-") + "</td>",
+        "<td>" + escapeHTML(inference && Array.isArray(inference.sample_values) && inference.sample_values.length ? inference.sample_values.slice(0, 4).join(", ") : "-") + "</td>",
+        "<td>" + escapeHTML(inference && Array.isArray(inference.candidate_types) && inference.candidate_types.length ? inference.candidate_types.join(", ") : "-") + "</td>",
         "</tr>",
       ].join("");
     }).join("");
     els.fieldTableBody.querySelectorAll("[data-index]").forEach(function (row) {
       row.addEventListener("click", function () {
-        state.activeIndex = Number(row.getAttribute("data-index"));
-        render();
+        openColumnOptions(Number(row.getAttribute("data-index")));
       });
     });
   }
@@ -611,14 +1014,15 @@
   function renderFieldEditor() {
     ensureSchemaShape();
     const field = state.schema.fields[state.activeIndex];
-    const hasField = Boolean(field);
+    const hasField = Boolean(field) && state.columnOptionsOpen;
     els.fieldEditor.hidden = !hasField;
     els.fieldEditorEmpty.hidden = hasField;
+    els.fieldEditor.closest(".schema-field-detail").hidden = !hasField;
     els.deleteFieldButton.disabled = !hasField;
 
     if (!hasField) {
-      els.fieldDetailSubtitle.textContent = state.loadedPath ? "Select a column to edit its rules." : "Load or create a schema first.";
-      els.fieldEditorEmpty.textContent = state.loadedPath ? "Select a field from the table, or add a new field." : "Load a schema file or create a draft to start editing.";
+      els.fieldDetailSubtitle.textContent = canEditSchema() ? "Select a column to edit its rules." : "Load, create, or generate a schema first.";
+      els.fieldEditorEmpty.textContent = canEditSchema() ? "Select a field from the table, or add a new field." : "Load a schema file, create a draft, or generate a schema to start editing.";
       return;
     }
 
@@ -874,6 +1278,49 @@
     return String(value);
   }
 
+  function parseSampleSize() {
+    const parsed = Number.parseInt(els.sampleSizeInput.value, 10);
+    return Number.isFinite(parsed) ? parsed : 100;
+  }
+
+  function canEditSchema() {
+    return Boolean(state.loadedPath || state.generatedSchemaPath || state.schema.fields.length);
+  }
+
+  function inferredFieldForIndex(index) {
+    const inference = state.inferenceResult && state.inferenceResult.inference;
+    const fields = inference && Array.isArray(inference.fields) ? inference.fields : [];
+    if (!fields.length) {
+      return null;
+    }
+    return fields[index] || null;
+  }
+
+  function fieldHintHTML(field) {
+    if (!field) {
+      return '<span class="field-hints">-</span>';
+    }
+    const hints = [];
+    if (field.confidence !== undefined) {
+      hints.push("confidence " + formatPercent(field.confidence));
+    }
+    if (field.blank_count !== undefined) {
+      hints.push("blank " + String(field.blank_count || 0));
+    }
+    if (Array.isArray(field.candidate_types) && field.candidate_types.length) {
+      hints.push("candidates " + field.candidate_types.join(", "));
+    }
+    if (Array.isArray(field.sample_values) && field.sample_values.length) {
+      hints.push("samples " + field.sample_values.slice(0, 3).join(", "));
+    }
+    if (!hints.length) {
+      return '<span class="field-hints">-</span>';
+    }
+    return '<div class="field-hints">' + hints.map(function (hint) {
+      return "<span>" + escapeHTML(hint) + "</span>";
+    }).join("") + "</div>";
+  }
+
   function draftRelativePath() {
     return fileBrowser.relativeDraftPath(state.currentPath, state.draftName, "json");
   }
@@ -894,24 +1341,67 @@
     return fileBrowser.cleanRelativePath(path);
   }
 
-  function notifySchemaSaved(path) {
+  function inferredSchemaPath() {
+    const csvPath = cleanRelativePath(state.selectedCSV);
+    if (!csvPath) {
+      return "";
+    }
+    const dir = dirName(csvPath);
+    const file = baseName(csvPath).replace(/\.csv$/i, "") || "inferred";
+    const schemaName = file + ".inferred.schema.json";
+    return dir ? dir + "/" + schemaName : schemaName;
+  }
+
+  function formatBytes(bytes) {
+    const n = Number(bytes || 0);
+    if (n < 1024) {
+      return String(n) + " B";
+    }
+    const units = ["KB", "MB", "GB", "TB"];
+    let value = n / 1024;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex++;
+    }
+    return value.toFixed(value >= 10 ? 1 : 2) + " " + units[unitIndex];
+  }
+
+  function formatPercent(value) {
+    const n = Number(value || 0);
+    return Math.round(n * 100) + "%";
+  }
+
+  function notifySchemaSaved(path, closeAfter) {
     const relativePath = cleanRelativePath(path);
     if (!relativePath) {
       return;
     }
-    const payload = JSON.stringify({
+    const payload = {
       path: relativePath,
       saved_at: Date.now(),
-    });
+    };
     try {
-      window.localStorage.setItem(schemaEditorStorageKey, payload);
+      window.localStorage.setItem(schemaEditorStorageKey, JSON.stringify(payload));
     } catch (error) {
-      return;
+      // Continue with postMessage if localStorage is unavailable.
     }
     try {
-      window.dispatchEvent(new CustomEvent("gvy:schema-saved", { detail: JSON.parse(payload) }));
+      window.dispatchEvent(new CustomEvent("gvy:schema-saved", { detail: payload }));
     } catch (error) {
-      return;
+      // Parent frame notification below is the primary embedded path.
+    }
+    if (window.parent && window.parent !== window) {
+      try {
+        window.parent.postMessage({
+          type: closeAfter ? "gvy:schema-saved-and-close" : "gvy:schema-saved",
+          path: relativePath,
+          saved_at: payload.saved_at,
+          advance: Boolean(closeAfter),
+        }, window.location.origin);
+      } catch (error) {
+        // localStorage remains as a fallback.
+      }
     }
   }
 
@@ -924,6 +1414,25 @@
       }
       if (els.workbench) {
         els.workbench.focus({ preventScroll: false });
+      }
+    }, 0);
+  }
+
+  function focusInferenceSection() {
+    window.setTimeout(function () {
+      if (els.inferenceSection) {
+        els.inferenceSection.scrollIntoView({ block: "start" });
+      }
+      if (els.runInferenceButton) {
+        els.runInferenceButton.focus({ preventScroll: true });
+      }
+    }, 0);
+  }
+
+  function focusActiveColumnOptions() {
+    window.setTimeout(function () {
+      if (!els.fieldEditor.hidden) {
+        els.fieldNameInput.focus({ preventScroll: false });
       }
     }, 0);
   }

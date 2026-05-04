@@ -30,19 +30,115 @@
         <section id="schema-workbench" class="panel schema-workbench" aria-label="Schema editor" tabindex="-1">
           <div class="schema-workflow" aria-label="Schema file actions">
             <div class="schema-workflow__left">
-              <button id="load-button" class="button button--primary" type="button">Load</button>
-              <button id="new-button" class="button button--secondary" type="button">New</button>
+              <button id="generate-toggle-button" class="button button--primary" type="button" aria-expanded="false" aria-controls="inference-section">Generate Schema</button>
+              <button id="inference-result-toggle-button" class="button button--secondary" type="button" aria-expanded="false" aria-controls="inference-results" hidden>Inference Result</button>
             </div>
-            <button id="save-button" class="button button--primary schema-workflow__save" type="button">Save</button>
+            <div class="schema-workflow__right">
+              <button id="save-button" class="button button--primary" type="button">Save</button>
+              <button id="save-close-button" class="button button--secondary" type="button">Save and Close</button>
+            </div>
           </div>
 
           <p id="message" class="form-message schema-message" aria-live="polite"></p>
+
+          <section id="inference-section" class="schema-inference" aria-labelledby="inference-title" hidden>
+            <div class="schema-section-head">
+              <div>
+                <h3 id="inference-title">Generate Schema</h3>
+                <p id="csv-selection-summary">No CSV selected.</p>
+              </div>
+            </div>
+
+            <div class="schema-inference__controls">
+              <label class="field-control" for="sample-size-input">
+                <span>Sample size</span>
+                <input id="sample-size-input" type="number" min="1" step="1" value="100">
+              </label>
+
+              <label class="field-control" for="strategy-input">
+                <span>Strategy</span>
+                <select id="strategy-input">
+                  <option value="byte-spread">byte-spread</option>
+                  <option value="head">head</option>
+                </select>
+              </label>
+
+              <div class="toggle-row toggle-row--settings schema-inference__toggles">
+                <label class="toggle-control">
+                  <input id="keep-samples-input" type="checkbox" checked>
+                  <span>Keep samples</span>
+                </label>
+                <label class="toggle-control">
+                  <input id="write-parquet-input" type="checkbox" checked>
+                  <span>Write sample parquet</span>
+                </label>
+              </div>
+
+              <button id="run-inference-button" class="button button--primary" type="button">Generate Schema</button>
+            </div>
+          </section>
+
+          <section id="inference-results" class="schema-inference-results" aria-labelledby="inference-results-title" hidden>
+            <div class="schema-section-head">
+              <div>
+                <h3 id="inference-results-title">Inference Result</h3>
+                <p id="inference-result-note">Run inference to see detected fields.</p>
+              </div>
+              <span id="duration-badge" class="badge badge--muted">Not run</span>
+            </div>
+
+            <div class="schema-inference-summary">
+              <section class="schema-metric">
+                <span>Rows sampled</span>
+                <strong id="sampled-rows-value">-</strong>
+              </section>
+              <section class="schema-metric">
+                <span>File size</span>
+                <strong id="file-size-value">-</strong>
+              </section>
+              <section class="schema-metric">
+                <span>Sample parquet</span>
+                <strong id="sample-parquet-value">-</strong>
+              </section>
+              <section class="schema-metric">
+                <span>Proposed schema</span>
+                <strong id="generated-schema-path-value">-</strong>
+              </section>
+            </div>
+
+            <div class="infer-tabs" role="tablist" aria-label="Inference result views">
+              <button class="infer-tab infer-tab--active" type="button" data-inference-view="fields">Fields</button>
+              <button class="infer-tab" type="button" data-inference-view="samples">Samples</button>
+              <button class="infer-tab" type="button" data-inference-view="warnings">Warnings</button>
+              <button class="infer-tab" type="button" data-inference-view="summary">Summary</button>
+            </div>
+
+            <section id="inference-fields-view" class="infer-view infer-view--active">
+              <p class="schema-help">Use the Fields table below to choose a column, then edit it in Column Options.</p>
+            </section>
+
+            <section id="inference-samples-view" class="infer-view">
+              <h4>Sample rows</h4>
+              <div id="samples-output" class="samples-output">No retained samples yet.</div>
+            </section>
+
+            <section id="inference-warnings-view" class="infer-view">
+              <h4>Warnings</h4>
+              <ul id="warnings-list" class="warnings-list">
+                <li>No warnings yet.</li>
+              </ul>
+            </section>
+
+            <section id="inference-summary-view" class="infer-view">
+              <pre id="inference-summary-output" class="json-output">{}</pre>
+            </section>
+          </section>
 
           <div class="schema-editor-grid">
             <section class="schema-field-list" aria-labelledby="field-list-title">
               <div class="schema-section-head">
                 <div>
-                  <h3 id="field-list-title">Columns</h3>
+                  <h3 id="field-list-title">Fields</h3>
                   <p id="field-count">0 fields</p>
                 </div>
                 <button id="add-field-button" class="button button--secondary button--small" type="button">Add field</button>
@@ -55,11 +151,15 @@
                       <th>Name</th>
                       <th>Type</th>
                       <th>Required</th>
+                      <th>Confidence</th>
+                      <th>Blank</th>
+                      <th>Samples</th>
+                      <th>Candidates</th>
                     </tr>
                   </thead>
                   <tbody id="field-table-body">
                     <tr>
-                      <td colspan="3">Load or create a schema to begin.</td>
+                      <td colspan="7">Load or create a schema to begin.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -72,7 +172,10 @@
                   <h3 id="field-detail-title">Column options</h3>
                   <p id="field-detail-subtitle">Select a column to edit its rules.</p>
                 </div>
-                <button id="delete-field-button" class="button button--secondary button--small" type="button">Delete</button>
+                <div class="schema-section-actions">
+                  <button id="delete-field-button" class="button button--secondary button--small" type="button">Delete</button>
+                  <button id="column-options-close-button" class="button button--secondary button--small" type="button">Close</button>
+                </div>
               </div>
 
               <div id="field-editor-empty" class="schema-empty">
@@ -209,6 +312,41 @@
         <div class="picker-actions">
           <p id="picker-selection-summary" class="selection-summary">No file selected.</p>
           <button id="picker-choose-button" class="button button--primary" type="button">Use selected file</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="csv-picker-modal" class="picker-modal" hidden>
+      <div id="csv-picker-backdrop" class="picker-modal__backdrop"></div>
+      <section class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="csv-picker-title">
+        <div class="panel__head">
+          <div>
+            <p class="eyebrow">File Picker</p>
+            <h2 id="csv-picker-title">Select CSV</h2>
+            <p class="panel-note">Browse the working directory and choose one CSV file.</p>
+          </div>
+          <div class="schema-picker__head-actions">
+            <button id="csv-refresh-button" class="button button--secondary button--small" type="button">Refresh</button>
+            <button id="csv-picker-close-button" class="button button--secondary button--small" type="button">Close</button>
+          </div>
+        </div>
+
+        <label class="filter-field" for="csv-picker-filter-input">
+          <span>Filter files</span>
+          <input id="csv-picker-filter-input" type="search" placeholder="Filter by filename or folder" autocomplete="off">
+        </label>
+
+        <div class="browser-toolbar">
+          <code id="csv-current-path">/</code>
+          <button id="csv-up-button" class="button button--secondary button--small" type="button">Up</button>
+        </div>
+
+        <div id="csv-directory-list" class="directory-list" aria-live="polite"></div>
+        <select id="csv-file-select" class="file-select file-select--modal" size="12"></select>
+
+        <div class="picker-actions">
+          <p id="csv-picker-selection-summary" class="selection-summary">No file selected.</p>
+          <button id="csv-picker-choose-button" class="button button--primary" type="button">Use selected file</button>
         </div>
       </section>
     </div>
