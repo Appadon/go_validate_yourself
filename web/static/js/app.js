@@ -1451,8 +1451,9 @@
     } else {
       params.set("mode", "load");
     }
+    addSelectedCSVParam(params);
     state.schemaEditor.open = true;
-    els.schemaEditorFrame.src = "/schema-editor?" + params.toString();
+    els.schemaEditorFrame.src = "/schema-workbench?" + params.toString();
     renderSchemaEditorModal();
   }
 
@@ -1466,8 +1467,9 @@
     const params = new URLSearchParams();
     params.set("embed", "1");
     params.set("path", clean);
+    addSelectedCSVParam(params);
     state.schemaEditor.open = true;
-    els.schemaEditorFrame.src = "/schema-editor?" + params.toString();
+    els.schemaEditorFrame.src = "/schema-workbench?" + params.toString();
     renderSchemaEditorModal();
   }
 
@@ -1479,9 +1481,16 @@
     const params = new URLSearchParams();
     params.set("embed", "1");
     params.set("draft", clean);
+    addSelectedCSVParam(params);
     state.schemaEditor.open = true;
-    els.schemaEditorFrame.src = "/schema-editor?" + params.toString();
+    els.schemaEditorFrame.src = "/schema-workbench?" + params.toString();
     renderSchemaEditorModal();
+  }
+
+  function addSelectedCSVParam(params) {
+    if (state.selected.csv) {
+      params.set("csv", state.selected.csv);
+    }
   }
 
   function closeSchemaEditor() {

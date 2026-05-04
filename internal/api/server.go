@@ -262,6 +262,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 	mux.HandleFunc("/", server.handleUI)
 	mux.HandleFunc("/schema-infer", server.handleSchemaInferUI)
 	mux.HandleFunc("/schema-editor", server.handleSchemaEditorUI)
+	mux.HandleFunc("/schema-workbench", server.handleSchemaWorkbenchUI)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
 	mux.HandleFunc("/health", server.handleHealth)
 	mux.HandleFunc("/shutdown", server.handleShutdown)
@@ -309,6 +310,45 @@ func (s *Server) handleSchemaInferUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "schema_infer.html", uiPageData{
 		Title:             "GVY Schema Inference",
+		Version:           version,
+		ServerBusy:        health.Busy,
+		WorkingRoot:       s.workingRoot,
+		LatestRunID:       health.LatestRunID,
+		LatestRunState:    health.LatestRunState,
+		SchemaEditorEmbed: strings.TrimSpace(r.URL.Query().Get("embed")) == "1",
+		BootstrapJSON:     template.JS(bootstrap),
+	}); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_RENDER_FAILED", err.Error())
+		return
+	}
+}
+
+/* handleSchemaWorkbenchUI renders the combined schema editor workbench scaffold. */
+func (s *Server) handleSchemaWorkbenchUI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/schema-workbench" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	health := s.currentHealth()
+	bootstrap, err := json.Marshal(uiBootstrap{
+		Server:      health,
+		LatestRunID: health.LatestRunID,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_BOOTSTRAP_FAILED", err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "schema_workbench.html", uiPageData{
+		Title:             "GVY Schema Editor",
 		Version:           version,
 		ServerBusy:        health.Busy,
 		WorkingRoot:       s.workingRoot,

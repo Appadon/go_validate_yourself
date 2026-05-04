@@ -355,6 +355,26 @@ func TestHandleSchemaEditorUIRendersWorkingRootPage(t *testing.T) {
 	}
 }
 
+func TestHandleSchemaWorkbenchUIRendersWorkingRootPage(t *testing.T) {
+	server := newSelectionTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/schema-workbench", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleSchemaWorkbenchUI(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "Schema Editor") {
+		t.Fatalf("body missing schema editor heading: %s", body)
+	}
+	if !strings.Contains(body, server.workingRoot) {
+		t.Fatalf("body missing working root %q: %s", server.workingRoot, body)
+	}
+}
+
 func TestHandleSchemaInferUIRendersWorkingRootPage(t *testing.T) {
 	server := newSelectionTestServer(t)
 	request := httptest.NewRequest(http.MethodGet, "/schema-infer", nil)
