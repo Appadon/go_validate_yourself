@@ -41,6 +41,7 @@
               <span>Error directory</span>
               <input id="error-report-path-input" type="text" autocomplete="off" placeholder="errors">
             </label>
+            <button id="error-report-browse-button" class="button button--secondary" type="button">Browse</button>
             <label class="field-control" for="error-report-query-input">
               <span>Search</span>
               <input id="error-report-query-input" type="search" autocomplete="off" placeholder="Message, row value, or file">
@@ -58,9 +59,56 @@
       </main>
     </div>
 
+    <div id="error-dir-picker-modal" class="picker-modal" hidden>
+      <div id="error-dir-picker-backdrop" class="picker-modal__backdrop"></div>
+      <section class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="error-dir-picker-title">
+        <div class="panel__head">
+          <div>
+            <p class="eyebrow">Browse</p>
+            <h2 id="error-dir-picker-title">Select Error Directory</h2>
+            <p class="panel-note">Choose a directory that contains existing error Parquet files.</p>
+          </div>
+          <button id="error-dir-picker-close-button" class="button button--secondary button--small" type="button">Close</button>
+        </div>
+
+        <label class="filter-field" for="error-dir-picker-filter-input">
+          <span>Filter</span>
+          <input id="error-dir-picker-filter-input" type="search" placeholder="Filter by folder" autocomplete="off">
+        </label>
+
+        <div class="picker-path-row">
+          <code id="error-dir-picker-path-value">/</code>
+          <button id="error-dir-picker-up-button" class="button button--secondary button--small" type="button">Up</button>
+        </div>
+
+        <div id="error-dir-picker-directories" class="directory-list" aria-live="polite"></div>
+        <select id="error-dir-picker-select" class="file-select file-select--modal" size="10"></select>
+
+        <div class="picker-actions">
+          <p id="error-dir-picker-selection-summary" class="selection-summary">No directory selected.</p>
+          <button id="error-dir-picker-current-button" class="button button--secondary" type="button">Use current directory</button>
+          <button id="error-dir-picker-choose-button" class="button button--primary" type="button">Use selected directory</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="error-file-modal" class="picker-modal" hidden>
+      <div id="error-file-backdrop" class="picker-modal__backdrop"></div>
+      <section class="error-file-panel" role="dialog" aria-modal="true" aria-labelledby="error-file-title">
+        <div class="error-file-panel__head">
+          <div>
+            <h2 id="error-file-title">Error File</h2>
+          </div>
+          <button id="error-file-close-button" class="button button--secondary button--small" type="button">Close</button>
+        </div>
+        <div id="error-file-content" class="error-file-content"></div>
+      </section>
+    </div>
+
     <script>
       window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
     </script>
+    <script src="/static/js/file_browser.js?v={{.Version}}-error-explorer" defer></script>
     <script src="/static/js/error_explorer.js?v={{.Version}}-error-explorer" defer></script>
   </body>
 </html>

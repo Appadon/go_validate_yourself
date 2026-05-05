@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	gvyconfig "go_validate_yourself/internal/config"
+	"go_validate_yourself/internal/errorstore"
 	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/runs"
 	"go_validate_yourself/internal/schemaeditor"
@@ -208,7 +208,7 @@ type SchemaInferResponse struct {
 	Inference                 schemainfer.Result `json:"inference"`
 }
 
-/* ErrorReportResponse summarizes validation error CSVs without returning full files. */
+/* ErrorReportResponse summarizes validation error Parquet files without returning full files. */
 type ErrorReportResponse struct {
 	OK           bool                 `json:"ok"`
 	ErrorDir     string               `json:"error_dir"`
@@ -251,7 +251,7 @@ type ErrorReportIssue struct {
 	Samples []ErrorReportSample `json:"samples"`
 }
 
-/* ErrorReportSample is one bounded row sample from an error CSV. */
+/* ErrorReportSample is one bounded row sample from an error Parquet file. */
 type ErrorReportSample struct {
 	File        string              `json:"file"`
 	RowNumber   string              `json:"row_number"`
@@ -788,7 +788,7 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	ext := extForKind(kind)
 	if ext == "" {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_KIND", "kind must be csv or schema")
+		writeAPIError(w, http.StatusBadRequest, "INVALID_KIND", "kind must be csv, parquet, or schema")
 		return
 	}
 
@@ -807,7 +807,7 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-/* handleErrorReport summarizes validation error CSVs under a working-root directory. */
+/* handleErrorReport summarizes validation error Parquet files under a working-root directory. */
 func (s *Server) handleErrorReport(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoopback(w, r) {
 		return
@@ -1871,7 +1871,7 @@ type errorIssueAggregate struct {
 	issue ErrorReportIssue
 }
 
-/* buildErrorReport streams error CSVs once and returns bounded aggregates and samples. */
+/* buildErrorReport streams error Parquet files once and returns bounded aggregates and samples. */
 func buildErrorReport(errorDir, relativePath string, opts ErrorReportOptions) (ErrorReportResponse, error) {
 	limit := opts.Limit
 	if limit <= 0 {
@@ -1897,7 +1897,7 @@ func buildErrorReport(errorDir, relativePath string, opts ErrorReportOptions) (E
 			continue
 		}
 		name := item.Name()
-		if !strings.EqualFold(filepath.Ext(name), ".csv") || !strings.HasSuffix(strings.ToLower(name), "_error.csv") {
+		if !strings.EqualFold(filepath.Ext(name), ".parquet") || !strings.HasSuffix(strings.ToLower(name), "_error.parquet") {
 			continue
 		}
 		if fileFilter != "" && !strings.Contains(strings.ToLower(name), fileFilter) {
@@ -1923,17 +1923,9 @@ func buildErrorReport(errorDir, relativePath string, opts ErrorReportOptions) (E
 	for _, item := range files {
 		name := item.Name()
 		path := filepath.Join(errorDir, name)
-		file, err := os.Open(path)
+		fileMatched, fileScanned, err := scanErrorParquet(path, name, query, fieldFilter, offset, limit, &matchedRows, fieldCounts, messageCounts, issueCounts, &samples)
 		if err != nil {
 			return ErrorReportResponse{}, fmt.Errorf("%s: %w", name, err)
-		}
-		fileMatched, fileScanned, err := scanErrorCSV(file, name, query, fieldFilter, offset, limit, &matchedRows, fieldCounts, messageCounts, issueCounts, &samples)
-		closeErr := file.Close()
-		if err != nil {
-			return ErrorReportResponse{}, err
-		}
-		if closeErr != nil {
-			return ErrorReportResponse{}, closeErr
 		}
 		if fileScanned > 0 {
 			scannedFiles++
@@ -1965,53 +1957,34 @@ func buildErrorReport(errorDir, relativePath string, opts ErrorReportOptions) (E
 	}, nil
 }
 
-func scanErrorCSV(file *os.File, name, query, fieldFilter string, offset, limit int, matchedRows *int, fieldCounts map[string]int, messageCounts map[string]ErrorReportMessage, issueCounts map[string]*errorIssueAggregate, samples *[]ErrorReportSample) (int, int, error) {
-	reader := csv.NewReader(file)
-	reader.FieldsPerRecord = -1
-	header, err := reader.Read()
-	if errors.Is(err, io.EOF) {
-		return 0, 0, nil
-	}
-	if err != nil {
-		return 0, 0, fmt.Errorf("%s: read header: %w", name, err)
-	}
-
-	rowIndex := indexOfHeader(header, "__row_number")
-	errorIndex := indexOfHeader(header, "__errors")
-	if rowIndex < 0 || errorIndex < 0 {
-		return 0, 0, fmt.Errorf("%s: expected __row_number and __errors columns", name)
-	}
-
+func scanErrorParquet(path, name, query, fieldFilter string, offset, limit int, matchedRows *int, fieldCounts map[string]int, messageCounts map[string]ErrorReportMessage, issueCounts map[string]*errorIssueAggregate, samples *[]ErrorReportSample) (int, int, error) {
 	fileMatched := 0
 	fileScanned := 0
-	for {
-		record, err := reader.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return 0, 0, fmt.Errorf("%s: read row: %w", name, err)
-		}
+	err := errorstore.Scan(path, func(row errorstore.StoredErrorRow) error {
 		fileScanned++
 
-		errorsText := csvCell(record, errorIndex)
+		errorsText := row.Errors
 		parsed := parseErrorMessages(errorsText)
 		if fieldFilter != "" && !parsedErrorsContainField(parsed, fieldFilter) {
-			continue
+			return nil
 		}
-		if query != "" && !errorRecordContains(record, name, query) {
-			continue
+		if query != "" && !errorParquetRowContains(row, name, query) {
+			return nil
+		}
+		columns, err := errorstore.DecodeColumns(row)
+		if err != nil {
+			return fmt.Errorf("decode row values: %w", err)
 		}
 
 		*matchedRows = *matchedRows + 1
 		fileMatched++
 		sample := ErrorReportSample{
 			File:        name,
-			RowNumber:   csvCell(record, rowIndex),
+			RowNumber:   strconv.FormatInt(row.RowNumber, 10),
 			Errors:      truncateText(errorsText, 500),
 			ErrorFields: errorFieldNames(parsed),
-			Columns:     sampleRecordColumns(header, record, parsed),
-			Values:      sampleRecordValues(header, record),
+			Columns:     sampleStoredColumns(columns, parsed),
+			Values:      sampleStoredValues(columns),
 		}
 		for _, parsedError := range parsed {
 			field := parsedError.Field
@@ -2028,7 +2001,7 @@ func scanErrorCSV(file *os.File, name, query, fieldFilter string, offset, limit 
 			}
 			current.Count++
 			messageCounts[key] = current
-			issueValue := errorIssueValue(header, record, field)
+			issueValue := errorIssueValueFromColumns(columns, field)
 			issueKey := field + "\x00" + messagePattern + "\x00" + issueValue
 			aggregate := issueCounts[issueKey]
 			if aggregate == nil {
@@ -2049,9 +2022,13 @@ func scanErrorCSV(file *os.File, name, query, fieldFilter string, offset, limit 
 		}
 
 		if *matchedRows <= offset || len(*samples) >= limit {
-			continue
+			return nil
 		}
 		*samples = append(*samples, sample)
+		return nil
+	})
+	if err != nil {
+		return 0, 0, err
 	}
 
 	return fileMatched, fileScanned, nil
@@ -2095,16 +2072,14 @@ func normalizeErrorPattern(message string) string {
 	return quotedErrorValuePattern.ReplaceAllString(clean, "<value>")
 }
 
-func errorRecordContains(record []string, fileName, query string) bool {
+func errorParquetRowContains(row errorstore.StoredErrorRow, fileName, query string) bool {
 	if strings.Contains(strings.ToLower(fileName), query) {
 		return true
 	}
-	for _, cell := range record {
-		if strings.Contains(strings.ToLower(cell), query) {
-			return true
-		}
+	if strings.Contains(strings.ToLower(row.Errors), query) {
+		return true
 	}
-	return false
+	return strings.Contains(strings.ToLower(row.SearchText), query)
 }
 
 func errorFieldNames(parsed []parsedErrorMessage) []string {
@@ -2124,41 +2099,36 @@ func errorFieldNames(parsed []parsedErrorMessage) []string {
 	return fields
 }
 
-func errorIssueValue(header, record []string, field string) string {
-	index := indexOfHeader(header, field)
-	if index < 0 {
-		return ""
+func errorIssueValueFromColumns(columns []errorstore.RowColumn, field string) string {
+	for _, column := range columns {
+		if column.Name == field {
+			return column.Value
+		}
 	}
-	return csvCell(record, index)
+	return ""
 }
 
-func sampleRecordColumns(header, record []string, parsed []parsedErrorMessage) []ErrorReportColumn {
+func sampleStoredColumns(sourceColumns []errorstore.RowColumn, parsed []parsedErrorMessage) []ErrorReportColumn {
 	errorFields := make(map[string]struct{})
 	for _, field := range errorFieldNames(parsed) {
 		errorFields[field] = struct{}{}
 	}
-	columns := make([]ErrorReportColumn, 0, len(header))
-	for index, name := range header {
-		if name == "__row_number" || name == "__errors" {
-			continue
-		}
-		_, errored := errorFields[name]
+	columns := make([]ErrorReportColumn, 0, len(sourceColumns))
+	for _, sourceColumn := range sourceColumns {
+		_, errored := errorFields[sourceColumn.Name]
 		columns = append(columns, ErrorReportColumn{
-			Name:    name,
-			Value:   truncateText(csvCell(record, index), 300),
+			Name:    sourceColumn.Name,
+			Value:   truncateText(sourceColumn.Value, 300),
 			Errored: errored,
 		})
 	}
 	return columns
 }
 
-func sampleRecordValues(header, record []string) map[string]string {
+func sampleStoredValues(columns []errorstore.RowColumn) map[string]string {
 	values := make(map[string]string)
-	for index, name := range header {
-		if name == "__row_number" || name == "__errors" {
-			continue
-		}
-		values[name] = truncateText(csvCell(record, index), 160)
+	for _, column := range columns {
+		values[column.Name] = truncateText(column.Value, 160)
 	}
 	return values
 }
@@ -2224,22 +2194,6 @@ func topIssues(counts map[string]*errorIssueAggregate, limit int) []ErrorReportI
 		return issues[:limit]
 	}
 	return issues
-}
-
-func indexOfHeader(header []string, name string) int {
-	for index, value := range header {
-		if value == name {
-			return index
-		}
-	}
-	return -1
-}
-
-func csvCell(record []string, index int) string {
-	if index < 0 || index >= len(record) {
-		return ""
-	}
-	return record[index]
 }
 
 func truncateText(value string, limit int) string {
@@ -2539,6 +2493,8 @@ func extForKind(kind string) string {
 	switch kind {
 	case "csv":
 		return ".csv"
+	case "parquet":
+		return ".parquet"
 	case "schema":
 		return ".json"
 	default:

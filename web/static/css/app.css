@@ -909,6 +909,21 @@ body::before {
   margin-bottom: 0;
 }
 
+.picker-path-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.picker-path-row code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-select--modal {
   min-height: 8rem;
   height: clamp(8rem, 28dvh, 14rem);
@@ -1068,7 +1083,7 @@ body::before {
 
 .error-toolbar {
   display: grid;
-  grid-template-columns: minmax(14rem, 1.2fr) minmax(12rem, 1fr) minmax(10rem, 0.8fr) auto;
+  grid-template-columns: minmax(14rem, 1.2fr) auto minmax(12rem, 1fr) minmax(10rem, 0.8fr) auto;
   align-items: end;
   gap: 0.7rem;
 }

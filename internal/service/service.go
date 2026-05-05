@@ -80,10 +80,10 @@ type AutoOptions struct {
 
 /* ValidationResult captures outputs for one validated file. */
 type ValidationResult struct {
-	InputPath    string          `json:"input_path"`
-	ParquetPath  string          `json:"parquet_path"`
-	ErrorCSVPath string          `json:"error_csv_path"`
-	Stats        validator.Stats `json:"stats"`
+	InputPath   string          `json:"input_path"`
+	ParquetPath string          `json:"parquet_path"`
+	ErrorPath   string          `json:"error_path"`
+	Stats       validator.Stats `json:"stats"`
 }
 
 /* DirectoryValidationResult captures outputs for directory validation. */
@@ -283,8 +283,8 @@ func runValidateFilePhase(ctx context.Context, opts ValidateOptions, emitter pro
 		"write_empty_error": opts.WriteEmptyError,
 	})
 
-	parquetPath, errorCSVPath := validator.OutputPaths(opts.InputCSV, opts.SuccessDir, opts.ErrorDir)
-	stats, err := validator.RunValidationAndWriteParquet(ctx, opts.InputCSV, parquetPath, errorCSVPath, schema, opts.WriteEmptyError)
+	parquetPath, errorPath := validator.OutputPaths(opts.InputCSV, opts.SuccessDir, opts.ErrorDir)
+	stats, err := validator.RunValidationAndWriteParquet(ctx, opts.InputCSV, parquetPath, errorPath, schema, opts.WriteEmptyError)
 	if err != nil {
 		emitter.Failed(progress.PhaseValidate, fmt.Sprintf("single-file validation failed: %v", err), map[string]any{
 			"input_path": opts.InputCSV,
@@ -297,11 +297,11 @@ func runValidateFilePhase(ctx context.Context, opts ValidateOptions, emitter pro
 		stats.ValidRows,
 		stats.InvalidRows,
 		parquetPath,
-		errorCSVPath,
+		errorPath,
 	), map[string]any{
 		"input_path":      opts.InputCSV,
 		"parquet_path":    parquetPath,
-		"error_csv_path":  errorCSVPath,
+		"error_path":      errorPath,
 		"total_rows":      stats.TotalRows,
 		"valid_rows":      stats.ValidRows,
 		"invalid_rows":    stats.InvalidRows,
@@ -309,10 +309,10 @@ func runValidateFilePhase(ctx context.Context, opts ValidateOptions, emitter pro
 	})
 
 	return ValidationResult{
-		InputPath:    opts.InputCSV,
-		ParquetPath:  parquetPath,
-		ErrorCSVPath: errorCSVPath,
-		Stats:        stats,
+		InputPath:   opts.InputCSV,
+		ParquetPath: parquetPath,
+		ErrorPath:   errorPath,
+		Stats:       stats,
 	}, nil
 }
 

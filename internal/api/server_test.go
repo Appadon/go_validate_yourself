@@ -15,6 +15,7 @@ import (
 	"time"
 
 	gvyconfig "go_validate_yourself/internal/config"
+	"go_validate_yourself/internal/errorstore"
 	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/runs"
 	"go_validate_yourself/internal/schemaeditor"
@@ -219,20 +220,30 @@ func TestHandleConfigResolveRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-func TestHandleErrorReportSummarizesErrorCSVs(t *testing.T) {
+func TestHandleErrorReportSummarizesErrorParquet(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
 	if err := os.MkdirAll("errors", 0o755); err != nil {
 		t.Fatalf("mkdir errors: %v", err)
 	}
-	errorCSV := strings.Join([]string{
-		"__row_number,__errors,Policy Number,Name",
-		`2,"Policy Number: value is required | Name: min length 3",P-1,A`,
-		`3,"Policy Number: value is required",,Bob`,
-		"",
-	}, "\n")
-	if err := os.WriteFile(filepath.Join("errors", "policies_error.csv"), []byte(errorCSV), 0o644); err != nil {
-		t.Fatalf("write error csv: %v", err)
+	if err := errorstore.Write(filepath.Join("errors", "policies_error.parquet"), []string{"Policy Number", "Name"}, []errorstore.InvalidRow{
+		{
+			RowNumber: 2,
+			Record:    []string{"P-1", "A"},
+			Errors: []errorstore.FieldError{
+				{Field: "Policy Number", Message: "value is required"},
+				{Field: "Name", Message: "min length 3"},
+			},
+		},
+		{
+			RowNumber: 3,
+			Record:    []string{"", "Bob"},
+			Errors: []errorstore.FieldError{
+				{Field: "Policy Number", Message: "value is required"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write error parquet: %v", err)
 	}
 
 	server := NewServer("127.0.0.1", 8080, service.New())
@@ -275,14 +286,23 @@ func TestHandleErrorReportNormalizesQuotedMessageValues(t *testing.T) {
 	if err := os.MkdirAll("errors", 0o755); err != nil {
 		t.Fatalf("mkdir errors: %v", err)
 	}
-	errorCSV := strings.Join([]string{
-		"__row_number,__errors,ID",
-		`2,"ID: invalid float: ""ABC""",ABC`,
-		`3,"ID: invalid float: ""XYZ""",XYZ`,
-		"",
-	}, "\n")
-	if err := os.WriteFile(filepath.Join("errors", "ids_error.csv"), []byte(errorCSV), 0o644); err != nil {
-		t.Fatalf("write error csv: %v", err)
+	if err := errorstore.Write(filepath.Join("errors", "ids_error.parquet"), []string{"ID"}, []errorstore.InvalidRow{
+		{
+			RowNumber: 2,
+			Record:    []string{"ABC"},
+			Errors: []errorstore.FieldError{
+				{Field: "ID", Message: `invalid float: "ABC"`},
+			},
+		},
+		{
+			RowNumber: 3,
+			Record:    []string{"XYZ"},
+			Errors: []errorstore.FieldError{
+				{Field: "ID", Message: `invalid float: "XYZ"`},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write error parquet: %v", err)
 	}
 
 	server := NewServer("127.0.0.1", 8080, service.New())

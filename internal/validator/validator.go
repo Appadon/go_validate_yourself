@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go_validate_yourself/internal/errorstore"
 	"go_validate_yourself/internal/progress"
 
 	"github.com/xitongsys/parquet-go-source/local"
@@ -80,7 +81,7 @@ type ValidationError struct {
 	Msg   string
 }
 
-/* InvalidRow stores original data plus validation errors for error CSV output. */
+/* InvalidRow stores original data plus validation errors for error Parquet output. */
 type InvalidRow struct {
 	RowNum int
 	Record []string
@@ -191,7 +192,7 @@ func ValidateSchema(cfg *SchemaConfig) error {
 	return nil
 }
 
-/* RunValidationAndWriteParquet validates one CSV and writes parquet + error CSV outputs. */
+/* RunValidationAndWriteParquet validates one CSV and writes success and error Parquet outputs. */
 func RunValidationAndWriteParquet(ctx context.Context, input, successOutput, errorOutput string, schema SchemaConfig, writeEmptyError bool) (Stats, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -348,21 +349,23 @@ func validateAndWriteRows(ctx context.Context, reader *csv.Reader, headerIdx map
 /* finalizeErrorOutput writes error rows when needed or removes stale error outputs when none exist. */
 func finalizeErrorOutput(errorOutput string, header []string, invalidRows []InvalidRow, writeEmptyError bool) error {
 	if len(invalidRows) > 0 || writeEmptyError {
-		if err := writeErrorCSV(errorOutput, header, invalidRows); err != nil {
-			return fmt.Errorf("write errors csv: %w", err)
+		if err := writeErrorParquet(errorOutput, header, invalidRows); err != nil {
+			return fmt.Errorf("write errors parquet: %w", err)
 		}
+		removeLegacyErrorCSV(errorOutput)
 		return nil
 	}
 	if err := os.Remove(errorOutput); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove empty error csv: %w", err)
+		return fmt.Errorf("remove empty error parquet: %w", err)
 	}
+	removeLegacyErrorCSV(errorOutput)
 	return nil
 }
 
 /* OutputPaths returns parquet and error paths for one input file. */
 func OutputPaths(input, successDir, errorDir string) (string, string) {
 	base := baseNameWithoutExt(input)
-	return filepath.Join(successDir, base+".parquet"), filepath.Join(errorDir, base+"_error.csv")
+	return filepath.Join(successDir, base+".parquet"), filepath.Join(errorDir, base+"_error.parquet")
 }
 
 /* ListCSVFiles finds CSV files in a directory in stable sorted order. */
@@ -550,42 +553,32 @@ func printDirectoryFinalProgress(completed int64, total int, startedAt time.Time
 	})
 }
 
-/* writeErrorCSV persists invalid records and their error details to CSV. */
-func writeErrorCSV(path string, header []string, rows []InvalidRow) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
+/* writeErrorParquet persists invalid records and their error details to Parquet. */
+func writeErrorParquet(path string, header []string, rows []InvalidRow) error {
+	storedRows := make([]errorstore.InvalidRow, 0, len(rows))
+	for _, row := range rows {
+		storedRows = append(storedRows, errorstore.InvalidRow{
+			RowNumber: row.RowNum,
+			Record:    append([]string(nil), row.Record...),
+			Errors:    storedFieldErrors(row.Errs),
+		})
 	}
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	outHeader := append([]string{"__row_number", "__errors"}, header...)
-	if err := w.Write(outHeader); err != nil {
-		return err
-	}
-
-	for _, r := range rows {
-		rec := make([]string, len(header))
-		copy(rec, r.Record)
-		for i := len(r.Record); i < len(header); i++ {
-			rec[i] = ""
-		}
-		rec = append([]string{strconv.Itoa(r.RowNum), formatRowErrors(r.Errs)}, rec...)
-		if err := w.Write(rec); err != nil {
-			return err
-		}
-	}
-	w.Flush()
-	return w.Error()
+	return errorstore.Write(path, header, storedRows)
 }
 
-/* formatRowErrors joins field-level errors into one serialized message. */
-func formatRowErrors(errs []ValidationError) string {
-	parts := make([]string, 0, len(errs))
-	for _, e := range errs {
-		parts = append(parts, fmt.Sprintf("%s: %s", e.Field, e.Msg))
+func storedFieldErrors(errs []ValidationError) []errorstore.FieldError {
+	out := make([]errorstore.FieldError, 0, len(errs))
+	for _, err := range errs {
+		out = append(out, errorstore.FieldError{Field: err.Field, Message: err.Msg})
 	}
-	return strings.Join(parts, " | ")
+	return out
+}
+
+func removeLegacyErrorCSV(errorOutput string) {
+	if strings.EqualFold(filepath.Ext(errorOutput), ".parquet") {
+		legacyPath := strings.TrimSuffix(errorOutput, filepath.Ext(errorOutput)) + ".csv"
+		_ = os.Remove(legacyPath)
+	}
 }
 
 /* validateRow validates one CSV row and returns parquet-ready values or errors. */

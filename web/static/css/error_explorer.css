@@ -46,3 +46,81 @@ body {
   overflow: visible;
   padding-right: 0.2rem;
 }
+
+.error-file-panel {
+  position: relative;
+  z-index: 1;
+  width: min(1320px, 100%);
+  height: min(86dvh, 920px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.75rem;
+  padding: 1rem;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.98), rgba(11, 15, 24, 0.98));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.error-file-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.error-file-panel__head h2 {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-file-content {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 0.25rem;
+}
+
+.error-file-rows {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.error-file-row {
+  display: grid;
+  gap: 0.55rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.error-file-row__head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.error-file-row__message {
+  color: var(--muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.error-file-row .error-column-grid {
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+@media (max-width: 760px) {
+  .error-file-panel {
+    height: calc(100dvh - 1rem);
+    padding: 0.8rem;
+  }
+
+  .error-file-row__head {
+    grid-template-columns: 1fr;
+  }
+}

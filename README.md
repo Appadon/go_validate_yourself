@@ -373,14 +373,16 @@ For `input.csv`, validation writes:
 
 ```text
 success/input.parquet
-errors/input_error.csv
+errors/input_error.parquet
 ```
 
 Validation error files include:
 
 ```text
-__row_number,__errors,<original data columns...>
+__row_number,__errors,__error_fields,__row_values,__search_text
 ```
+
+`__row_values` stores the original row columns in order as JSON so the browser explorer can show samples without downloading full error files.
 
 Split writes one working file per key into `split/` by default. Rows with blank split keys are written to `missing_keys.csv` unless configured otherwise.
 
