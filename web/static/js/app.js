@@ -84,6 +84,9 @@
       draftName: "new.schema.json",
       selectedFile: "",
     },
+    errorExplorer: {
+      open: false,
+    },
     wizard: {
       activeStep: 0,
       maxStep: 4,
@@ -169,6 +172,11 @@
     progressFill: document.getElementById("progress-fill"),
     phaseTimeline: document.getElementById("phase-timeline"),
     summaryCards: document.getElementById("summary-cards"),
+    errorExplorerOpenButton: document.getElementById("error-explorer-open-button"),
+    errorExplorerModal: document.getElementById("error-explorer-modal"),
+    errorExplorerBackdrop: document.getElementById("error-explorer-backdrop"),
+    errorExplorerCloseButton: document.getElementById("error-explorer-close-button"),
+    errorExplorerFrame: document.getElementById("error-explorer-frame"),
     eventLog: document.getElementById("event-log"),
     pickerModal: document.getElementById("picker-modal"),
     pickerBackdrop: document.getElementById("picker-backdrop"),
@@ -244,6 +252,10 @@
       openPicker("batchDir");
     });
 
+    els.errorExplorerOpenButton.addEventListener("click", function () {
+      openErrorExplorer();
+    });
+
     configControlElements().forEach(function (control) {
       control.addEventListener("input", handleConfigControlChange);
       control.addEventListener("change", handleConfigControlChange);
@@ -307,6 +319,8 @@
     els.schemaInferBackdrop.addEventListener("click", closeSchemaInfer);
     els.schemaEditorCloseButton.addEventListener("click", closeSchemaEditor);
     els.schemaEditorBackdrop.addEventListener("click", closeSchemaEditor);
+    els.errorExplorerCloseButton.addEventListener("click", closeErrorExplorer);
+    els.errorExplorerBackdrop.addEventListener("click", closeErrorExplorer);
     els.schemaDraftBackdrop.addEventListener("click", closeSchemaDraftPicker);
     els.schemaDraftCloseButton.addEventListener("click", closeSchemaDraftPicker);
     els.schemaDraftNameInput.addEventListener("input", function () {
@@ -936,6 +950,7 @@
     updateSubmitState();
     renderPicker();
     renderSchemaEditorModal();
+    renderErrorExplorerModal();
     renderSchemaDraftPicker();
   }
 
@@ -1308,6 +1323,14 @@
     els.summaryCards.innerHTML = cards.join("");
   }
 
+  function currentErrorDir() {
+    const final = finalResultInfo();
+    const resolved = final.resolved || state.lastSubmittedResolved || state.preview.resolved;
+    const planDir = resolved && resolved.plan ? resolved.plan.validation_error_dir : "";
+    const outputDir = resolved && resolved.outputs ? resolved.outputs.error_dir : "";
+    return planDir || outputDir || els.errorDirInput.value || "errors";
+  }
+
   function renderEvents() {
     if (!state.events.length) {
       els.eventLog.innerHTML = '<li class="event-log__empty">Progress events will appear here once a validation starts.</li>';
@@ -1527,6 +1550,25 @@
 
   function renderSchemaEditorModal() {
     els.schemaEditorModal.hidden = !state.schemaEditor.open;
+  }
+
+  function openErrorExplorer() {
+    const params = new URLSearchParams();
+    params.set("embed", "1");
+    params.set("path", cleanRelativePath(currentErrorDir()));
+    state.errorExplorer.open = true;
+    els.errorExplorerFrame.src = "/error-explorer?" + params.toString();
+    renderErrorExplorerModal();
+  }
+
+  function closeErrorExplorer() {
+    state.errorExplorer.open = false;
+    els.errorExplorerFrame.removeAttribute("src");
+    renderErrorExplorerModal();
+  }
+
+  function renderErrorExplorerModal() {
+    els.errorExplorerModal.hidden = !state.errorExplorer.open;
   }
 
   function openSchemaDraftPicker() {

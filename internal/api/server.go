@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +32,10 @@ import (
 
 const version = "v2"
 const maxUploadBodyBytes = 64 << 20
+const defaultErrorReportLimit = 50
+const maxErrorReportLimit = 250
+
+var quotedErrorValuePattern = regexp.MustCompile(`"[^"]*"`)
 
 /* Server provides a localhost-only HTTP API around the workflow service. */
 type Server struct {
@@ -202,6 +208,56 @@ type SchemaInferResponse struct {
 	Inference                 schemainfer.Result `json:"inference"`
 }
 
+/* ErrorReportResponse summarizes validation error CSVs without returning full files. */
+type ErrorReportResponse struct {
+	OK           bool                 `json:"ok"`
+	ErrorDir     string               `json:"error_dir"`
+	RelativePath string               `json:"relative_path"`
+	FileCount    int                  `json:"file_count"`
+	ScannedFiles int                  `json:"scanned_files"`
+	ScannedRows  int                  `json:"scanned_rows"`
+	MatchedRows  int                  `json:"matched_rows"`
+	Limit        int                  `json:"limit"`
+	Offset       int                  `json:"offset"`
+	Query        string               `json:"query,omitempty"`
+	Field        string               `json:"field,omitempty"`
+	File         string               `json:"file,omitempty"`
+	Fields       []ErrorReportBucket  `json:"fields"`
+	Messages     []ErrorReportMessage `json:"messages"`
+	Files        []ErrorReportBucket  `json:"files"`
+	Samples      []ErrorReportSample  `json:"samples"`
+}
+
+/* ErrorReportBucket is a counted field or file group. */
+type ErrorReportBucket struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+/* ErrorReportMessage is a counted field/message pair. */
+type ErrorReportMessage struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+	Count   int    `json:"count"`
+}
+
+/* ErrorReportSample is one bounded row sample from an error CSV. */
+type ErrorReportSample struct {
+	File        string              `json:"file"`
+	RowNumber   string              `json:"row_number"`
+	Errors      string              `json:"errors"`
+	ErrorFields []string            `json:"error_fields"`
+	Columns     []ErrorReportColumn `json:"columns"`
+	Values      map[string]string   `json:"values"`
+}
+
+/* ErrorReportColumn preserves one original row column for ordered sample display. */
+type ErrorReportColumn struct {
+	Name    string `json:"name"`
+	Value   string `json:"value"`
+	Errored bool   `json:"errored"`
+}
+
 type uiPageData struct {
 	Title             string
 	Version           string
@@ -263,6 +319,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 	mux.HandleFunc("/schema-infer", server.handleSchemaInferUI)
 	mux.HandleFunc("/schema-editor", server.handleSchemaEditorUI)
 	mux.HandleFunc("/schema-workbench", server.handleSchemaWorkbenchUI)
+	mux.HandleFunc("/error-explorer", server.handleErrorExplorerUI)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
 	mux.HandleFunc("/health", server.handleHealth)
 	mux.HandleFunc("/shutdown", server.handleShutdown)
@@ -270,6 +327,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 	mux.HandleFunc("/api/config/defaults", server.handleConfigDefaults)
 	mux.HandleFunc("/api/config/resolve", server.handleConfigResolve)
 	mux.HandleFunc("/api/files", server.handleFileList)
+	mux.HandleFunc("/api/errors/report", server.handleErrorReport)
 	mux.HandleFunc("/api/schema/infer", server.handleSchemaInfer)
 	mux.HandleFunc("/api/schema", server.handleSchemaDocument)
 	mux.HandleFunc("/api/runs", server.handleRuns)
@@ -282,6 +340,45 @@ func NewServer(host string, port int, svc service.Service) *Server {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return server
+}
+
+/* handleErrorExplorerUI renders the validation error explorer proof of concept. */
+func (s *Server) handleErrorExplorerUI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/error-explorer" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	health := s.currentHealth()
+	bootstrap, err := json.Marshal(uiBootstrap{
+		Server:      health,
+		LatestRunID: health.LatestRunID,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_BOOTSTRAP_FAILED", err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "error_explorer.html", uiPageData{
+		Title:             "GVY Error Explorer",
+		Version:           version,
+		ServerBusy:        health.Busy,
+		WorkingRoot:       s.workingRoot,
+		LatestRunID:       health.LatestRunID,
+		LatestRunState:    health.LatestRunState,
+		SchemaEditorEmbed: strings.TrimSpace(r.URL.Query().Get("embed")) == "1",
+		BootstrapJSON:     template.JS(bootstrap),
+	}); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_RENDER_FAILED", err.Error())
+		return
+	}
 }
 
 /* handleSchemaInferUI renders the standalone schema inference proof of concept. */
@@ -698,6 +795,38 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 		ParentPath:  parentPath,
 		Entries:     entries,
 	})
+}
+
+/* handleErrorReport summarizes validation error CSVs under a working-root directory. */
+func (s *Server) handleErrorReport(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/api/errors/report" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	errorDir, relativePath, err := s.resolveSelectedDirectory(r.URL.Query().Get("path"), "path")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_ERROR_DIR", err.Error())
+		return
+	}
+	report, err := buildErrorReport(errorDir, relativePath, ErrorReportOptions{
+		Query:  strings.TrimSpace(r.URL.Query().Get("q")),
+		Field:  strings.TrimSpace(r.URL.Query().Get("field")),
+		File:   strings.TrimSpace(r.URL.Query().Get("file")),
+		Limit:  boundedQueryInt(r, "limit", defaultErrorReportLimit, 1, maxErrorReportLimit),
+		Offset: boundedQueryInt(r, "offset", 0, 0, 1_000_000),
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "ERROR_REPORT_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 /* handleSchemaDocument loads or saves a working-root-scoped schema document. */
@@ -1618,6 +1747,24 @@ func writeAPIError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
+func boundedQueryInt(r *http.Request, name string, fallback, minValue, maxValue int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
 /* validateAbsoluteCSVPath validates a required absolute CSV file path. */
 func validateAbsoluteCSVPath(path, field string) error {
 	return validateAbsoluteFilePath(path, field, ".csv")
@@ -1695,6 +1842,345 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+type ErrorReportOptions struct {
+	Query  string
+	Field  string
+	File   string
+	Limit  int
+	Offset int
+}
+
+type parsedErrorMessage struct {
+	Field   string
+	Message string
+}
+
+/* buildErrorReport streams error CSVs once and returns bounded aggregates and samples. */
+func buildErrorReport(errorDir, relativePath string, opts ErrorReportOptions) (ErrorReportResponse, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = defaultErrorReportLimit
+	}
+	if limit > maxErrorReportLimit {
+		limit = maxErrorReportLimit
+	}
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	items, err := os.ReadDir(errorDir)
+	if err != nil {
+		return ErrorReportResponse{}, err
+	}
+
+	files := make([]fs.DirEntry, 0, len(items))
+	fileFilter := strings.ToLower(strings.TrimSpace(opts.File))
+	for _, item := range items {
+		if item.IsDir() {
+			continue
+		}
+		name := item.Name()
+		if !strings.EqualFold(filepath.Ext(name), ".csv") || !strings.HasSuffix(strings.ToLower(name), "_error.csv") {
+			continue
+		}
+		if fileFilter != "" && !strings.Contains(strings.ToLower(name), fileFilter) {
+			continue
+		}
+		files = append(files, item)
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Name()) < strings.ToLower(files[j].Name())
+	})
+
+	fieldCounts := make(map[string]int)
+	messageCounts := make(map[string]ErrorReportMessage)
+	fileCounts := make(map[string]int)
+	samples := make([]ErrorReportSample, 0, limit)
+	query := strings.ToLower(strings.TrimSpace(opts.Query))
+	fieldFilter := strings.ToLower(strings.TrimSpace(opts.Field))
+	matchedRows := 0
+	scannedRows := 0
+	scannedFiles := 0
+
+	for _, item := range files {
+		name := item.Name()
+		path := filepath.Join(errorDir, name)
+		file, err := os.Open(path)
+		if err != nil {
+			return ErrorReportResponse{}, fmt.Errorf("%s: %w", name, err)
+		}
+		fileMatched, fileScanned, err := scanErrorCSV(file, name, query, fieldFilter, offset, limit, &matchedRows, fieldCounts, messageCounts, &samples)
+		closeErr := file.Close()
+		if err != nil {
+			return ErrorReportResponse{}, err
+		}
+		if closeErr != nil {
+			return ErrorReportResponse{}, closeErr
+		}
+		if fileScanned > 0 {
+			scannedFiles++
+			scannedRows += fileScanned
+		}
+		if fileMatched > 0 {
+			fileCounts[name] = fileCounts[name] + fileMatched
+		}
+	}
+
+	return ErrorReportResponse{
+		OK:           true,
+		ErrorDir:     errorDir,
+		RelativePath: filepath.ToSlash(relativePath),
+		FileCount:    len(files),
+		ScannedFiles: scannedFiles,
+		ScannedRows:  scannedRows,
+		MatchedRows:  matchedRows,
+		Limit:        limit,
+		Offset:       offset,
+		Query:        opts.Query,
+		Field:        opts.Field,
+		File:         opts.File,
+		Fields:       topBuckets(fieldCounts, 20),
+		Messages:     topMessages(messageCounts, 30),
+		Files:        topBuckets(fileCounts, 30),
+		Samples:      samples,
+	}, nil
+}
+
+func scanErrorCSV(file *os.File, name, query, fieldFilter string, offset, limit int, matchedRows *int, fieldCounts map[string]int, messageCounts map[string]ErrorReportMessage, samples *[]ErrorReportSample) (int, int, error) {
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	header, err := reader.Read()
+	if errors.Is(err, io.EOF) {
+		return 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: read header: %w", name, err)
+	}
+
+	rowIndex := indexOfHeader(header, "__row_number")
+	errorIndex := indexOfHeader(header, "__errors")
+	if rowIndex < 0 || errorIndex < 0 {
+		return 0, 0, fmt.Errorf("%s: expected __row_number and __errors columns", name)
+	}
+
+	fileMatched := 0
+	fileScanned := 0
+	for {
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return 0, 0, fmt.Errorf("%s: read row: %w", name, err)
+		}
+		fileScanned++
+
+		errorsText := csvCell(record, errorIndex)
+		parsed := parseErrorMessages(errorsText)
+		if fieldFilter != "" && !parsedErrorsContainField(parsed, fieldFilter) {
+			continue
+		}
+		if query != "" && !errorRecordContains(record, name, query) {
+			continue
+		}
+
+		*matchedRows = *matchedRows + 1
+		fileMatched++
+		for _, parsedError := range parsed {
+			field := parsedError.Field
+			if field == "" {
+				field = "Unspecified"
+			}
+			fieldCounts[field]++
+			messagePattern := normalizeErrorPattern(parsedError.Message)
+			key := field + "\x00" + messagePattern
+			current := messageCounts[key]
+			if current.Field == "" {
+				current.Field = field
+				current.Message = messagePattern
+			}
+			current.Count++
+			messageCounts[key] = current
+		}
+
+		if *matchedRows <= offset || len(*samples) >= limit {
+			continue
+		}
+		*samples = append(*samples, ErrorReportSample{
+			File:        name,
+			RowNumber:   csvCell(record, rowIndex),
+			Errors:      truncateText(errorsText, 500),
+			ErrorFields: errorFieldNames(parsed),
+			Columns:     sampleRecordColumns(header, record, parsed),
+			Values:      sampleRecordValues(header, record),
+		})
+	}
+
+	return fileMatched, fileScanned, nil
+}
+
+func parseErrorMessages(value string) []parsedErrorMessage {
+	parts := strings.Split(value, " | ")
+	parsed := make([]parsedErrorMessage, 0, len(parts))
+	for _, part := range parts {
+		clean := strings.TrimSpace(part)
+		if clean == "" {
+			continue
+		}
+		field, message, ok := strings.Cut(clean, ":")
+		if !ok {
+			parsed = append(parsed, parsedErrorMessage{Field: "Unspecified", Message: clean})
+			continue
+		}
+		parsed = append(parsed, parsedErrorMessage{
+			Field:   strings.TrimSpace(field),
+			Message: strings.TrimSpace(message),
+		})
+	}
+	return parsed
+}
+
+func parsedErrorsContainField(parsed []parsedErrorMessage, fieldFilter string) bool {
+	for _, item := range parsed {
+		if strings.Contains(strings.ToLower(item.Field), fieldFilter) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeErrorPattern(message string) string {
+	clean := strings.TrimSpace(message)
+	if clean == "" {
+		return "Validation error"
+	}
+	return quotedErrorValuePattern.ReplaceAllString(clean, "<value>")
+}
+
+func errorRecordContains(record []string, fileName, query string) bool {
+	if strings.Contains(strings.ToLower(fileName), query) {
+		return true
+	}
+	for _, cell := range record {
+		if strings.Contains(strings.ToLower(cell), query) {
+			return true
+		}
+	}
+	return false
+}
+
+func errorFieldNames(parsed []parsedErrorMessage) []string {
+	seen := make(map[string]struct{})
+	fields := make([]string, 0, len(parsed))
+	for _, item := range parsed {
+		field := strings.TrimSpace(item.Field)
+		if field == "" || field == "Unspecified" {
+			continue
+		}
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+func sampleRecordColumns(header, record []string, parsed []parsedErrorMessage) []ErrorReportColumn {
+	errorFields := make(map[string]struct{})
+	for _, field := range errorFieldNames(parsed) {
+		errorFields[field] = struct{}{}
+	}
+	columns := make([]ErrorReportColumn, 0, len(header))
+	for index, name := range header {
+		if name == "__row_number" || name == "__errors" {
+			continue
+		}
+		_, errored := errorFields[name]
+		columns = append(columns, ErrorReportColumn{
+			Name:    name,
+			Value:   truncateText(csvCell(record, index), 300),
+			Errored: errored,
+		})
+	}
+	return columns
+}
+
+func sampleRecordValues(header, record []string) map[string]string {
+	values := make(map[string]string)
+	for index, name := range header {
+		if name == "__row_number" || name == "__errors" {
+			continue
+		}
+		values[name] = truncateText(csvCell(record, index), 160)
+	}
+	return values
+}
+
+func topBuckets(counts map[string]int, limit int) []ErrorReportBucket {
+	buckets := make([]ErrorReportBucket, 0, len(counts))
+	for name, count := range counts {
+		buckets = append(buckets, ErrorReportBucket{Name: name, Count: count})
+	}
+	sort.Slice(buckets, func(i, j int) bool {
+		if buckets[i].Count != buckets[j].Count {
+			return buckets[i].Count > buckets[j].Count
+		}
+		return strings.ToLower(buckets[i].Name) < strings.ToLower(buckets[j].Name)
+	})
+	if len(buckets) > limit {
+		return buckets[:limit]
+	}
+	return buckets
+}
+
+func topMessages(counts map[string]ErrorReportMessage, limit int) []ErrorReportMessage {
+	messages := make([]ErrorReportMessage, 0, len(counts))
+	for _, message := range counts {
+		messages = append(messages, message)
+	}
+	sort.Slice(messages, func(i, j int) bool {
+		if messages[i].Count != messages[j].Count {
+			return messages[i].Count > messages[j].Count
+		}
+		if strings.ToLower(messages[i].Field) != strings.ToLower(messages[j].Field) {
+			return strings.ToLower(messages[i].Field) < strings.ToLower(messages[j].Field)
+		}
+		return strings.ToLower(messages[i].Message) < strings.ToLower(messages[j].Message)
+	})
+	if len(messages) > limit {
+		return messages[:limit]
+	}
+	return messages
+}
+
+func indexOfHeader(header []string, name string) int {
+	for index, value := range header {
+		if value == name {
+			return index
+		}
+	}
+	return -1
+}
+
+func csvCell(record []string, index int) string {
+	if index < 0 || index >= len(record) {
+		return ""
+	}
+	return record[index]
+}
+
+func truncateText(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	if limit <= 1 {
+		return value[:limit]
+	}
+	return value[:limit-1] + "..."
 }
 
 func (s *Server) currentHealth() HealthResponse {
@@ -1848,6 +2334,39 @@ func (s *Server) resolveSelectedFile(rawPath, expectedExt, field string) (string
 		return "", fmt.Errorf("%s must stay within the server working directory", field)
 	}
 	return absolutePath, nil
+}
+
+func (s *Server) resolveSelectedDirectory(rawPath, field string) (string, string, error) {
+	clean := strings.TrimSpace(rawPath)
+	if clean == "" {
+		return "", "", fmt.Errorf("%s is required", field)
+	}
+
+	candidate := clean
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(s.workingRoot, filepath.FromSlash(clean))
+	}
+	absolutePath, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", "", fmt.Errorf("%s must resolve to a valid directory", field)
+	}
+	info, err := os.Stat(absolutePath)
+	if err != nil {
+		return "", "", fmt.Errorf("%s does not exist", field)
+	}
+	if !info.IsDir() {
+		return "", "", fmt.Errorf("%s must be a directory", field)
+	}
+
+	resolved := resolveRealPath(absolutePath)
+	if resolved == "" || !isWithinRoot(s.workingRootReal, resolved) {
+		return "", "", fmt.Errorf("%s must stay within the server working directory", field)
+	}
+	relativePath, err := filepath.Rel(s.workingRoot, absolutePath)
+	if err != nil {
+		return "", "", err
+	}
+	return absolutePath, relativePath, nil
 }
 
 func (s *Server) resolveSchemaSavePath(rawPath string) (string, error) {

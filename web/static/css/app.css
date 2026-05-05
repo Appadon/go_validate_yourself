@@ -918,6 +918,316 @@ body::before {
   word-break: break-word;
 }
 
+.error-explorer {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.error-explorer h3,
+.error-explorer h4 {
+  margin: 0.18rem 0 0;
+}
+
+.error-explorer-launch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.error-explorer-launch h3 {
+  margin: 0.16rem 0 0;
+}
+
+.error-toolbar {
+  display: grid;
+  grid-template-columns: minmax(14rem, 1.2fr) minmax(12rem, 1fr) minmax(10rem, 0.8fr) auto;
+  align-items: end;
+  gap: 0.7rem;
+}
+
+.error-report-content {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.error-facts {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.error-report-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.3fr) minmax(0, 0.85fr);
+  gap: 0.8rem;
+}
+
+.error-card {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  max-height: 31rem;
+}
+
+.error-card__note {
+  margin: 0.32rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.active-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.62rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.active-filters__label {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  max-width: min(34rem, 100%);
+  min-height: 2rem;
+  padding: 0.28rem 0.42rem 0.28rem 0.62rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: rgba(75, 141, 255, 0.1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.filter-pill span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-pill strong {
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+}
+
+.error-bucket-list,
+.error-message-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.7rem 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 24rem;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.error-chip,
+.error-message-row {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.035);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.error-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.5rem 0.58rem;
+}
+
+.error-chip span {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.error-chip span,
+.error-message-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.error-chip em,
+.error-message-row small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-style: normal;
+}
+
+.error-chip strong,
+.error-message-row em {
+  color: var(--accent-strong);
+  font-style: normal;
+  font-family: var(--font-mono);
+}
+
+.error-message-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.58rem 0.65rem;
+}
+
+.error-message-row span {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 0;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.error-message-row strong {
+  color: var(--text);
+}
+
+.error-samples__head,
+.error-sample__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.error-samples__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.error-sample-position {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+.error-sample {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.error-sample__head span,
+.error-sample__message {
+  color: var(--muted);
+}
+
+.error-sample__message {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.error-sample__error-fields {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.error-sample__error-fields h4 {
+  margin: 0;
+  font-size: 0.96rem;
+}
+
+.error-column-list,
+.error-sample__values {
+  margin: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.error-column-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.error-column-item {
+  min-width: 0;
+  padding: 0.58rem 0.65rem;
+  border: 1px solid rgba(255, 109, 120, 0.22);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 109, 120, 0.08);
+}
+
+.error-column-item dt {
+  color: var(--error);
+  font-weight: 700;
+}
+
+.error-column-item dd {
+  margin: 0.28rem 0 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  line-height: 1.4;
+}
+
+.error-sample__all-columns {
+  border-top: 1px solid var(--border);
+  padding-top: 0.45rem;
+}
+
+.error-sample__all-columns summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.error-column-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.55rem 0 0;
+}
+
+.error-column-grid .error-column-item {
+  min-width: 0;
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.error-column-grid .error-column-item dt {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.error-column-grid .error-column-item dd {
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.error-column-grid .error-column-item--errored {
+  border-color: rgba(255, 109, 120, 0.22);
+  background: rgba(255, 109, 120, 0.08);
+}
+
+.error-column-grid .error-column-item--errored dt {
+  color: var(--error);
+}
+
 .progress-card {
   margin: 0;
   padding: 1.1rem;
@@ -1429,6 +1739,12 @@ code {
   }
 
   .facts,
+  .error-facts,
+  .error-report-grid,
+  .error-toolbar,
+  .error-column-list,
+  .error-column-grid,
+  .error-sample__values,
   .summary-cards,
   .phase-timeline,
   .selectors-grid,
@@ -1444,6 +1760,7 @@ code {
   .selector-group__head,
   .config-section__head,
   .wizard-card__head,
+  .error-explorer-launch,
   .progress-card__topline,
   .event-head,
   .picker-actions,

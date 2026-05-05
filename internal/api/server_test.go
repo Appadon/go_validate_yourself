@@ -219,6 +219,97 @@ func TestHandleConfigResolveRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestHandleErrorReportSummarizesErrorCSVs(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	if err := os.MkdirAll("errors", 0o755); err != nil {
+		t.Fatalf("mkdir errors: %v", err)
+	}
+	errorCSV := strings.Join([]string{
+		"__row_number,__errors,Policy Number,Name",
+		`2,"Policy Number: value is required | Name: min length 3",P-1,A`,
+		`3,"Policy Number: value is required",,Bob`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join("errors", "policies_error.csv"), []byte(errorCSV), 0o644); err != nil {
+		t.Fatalf("write error csv: %v", err)
+	}
+
+	server := NewServer("127.0.0.1", 8080, service.New())
+	request := httptest.NewRequest(http.MethodGet, "/api/errors/report?path=errors&field=Policy&limit=1", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleErrorReport(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response ErrorReportResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("expected ok response: %+v", response)
+	}
+	if response.FileCount != 1 || response.ScannedRows != 2 || response.MatchedRows != 2 {
+		t.Fatalf("unexpected counts: files=%d scanned=%d matched=%d", response.FileCount, response.ScannedRows, response.MatchedRows)
+	}
+	if len(response.Samples) != 1 || response.Samples[0].RowNumber != "2" {
+		t.Fatalf("unexpected samples: %+v", response.Samples)
+	}
+	if len(response.Samples[0].Columns) != 2 {
+		t.Fatalf("sample columns = %d, want all original columns", len(response.Samples[0].Columns))
+	}
+	if len(response.Samples[0].ErrorFields) != 2 || response.Samples[0].ErrorFields[0] != "Policy Number" {
+		t.Fatalf("unexpected error fields: %+v", response.Samples[0].ErrorFields)
+	}
+	if len(response.Fields) == 0 || response.Fields[0].Name != "Policy Number" || response.Fields[0].Count != 2 {
+		t.Fatalf("unexpected fields: %+v", response.Fields)
+	}
+}
+
+func TestHandleErrorReportNormalizesQuotedMessageValues(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	if err := os.MkdirAll("errors", 0o755); err != nil {
+		t.Fatalf("mkdir errors: %v", err)
+	}
+	errorCSV := strings.Join([]string{
+		"__row_number,__errors,ID",
+		`2,"ID: invalid float: ""ABC""",ABC`,
+		`3,"ID: invalid float: ""XYZ""",XYZ`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join("errors", "ids_error.csv"), []byte(errorCSV), 0o644); err != nil {
+		t.Fatalf("write error csv: %v", err)
+	}
+
+	server := NewServer("127.0.0.1", 8080, service.New())
+	request := httptest.NewRequest(http.MethodGet, "/api/errors/report?path=errors", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleErrorReport(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response ErrorReportResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Messages) != 1 {
+		t.Fatalf("messages = %+v, want one normalized pattern", response.Messages)
+	}
+	if response.Messages[0].Message != "invalid float: <value>" || response.Messages[0].Count != 2 {
+		t.Fatalf("unexpected normalized message: %+v", response.Messages[0])
+	}
+	if !strings.Contains(response.Samples[0].Errors, `"ABC"`) {
+		t.Fatalf("sample errors lost original value: %q", response.Samples[0].Errors)
+	}
+}
+
 func TestHandleConfigResolveRejectsInvalidPhaseInputsClearly(t *testing.T) {
 	server := NewServer("127.0.0.1", 8080, service.New())
 	request := httptest.NewRequest(http.MethodPost, "/api/config/resolve", strings.NewReader(`{"mode":"validate","inputs":{"schema":"schema.json"}}`))
