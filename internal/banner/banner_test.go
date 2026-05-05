@@ -6,6 +6,8 @@ import (
 )
 
 func TestDefaultBannerRendersMessageAndArt(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
 	var out strings.Builder
 	if err := PrintDefault(&out); err != nil {
 		t.Fatalf("PrintDefault() error = %v", err)
@@ -18,11 +20,35 @@ func TestDefaultBannerRendersMessageAndArt(t *testing.T) {
 	if !strings.Contains(rendered, "Multithreaded data validation framework") {
 		t.Fatalf("rendered banner missing subtitle: %q", rendered)
 	}
+	if !strings.Contains(rendered, "Run with -h or -help to see options (example: ./gvy -h).") {
+		t.Fatalf("rendered banner missing help hint: %q", rendered)
+	}
 	if !strings.Contains(rendered, `\___/\____/`) {
 		t.Fatalf("rendered banner missing ASCII art: %q", rendered)
 	}
 	if !strings.HasSuffix(rendered, "\n\n") {
 		t.Fatalf("rendered banner should end with a blank line: %q", rendered)
+	}
+}
+
+func TestDefaultBannerBoldsHelpFlagsWhenColorEnabled(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("GVY_COLOR", "true")
+
+	var out strings.Builder
+	if err := PrintDefault(&out); err != nil {
+		t.Fatalf("PrintDefault() error = %v", err)
+	}
+
+	rendered := out.String()
+	for _, want := range []string{
+		colorBold + colorGray + "-h" + colorReset,
+		colorBold + colorGray + "-help" + colorReset,
+		colorBold + colorGray + "./gvy -h" + colorReset,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered banner missing bold hint segment %q: %q", want, rendered)
+		}
 	}
 }
 

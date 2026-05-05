@@ -34,10 +34,12 @@ type Banner struct {
 	Message  string
 	Subtitle string
 	Art      string
+	HelpHint string
 }
 
 const defaultMessage = "Welcome, and please..."
 const defaultSubtitle = "Multithreaded data validation framework"
+const defaultHelpHint = "Run with -h or -help to see options (example: ./gvy -h)."
 
 const defaultArt = `  _________    _   _____   __   _______  ___ __________  __  ______  __  _____  __________   ____
  / ___/ __ \  | | / / _ | / /  /  _/ _ \/ _ /_  __/ __/  \ \/ / __ \/ / / / _ \/ __/ __/ /  / __/
@@ -50,6 +52,7 @@ func Default() Banner {
 		Message:  defaultMessage,
 		Subtitle: defaultSubtitle,
 		Art:      defaultArt,
+		HelpHint: defaultHelpHint,
 	}
 }
 
@@ -57,9 +60,10 @@ func Default() Banner {
 func (b Banner) Write(w io.Writer) error {
 	message := strings.TrimSpace(b.Message)
 	subtitle := strings.TrimSpace(b.Subtitle)
+	helpHint := strings.TrimSpace(b.HelpHint)
 	art := strings.TrimRight(b.Art, "\n")
 	lines := strings.Split(art, "\n")
-	width := bannerWidth(message, subtitle, lines)
+	width := bannerWidth(message, subtitle, helpHint, lines)
 	border := strings.Repeat("-", width)
 
 	if _, err := fmt.Fprintln(w, paint("+"+border+"+", colorGray)); err != nil {
@@ -86,6 +90,11 @@ func (b Banner) Write(w io.Writer) error {
 			return err
 		}
 		if _, err := fmt.Fprintln(w, frameLine(paint(subtitle, colorGray), width)); err != nil {
+			return err
+		}
+	}
+	if helpHint != "" {
+		if _, err := fmt.Fprintln(w, frameLine(renderHelpHint(helpHint), width)); err != nil {
 			return err
 		}
 	}
@@ -142,8 +151,8 @@ func PrintConsoleURL(w io.Writer, rawURL string) error {
 	return err
 }
 
-func bannerWidth(message, subtitle string, lines []string) int {
-	width := max(len(message), len(subtitle))
+func bannerWidth(message, subtitle, helpHint string, lines []string) int {
+	width := max(max(len(message), len(subtitle)), len(helpHint))
 	for _, line := range lines {
 		width = max(width, len(line))
 	}
@@ -157,6 +166,19 @@ func frameLine(content string, width int) string {
 	}
 	padding := width - plainLen
 	return paint("|", colorGray) + " " + content + strings.Repeat(" ", padding+1) + paint("|", colorGray)
+}
+
+func renderHelpHint(helpHint string) string {
+	if helpHint != defaultHelpHint {
+		return paint(helpHint, colorGray)
+	}
+	return paint("Run with ", colorGray) +
+		paint("-h", colorBold+colorGray) +
+		paint(" or ", colorGray) +
+		paint("-help", colorBold+colorGray) +
+		paint(" to see options (example: ", colorGray) +
+		paint("./gvy -h", colorBold+colorGray) +
+		paint(").", colorGray)
 }
 
 func visibleLen(s string) int {
