@@ -109,6 +109,23 @@ func TestResolveCLIConfigConfigOnlyServerUsesConfigMode(t *testing.T) {
 	}
 }
 
+/* TestResolveCLIConfigEmptyInvocationDefaultsToServer verifies plain binary execution starts the UI server. */
+func TestResolveCLIConfigEmptyInvocationDefaultsToServer(t *testing.T) {
+	resolution, err := resolveCLIConfig(cliOptions{}, nil)
+	if err != nil {
+		t.Fatalf("resolveCLIConfig() error = %v", err)
+	}
+	if resolution.Config.Mode != modeServer {
+		t.Fatalf("Mode = %q, want server", resolution.Config.Mode)
+	}
+	if len(resolution.Config.Plan.Phases) != 0 {
+		t.Fatalf("Plan.Phases = %v, want none", resolution.Config.Plan.Phases)
+	}
+	if resolution.Config.Server.Host != "127.0.0.1" || resolution.Config.Server.Port != 1818 {
+		t.Fatalf("Server = %s:%d, want 127.0.0.1:1818", resolution.Config.Server.Host, resolution.Config.Server.Port)
+	}
+}
+
 /* TestResolveCLIConfigConfigModeInterpretsPositionals verifies config mode controls positional overlays. */
 func TestResolveCLIConfigConfigModeInterpretsPositionals(t *testing.T) {
 	tempDir := t.TempDir()

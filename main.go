@@ -113,6 +113,7 @@ func main() {
 func parseFlags() cliOptions {
 	opts := cliOptions{}
 	normalizedArgs := normalizeArgsForFlexibleFlags(os.Args[1:])
+	defaults := gvyconfig.Defaults()
 	flag.Usage = printUsage
 	flag.StringVar(&opts.mode, "mode", "", "Execution mode: auto | validate | split | batch | server (default: inferred)")
 	flag.StringVar(&opts.configPath, "config", "", "GVY run config JSON file")
@@ -133,8 +134,8 @@ func parseFlags() cliOptions {
 	flag.IntVar(&opts.batchSize, "batch-size", 1000, "Number of parquet files per output batch")
 	flag.StringVar(&opts.batchDir, "batch-dir", "", "Directory containing parquet files for batch mode, or batch input override")
 	flag.StringVar(&opts.batchExportDir, "batch-export-dir", "batch_export", "Directory for batch mode output parquet files")
-	flag.StringVar(&opts.host, "host", "127.0.0.1", "Host for server mode")
-	flag.IntVar(&opts.port, "port", 8080, "Port for server mode")
+	flag.StringVar(&opts.host, "host", defaults.Server.Host, "Host for server mode")
+	flag.IntVar(&opts.port, "port", defaults.Server.Port, "Port for server mode")
 	if err := flag.CommandLine.Parse(normalizedArgs); err != nil {
 		exitWithCode(2)
 	}
@@ -254,6 +255,10 @@ func resolveCLIConfig(opts cliOptions, args []string) (cliConfigResolution, erro
 	positionMode, err := resolvePositionMode(opts, args, configProvided, cfg.Mode)
 	if err != nil {
 		return cliConfigResolution{}, err
+	}
+	if !opts.modeSpecified && !configProvided && positionMode == modeServer {
+		cfg.Mode = modeServer
+		cfg.Pipeline.Phases = nil
 	}
 	if opts.modeSpecified {
 		cfg.Mode = strings.ToLower(strings.TrimSpace(opts.mode))
@@ -756,7 +761,7 @@ func runResolvedServer(resolved gvyconfig.ResolvedConfig) error {
 	if !isLoopbackHost(resolved.Server.Host) {
 		return fmt.Errorf("server mode only supports loopback hosts; got %q", resolved.Server.Host)
 	}
-	console.Infof("starting server mode on %s:%d", console.GreenValue(resolved.Server.Host), resolved.Server.Port)
+	fmt.Fprintf(os.Stdout, "server running on http://%s:%d/\n", resolved.Server.Host, resolved.Server.Port)
 	server := api.NewServer(resolved.Server.Host, resolved.Server.Port, service.New())
 	return server.ListenAndServe()
 }
@@ -800,6 +805,9 @@ func resolveMode(opts cliOptions, args []string) (string, error) {
 	if strings.TrimSpace(opts.inputDir) != "" && looksLikeImplicitAuto(args) {
 		return "", fmt.Errorf("inferred auto mode from <main.csv> <schema.json>, but -dir requires validation mode; use -mode validate -dir <input_dir>")
 	}
+	if shouldDefaultToServer(opts, args) {
+		return modeServer, nil
+	}
 	if looksLikeImplicitAuto(args) {
 		return modeAuto, nil
 	}
@@ -813,6 +821,29 @@ func resolveMode(opts cliOptions, args []string) (string, error) {
 		return modeValidate, nil
 	}
 	return modeAuto, nil
+}
+
+/* shouldDefaultToServer reports whether an empty CLI invocation should start the UI server. */
+func shouldDefaultToServer(opts cliOptions, args []string) bool {
+	if len(args) > 0 {
+		return false
+	}
+	return !opts.phasesSpecified &&
+		!opts.schemaSpecified &&
+		!opts.inputDirSpecified &&
+		!opts.threadsSpecified &&
+		!opts.writeEmptyErrorSet &&
+		!opts.clearCacheSet &&
+		!opts.successDirSpecified &&
+		!opts.errorDirSpecified &&
+		!opts.splitInputSpecified &&
+		!opts.splitOutputDirSpecified &&
+		!opts.splitPrimaryKeySpecified &&
+		!opts.splitMaxOpenSpecified &&
+		!opts.splitMissingFileSpecified &&
+		!opts.batchSizeSpecified &&
+		!opts.batchDirSpecified &&
+		!opts.batchExportDirSpecified
 }
 
 /* looksLikeImplicitAuto reports whether positional args match inferred auto mode shape. */
@@ -859,7 +890,8 @@ func printUsage() {
 	fmt.Fprintf(out, "  %s -mode split <input.csv>\n", bin)
 	fmt.Fprintf(out, "  %s -mode split -split-input <input.csv>\n", bin)
 	fmt.Fprintf(out, "  %s -mode batch -batch-dir <input_dir> [-batch-size <n>] [flags]\n", bin)
-	fmt.Fprintf(out, "  %s -mode server [-host 127.0.0.1] [-port 8080]\n", bin)
+	fmt.Fprintf(out, "  %s\n", bin)
+	fmt.Fprintf(out, "  %s -mode server [-host 127.0.0.1] [-port 1818]\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json [flags]\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -print-config\n", bin)
 
@@ -919,8 +951,9 @@ func printUsage() {
 
 	fmt.Fprintf(out, "  server mode:\n")
 	fmt.Fprintf(out, "    Starts the localhost-only HTTP API and browser UI.\n")
+	fmt.Fprintf(out, "    Default when %s is run without arguments.\n", bin)
 	fmt.Fprintf(out, "    Optional: -host <addr> (default 127.0.0.1)\n")
-	fmt.Fprintf(out, "    Optional: -port <n> (default 8080)\n")
+	fmt.Fprintf(out, "    Optional: -port <n> (default 1818)\n")
 	fmt.Fprintf(out, "    Config-first API endpoints:\n")
 	fmt.Fprintf(out, "      GET  /api/config/defaults\n")
 	fmt.Fprintf(out, "      POST /api/config/resolve\n")
@@ -943,13 +976,14 @@ func printUsage() {
 	fmt.Fprintf(out, "  %s -mode split main.csv\n", bin)
 	fmt.Fprintf(out, "  %s -mode split -split-input main.csv -split-primary-key policy_number\n", bin)
 	fmt.Fprintf(out, "  %s -mode batch -batch-size 1000 -batch-dir success/ -batch-export-dir batch_export\n", bin)
-	fmt.Fprintf(out, "  %s -mode server -host 127.0.0.1 -port 8080\n", bin)
+	fmt.Fprintf(out, "  %s\n", bin)
+	fmt.Fprintf(out, "  %s -mode server -host 127.0.0.1 -port 1818\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -phases split\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -phases validate,batch -dir split/\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -t 12\n", bin)
 	fmt.Fprintf(out, "  %s -config gvy.config.json -print-config\n", bin)
-	fmt.Fprintf(out, "  curl -s http://127.0.0.1:8080/api/config/defaults\n")
-	fmt.Fprintf(out, "  curl -s -X POST http://127.0.0.1:8080/api/config/resolve -H 'Content-Type: application/json' --data '{\"mode\":\"auto\",\"inputs\":{\"main_csv\":\"main.csv\",\"schema\":\"schema.json\"}}'\n")
+	fmt.Fprintf(out, "  curl -s http://127.0.0.1:1818/api/config/defaults\n")
+	fmt.Fprintf(out, "  curl -s -X POST http://127.0.0.1:1818/api/config/resolve -H 'Content-Type: application/json' --data '{\"mode\":\"auto\",\"inputs\":{\"main_csv\":\"main.csv\",\"schema\":\"schema.json\"}}'\n")
 }
 
 /* isLoopbackHost reports whether the provided bind host is loopback-safe. */

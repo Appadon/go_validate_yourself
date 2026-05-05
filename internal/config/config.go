@@ -21,7 +21,7 @@ const (
 	defaultSplitMissingFile = "missing_keys.csv"
 	defaultBatchSize        = 1000
 	defaultServerHost       = "127.0.0.1"
-	defaultServerPort       = 8080
+	defaultServerPort       = 1818
 	defaultWorkspaceDir     = ".gvy/runs"
 )
 

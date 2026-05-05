@@ -86,7 +86,13 @@ Batch only:
 Start the HTTP API and browser UI:
 
 ```bash
-./gvy -mode server -host 127.0.0.1 -port 8080
+./gvy
+```
+
+This starts server mode on `http://127.0.0.1:1818/`. You can still override the bind address explicitly:
+
+```bash
+./gvy -mode server -host 127.0.0.1 -port 1818
 ```
 
 ## Config-First Usage
@@ -186,7 +192,7 @@ Useful config fields:
   },
   "server": {
     "host": "127.0.0.1",
-    "port": 8080,
+    "port": 1818,
     "workspace_dir": ".gvy/runs"
   }
 }
@@ -442,11 +448,11 @@ Batch outputs:
 Start the server:
 
 ```bash
-./gvy -mode server -host 127.0.0.1 -port 8080
+./gvy
 ```
 
 The API is localhost-only and keeps one active run at a time. Non-loopback requests are rejected.
-Open `http://127.0.0.1:8080/` in a browser for the UI. The UI fetches backend defaults from
+Open `http://127.0.0.1:1818/` in a browser for the UI. The UI fetches backend defaults from
 `GET /api/config/defaults`, previews the effective config with `POST /api/config/resolve`, then starts
 config-first runs with `POST /api/runs/config`.
 
@@ -459,7 +465,7 @@ GET /health
 Example:
 
 ```bash
-curl -s http://127.0.0.1:8080/health
+curl -s http://127.0.0.1:1818/health
 ```
 
 ### Config Defaults
@@ -471,7 +477,7 @@ GET /api/config/defaults
 Returns `internal/config.Defaults()`:
 
 ```bash
-curl -s http://127.0.0.1:8080/api/config/defaults
+curl -s http://127.0.0.1:1818/api/config/defaults
 ```
 
 ### Config Resolve
@@ -483,7 +489,7 @@ POST /api/config/resolve
 Strictly decodes a GVY config JSON object, rejects unknown fields, resolves defaults and phase-derived inputs, and returns `resolved_config` without executing.
 
 ```bash
-curl -s -X POST http://127.0.0.1:8080/api/config/resolve \
+curl -s -X POST http://127.0.0.1:1818/api/config/resolve \
   -H 'Content-Type: application/json' \
   --data '{
     "mode": "auto",
@@ -503,7 +509,7 @@ POST /api/runs/config
 Preferred run endpoint for new clients. It accepts a GVY config JSON object, resolves it, executes through `service.RunPipeline`, and returns run metadata plus the resolved config.
 
 ```bash
-curl -s -X POST http://127.0.0.1:8080/api/runs/config \
+curl -s -X POST http://127.0.0.1:1818/api/runs/config \
   -H 'Content-Type: application/json' \
   --data '{
     "mode": "auto",
@@ -582,7 +588,7 @@ POST /shutdown
 ```
 
 ```bash
-curl -s -X POST http://127.0.0.1:8080/shutdown
+curl -s -X POST http://127.0.0.1:1818/shutdown
 ```
 
 ## Python SDK

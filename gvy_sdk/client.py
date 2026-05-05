@@ -20,7 +20,7 @@ class DefaultSettings:
 	"""DefaultSettings stores server, binary, and request defaults for one Gvy client."""
 
 	host: str = "127.0.0.1"
-	port: int = 8080
+	port: int = 1818
 	binary_path: str = "./gvy"
 	request_timeout: Optional[float] = None
 	startup_timeout: int = 30
@@ -51,7 +51,7 @@ class Gvy:
 	def __init__(
 		self,
 		host: str = "127.0.0.1",
-		port: int = 8080,
+		port: int = 1818,
 		binary_path: str = "./gvy",
 		request_timeout: Optional[float] = None,
 		startup_timeout: int = 30,
@@ -79,7 +79,7 @@ class Gvy:
 	def start(
 		cls,
 		host: str = "127.0.0.1",
-		port: int = 8080,
+		port: int = 1818,
 		binary_path: str = "./gvy",
 		request_timeout: Optional[float] = None,
 		startup_timeout: int = 30,
