@@ -33,7 +33,6 @@
               <h2 id="selection-title">Start run</h2>
               <p class="panel-note">Browsing is limited to <code>{{.WorkingRoot}}</code></p>
             </div>
-            <button id="refresh-files-button" class="button button--secondary" type="button">Refresh file lists</button>
           </div>
 
           <nav class="wizard-steps" aria-label="Run setup steps">
@@ -56,6 +55,10 @@
             <button class="wizard-step" type="button" data-wizard-step="4">
               <span class="wizard-step__number">5</span>
               <span class="wizard-step__label">Progress</span>
+            </button>
+            <button class="wizard-step" type="button" data-wizard-step="5">
+              <span class="wizard-step__number">6</span>
+              <span class="wizard-step__label">Review</span>
             </button>
           </nav>
 
@@ -141,11 +144,10 @@
                   <div class="selection-compact">
                     <span class="selection-compact__label">Selected file</span>
                     <strong id="schema-selection-summary" class="selection-compact__value">No schema selected</strong>
-                    <div class="selection-actions">
-                      <button id="schema-open-button" class="button button--secondary" type="button">Select file</button>
-                      <button id="schema-infer-open-button" class="button button--secondary" type="button">Infer</button>
+                    <div class="selection-actions selection-actions--schema">
+                      <button id="schema-infer-open-button" class="button button--secondary" type="button">Generate Schema</button>
+                      <button id="schema-open-button" class="button button--secondary" type="button">Load Schema</button>
                       <button id="schema-editor-open-button" class="button button--secondary" type="button">Edit</button>
-                      <button id="schema-editor-new-button" class="button button--primary" type="button">New</button>
                     </div>
                   </div>
                 </section>
@@ -256,24 +258,20 @@
               <div class="wizard-card__head">
                 <div>
                   <p class="eyebrow">Step 4</p>
-                  <h2 id="wizard-step-confirm-title">Run settings confirmation</h2>
+                  <div class="wizard-title-row">
+                    <h2 id="wizard-step-confirm-title">Review and start</h2>
+                    <span id="preview-status" class="badge badge--muted">Waiting</span>
+                  </div>
                 </div>
               </div>
 
-              <section class="config-section config-section--preview" aria-labelledby="preview-title">
-                <div class="config-section__head">
-                  <div>
-                    <h3 id="preview-title">Run preview</h3>
-                    <p>Effective phases, inputs, outputs, workers, and resolver errors.</p>
-                  </div>
-                  <span id="preview-status" class="badge badge--muted">Waiting</span>
-                </div>
+              <section class="config-section config-section--preview" aria-labelledby="wizard-step-confirm-title">
                 <div id="preview-errors" class="preview-errors" hidden></div>
                 <dl id="resolved-preview" class="preview-grid"></dl>
               </section>
 
               <p class="form-note">
-                Runs start from files already present under the server root.
+                The run uses files already present under the server root. Review any output-clearing settings before starting.
               </p>
               <p id="form-message" class="form-message" aria-live="polite"></p>
             </section>
@@ -283,19 +281,14 @@
             <div class="wizard-card__head">
               <div>
                 <p class="eyebrow">Step 5</p>
-                <h2 id="wizard-step-progress-title">Run progress</h2>
+                <div class="wizard-title-row">
+                  <h2 id="wizard-step-progress-title">Run progress</h2>
+                  <span id="run-state-badge" class="badge badge--muted">No run selected</span>
+                </div>
               </div>
             </div>
 
-            <section class="panel--run" aria-labelledby="run-title">
-              <div class="panel__head">
-                <div>
-                  <p class="eyebrow">Run State</p>
-                  <h2 id="run-title">Run state</h2>
-                </div>
-                <span id="run-state-badge" class="badge badge--muted">No run selected</span>
-              </div>
-
+            <section class="panel--run" aria-labelledby="wizard-step-progress-title">
               <div class="progress-card" aria-live="polite">
                 <div class="progress-card__topline">
                   <div class="progress-card__copy">
@@ -325,8 +318,6 @@
                   <dd id="run-progress-value">Not started</dd>
                 </div>
               </dl>
-
-              <div id="summary-cards" class="summary-cards"></div>
             </section>
 
             <details class="event-details">
@@ -342,9 +333,43 @@
             </details>
           </section>
 
+          <section class="wizard-card" data-step="5" aria-labelledby="wizard-step-review-title">
+            <div class="wizard-card__head">
+              <div>
+                <p class="eyebrow">Step 6</p>
+                <h2 id="wizard-step-review-title">Review</h2>
+              </div>
+            </div>
+
+            <section class="config-section review-section" aria-labelledby="review-report-title">
+              <div class="config-section__head">
+                <div>
+                  <h3 id="review-report-title">Run report</h3>
+                  <p>Final metrics, report exports, and validation error review.</p>
+                </div>
+                <div class="report-actions">
+                  <button id="copy-report-button" class="button button--secondary" type="button">Copy summary</button>
+                  <button id="download-report-button" class="button button--secondary" type="button">Download JSON</button>
+                </div>
+              </div>
+
+              <p id="report-status" class="form-message" aria-live="polite"></p>
+              <div id="review-error-summary" class="review-error-summary"></div>
+              <div id="summary-cards" class="summary-cards"></div>
+
+              <div class="error-explorer-launch">
+                <div>
+                  <p class="eyebrow">Errors</p>
+                  <h3>Error Explorer</h3>
+                </div>
+                <button id="error-explorer-open-button" class="button button--primary" type="button">Open Error Explorer</button>
+              </div>
+            </section>
+          </section>
+
           <div class="wizard-nav" aria-label="Wizard navigation">
             <button id="wizard-back-button" class="button button--secondary" type="button">Back</button>
-            <span id="wizard-step-status" class="wizard-nav__status" aria-live="polite">Step 1 of 5</span>
+            <span id="wizard-step-status" class="wizard-nav__status" aria-live="polite">Step 1 of 6</span>
             <button id="wizard-next-button" class="button button--primary" type="button">Next</button>
           </div>
         </section>
@@ -406,9 +431,27 @@
             <p class="eyebrow">Schema</p>
             <h2 id="schema-editor-title">Schema Editor</h2>
           </div>
-          <button id="schema-editor-close-button" class="button button--secondary button--small" type="button">Close</button>
+          <div class="schema-editor-card__actions">
+            <button id="schema-editor-save-button" class="button button--primary button--small" type="button">Save</button>
+            <button id="schema-editor-save-quit-button" class="button button--secondary button--small" type="button">Save and Quit</button>
+            <button id="schema-editor-close-button" class="button button--secondary button--small" type="button">Close</button>
+          </div>
         </div>
         <iframe id="schema-editor-frame" class="schema-editor-frame" title="Schema editor"></iframe>
+      </section>
+    </div>
+
+    <div id="error-explorer-modal" class="schema-editor-modal" hidden>
+      <div id="error-explorer-backdrop" class="schema-editor-modal__backdrop"></div>
+      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-labelledby="error-explorer-modal-title">
+        <div class="schema-editor-card__bar">
+          <div>
+            <p class="eyebrow">Errors</p>
+            <h2 id="error-explorer-modal-title">Error Explorer</h2>
+          </div>
+          <button id="error-explorer-close-button" class="button button--secondary button--small" type="button">Close</button>
+        </div>
+        <iframe id="error-explorer-frame" class="schema-editor-frame" title="Error explorer"></iframe>
       </section>
     </div>
 

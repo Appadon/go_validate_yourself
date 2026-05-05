@@ -1,0 +1,48 @@
+html,
+body {
+  height: auto;
+  min-height: 100%;
+  overflow: auto;
+}
+
+.error-shell {
+  width: min(1680px, calc(100% - 1.5rem));
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
+}
+
+.error-shell--embed {
+  width: 100%;
+  height: auto;
+  min-height: 100dvh;
+  padding: 0;
+}
+
+.error-shell--embed .error-layout {
+  height: auto;
+  min-height: 100dvh;
+}
+
+.error-layout {
+  min-height: 0;
+  display: grid;
+}
+
+.error-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto auto;
+  gap: 0.9rem;
+  overflow: visible;
+}
+
+.error-panel .panel__head {
+  margin-bottom: 0;
+}
+
+.error-report-content {
+  min-height: 0;
+  overflow: visible;
+  padding-right: 0.2rem;
+}

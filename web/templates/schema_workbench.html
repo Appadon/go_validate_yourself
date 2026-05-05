@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{.Title}}</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/static/css/app.css?v={{.Version}}-schema-workbench">
+    <link rel="stylesheet" href="/static/css/schema_workbench.css?v={{.Version}}-schema-workbench">
+  </head>
+  <body>
+    <div class="app-shell schema-shell {{if .SchemaEditorEmbed}}schema-shell--embed{{end}}">
+      {{if not .SchemaEditorEmbed}}
+      <header class="topbar">
+        <div class="topbar__copy">
+          <p class="eyebrow">Schema</p>
+          <h1>Schema Editor</h1>
+          <p class="lede">Columns, rules, and saved JSON.</p>
+        </div>
+        <div class="topbar__status">
+          <section class="status-card">
+            <span class="status-card__label">Root</span>
+            <strong class="status-card__path">{{.WorkingRoot}}</strong>
+          </section>
+        </div>
+      </header>
+      {{end}}
+
+      <main class="schema-layout">
+        <section id="schema-workbench" class="panel schema-workbench" aria-label="Schema editor" tabindex="-1">
+          <div class="schema-workflow" aria-label="Schema file actions">
+            <div class="schema-workflow__left">
+              <button id="generate-toggle-button" class="button button--primary" type="button" aria-expanded="false" aria-controls="inference-section">Generate Schema</button>
+              <button id="inference-result-toggle-button" class="button button--secondary" type="button" aria-expanded="false" aria-controls="inference-results" hidden>Inference Result</button>
+            </div>
+            <div class="schema-workflow__right">
+              <button id="save-button" class="button button--primary" type="button">Save</button>
+              <button id="save-close-button" class="button button--secondary" type="button">Save and Quit</button>
+            </div>
+          </div>
+
+          <p id="message" class="form-message schema-message" aria-live="polite"></p>
+
+          <section id="inference-section" class="schema-inference" aria-labelledby="inference-title" hidden>
+            <div class="schema-section-head">
+              <div>
+                <h3 id="inference-title">Generate Schema</h3>
+                <p id="csv-selection-summary">No CSV selected.</p>
+              </div>
+              <button id="inference-close-button" class="button button--secondary button--small" type="button">Close</button>
+            </div>
+
+            <div class="schema-inference__controls">
+              <label class="field-control" for="sample-size-input">
+                <span>Sample size</span>
+                <input id="sample-size-input" type="number" min="1" step="1" value="100">
+              </label>
+
+              <label class="field-control" for="strategy-input">
+                <span>Strategy</span>
+                <select id="strategy-input">
+                  <option value="byte-spread">byte-spread</option>
+                  <option value="head">head</option>
+                </select>
+              </label>
+
+              <div class="toggle-row toggle-row--settings schema-inference__toggles">
+                <label class="toggle-control">
+                  <input id="keep-samples-input" type="checkbox" checked>
+                  <span>Keep samples</span>
+                </label>
+                <label class="toggle-control">
+                  <input id="write-parquet-input" type="checkbox" checked>
+                  <span>Write sample parquet</span>
+                </label>
+              </div>
+
+              <button id="run-inference-button" class="button button--primary" type="button">Generate Schema</button>
+            </div>
+          </section>
+
+          <section id="inference-results" class="schema-inference-results" aria-labelledby="inference-results-title" hidden>
+            <div class="schema-section-head">
+              <div>
+                <h3 id="inference-results-title">Inference Result</h3>
+                <p id="inference-result-note">Run inference to see detected fields.</p>
+              </div>
+              <span id="duration-badge" class="badge badge--muted">Not run</span>
+            </div>
+
+            <div class="schema-inference-summary">
+              <section class="schema-metric">
+                <span>Rows sampled</span>
+                <strong id="sampled-rows-value">-</strong>
+              </section>
+              <section class="schema-metric">
+                <span>File size</span>
+                <strong id="file-size-value">-</strong>
+              </section>
+              <section class="schema-metric">
+                <span>Sample parquet</span>
+                <strong id="sample-parquet-value">-</strong>
+              </section>
+              <section class="schema-metric">
+                <span>Proposed schema</span>
+                <strong id="generated-schema-path-value">-</strong>
+              </section>
+            </div>
+
+            <div class="infer-tabs" role="tablist" aria-label="Inference result views">
+              <button class="infer-tab infer-tab--active" type="button" data-inference-view="fields">Fields</button>
+              <button class="infer-tab" type="button" data-inference-view="samples">Samples</button>
+              <button class="infer-tab" type="button" data-inference-view="warnings">Warnings</button>
+              <button class="infer-tab" type="button" data-inference-view="summary">Summary</button>
+            </div>
+
+            <section id="inference-fields-view" class="infer-view infer-view--active">
+              <p class="schema-help">Use the Fields table below to choose a column, then edit it in Column Options.</p>
+            </section>
+
+            <section id="inference-samples-view" class="infer-view">
+              <h4>Sample rows</h4>
+              <div id="samples-output" class="samples-output">No retained samples yet.</div>
+            </section>
+
+            <section id="inference-warnings-view" class="infer-view">
+              <h4>Warnings</h4>
+              <ul id="warnings-list" class="warnings-list">
+                <li>No warnings yet.</li>
+              </ul>
+            </section>
+
+            <section id="inference-summary-view" class="infer-view">
+              <pre id="inference-summary-output" class="json-output">{}</pre>
+            </section>
+          </section>
+
+          <div class="schema-editor-grid">
+            <section class="schema-field-list" aria-labelledby="field-list-title">
+              <div class="schema-section-head">
+                <div>
+                  <h3 id="field-list-title">Fields</h3>
+                  <p id="field-count">0 fields</p>
+                </div>
+                <button id="add-field-button" class="button button--secondary button--small" type="button">Add field</button>
+              </div>
+
+              <div class="field-table-wrap">
+                <table class="field-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Type</th>
+                      <th>Required</th>
+                      <th>Confidence</th>
+                      <th>Blank</th>
+                      <th>Samples</th>
+                      <th>Candidates</th>
+                    </tr>
+                  </thead>
+                  <tbody id="field-table-body">
+                    <tr>
+                      <td colspan="7">Load or create a schema to begin.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="schema-field-detail" aria-labelledby="field-detail-title">
+              <div class="schema-section-head">
+                <div>
+                  <h3 id="field-detail-title">Column options</h3>
+                  <p id="field-detail-subtitle">Select a column to edit its rules.</p>
+                </div>
+                <div class="schema-section-actions">
+                  <button id="column-options-close-button" class="button button--secondary button--small" type="button">Close</button>
+                </div>
+              </div>
+
+              <div id="field-editor-empty" class="schema-empty">
+                Select a field from the table, or add a new field.
+              </div>
+
+              <div id="field-editor" class="field-editor" hidden>
+                <div class="field-editor__controls">
+                  <div class="config-grid config-grid--settings schema-config-grid">
+                    <label class="field-control" for="field-name-input">
+                      <span>Input Column Name</span>
+                      <input id="field-name-input" type="text" autocomplete="off">
+                    </label>
+
+                    <label class="field-control" for="field-parquet-input">
+                      <span>Output Column Name</span>
+                      <input id="field-parquet-input" type="text" autocomplete="off">
+                    </label>
+
+                    <label class="field-control" for="field-type-input">
+                      <span>Type</span>
+                      <select id="field-type-input">
+                        <option value="string">string</option>
+                        <option value="int">int</option>
+                        <option value="float">float</option>
+                        <option value="date">date</option>
+                        <option value="datetime">datetime</option>
+                      </select>
+                    </label>
+
+                    <label class="field-control" for="field-min-length-input" data-field-types="string">
+                      <span>Min length</span>
+                      <input id="field-min-length-input" type="number" min="0" step="1">
+                    </label>
+
+                    <label class="field-control" for="field-default-input">
+                      <span>Default</span>
+                      <input id="field-default-input" type="text" autocomplete="off">
+                    </label>
+
+                    <label class="field-control" for="field-override-input">
+                      <span>Override</span>
+                      <input id="field-override-input" type="text" autocomplete="off">
+                    </label>
+                  </div>
+
+                  <div class="toggle-row toggle-row--settings schema-toggle-row">
+                    <label class="toggle-control">
+                      <input id="field-required-input" type="checkbox">
+                      <span>Required</span>
+                    </label>
+                    <label class="toggle-control" data-field-types="string">
+                      <input id="field-lower-input" type="checkbox">
+                      <span>Lower case</span>
+                    </label>
+                    <label class="toggle-control" data-field-types="int">
+                      <input id="field-non-zero-input" type="checkbox">
+                      <span>Non-zero</span>
+                    </label>
+                  </div>
+
+                  <div class="schema-textareas">
+                    <div class="field-control schema-list-editor allowed-values-editor" data-field-types="string">
+                      <div class="schema-list-editor__head">
+                        <span>Allowed values</span>
+                        <button id="field-allowed-add" class="button button--secondary button--small" type="button">Add</button>
+                      </div>
+                      <div id="field-allowed-rows" class="schema-list-editor__rows"></div>
+                    </div>
+
+                    <div class="field-control schema-list-editor inline-replace-editor" data-field-types="string">
+                      <div class="schema-list-editor__head">
+                        <span>Inline replacements</span>
+                        <button id="field-inline-replace-add" class="button button--secondary button--small" type="button">Add</button>
+                      </div>
+                      <div id="field-inline-replace-rows" class="schema-list-editor__rows"></div>
+                    </div>
+
+                    <label class="field-control" for="field-date-formats-input" data-field-types="date">
+                      <span>Date formats</span>
+                      <textarea id="field-date-formats-input" rows="4" placeholder="2006-01-02"></textarea>
+                    </label>
+
+                    <label class="field-control" for="field-datetime-formats-input" data-field-types="datetime">
+                      <span>Datetime formats</span>
+                      <textarea id="field-datetime-formats-input" rows="4" placeholder="2006-01-02 15:04:05"></textarea>
+                    </label>
+                  </div>
+                </div>
+
+                <section id="field-inference-panel" class="field-inference-panel" aria-labelledby="field-inference-title" hidden>
+                  <div class="field-inference-panel__head">
+                    <div>
+                      <h4 id="field-inference-title">Inference</h4>
+                      <p id="field-inference-note">No retained samples for this column.</p>
+                    </div>
+                  </div>
+
+                  <div class="field-inference-metrics">
+                    <section class="schema-metric">
+                      <span>Confidence</span>
+                      <strong id="field-confidence-value">-</strong>
+                    </section>
+                    <section class="schema-metric">
+                      <span>Blank</span>
+                      <strong id="field-blank-value">-</strong>
+                    </section>
+                    <section class="schema-metric">
+                      <span>Non-blank</span>
+                      <strong id="field-non-blank-value">-</strong>
+                    </section>
+                    <section class="schema-metric">
+                      <span>Candidates</span>
+                      <strong id="field-candidates-value">-</strong>
+                    </section>
+                  </div>
+
+                  <div id="field-samples-output" class="field-samples-output"></div>
+                </section>
+              </div>
+
+              <div class="schema-field-detail__footer">
+                <button id="delete-field-button" class="button button--secondary button--small" type="button">Delete</button>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="schema-picker-modal" class="picker-modal" hidden>
+      <div id="picker-backdrop" class="picker-modal__backdrop"></div>
+      <section class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+        <div class="panel__head">
+          <div>
+            <p class="eyebrow">File Picker</p>
+            <h2 id="picker-title">Select schema JSON</h2>
+            <p id="picker-subtitle" class="panel-note">Browse the working directory and choose one schema JSON file.</p>
+          </div>
+          <div class="schema-picker__head-actions">
+            <button id="refresh-button" class="button button--secondary button--small" type="button">Refresh</button>
+            <button id="picker-close-button" class="button button--secondary button--small" type="button">Close</button>
+          </div>
+        </div>
+
+        <div id="draft-location-panel" class="draft-location-panel" hidden>
+          <label class="field-control" for="draft-name-input">
+            <span id="schema-name-label">Schema filename</span>
+            <input id="draft-name-input" type="text" autocomplete="off" placeholder="new.schema.json">
+          </label>
+          <p id="draft-path-preview" class="selection-summary">Schema will be saved in this folder.</p>
+        </div>
+
+        <label class="filter-field" for="picker-filter-input">
+          <span>Filter files</span>
+          <input id="picker-filter-input" type="search" placeholder="Filter by filename or folder" autocomplete="off">
+        </label>
+
+        <div class="browser-toolbar">
+          <code id="current-path">/</code>
+          <button id="up-button" class="button button--secondary button--small" type="button">Up</button>
+        </div>
+
+        <div id="directory-list" class="directory-list" aria-live="polite"></div>
+        <div class="schema-picker__file-list">
+          <p id="picker-list-label" class="schema-picker__list-label">Schema files</p>
+          <select id="schema-file-select" class="file-select file-select--modal" size="12"></select>
+        </div>
+
+        <div class="picker-actions">
+          <p id="picker-selection-summary" class="selection-summary">No file selected.</p>
+          <button id="picker-choose-button" class="button button--primary" type="button">Use selected file</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="csv-picker-modal" class="picker-modal" hidden>
+      <div id="csv-picker-backdrop" class="picker-modal__backdrop"></div>
+      <section class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="csv-picker-title">
+        <div class="panel__head">
+          <div>
+            <p class="eyebrow">File Picker</p>
+            <h2 id="csv-picker-title">Select CSV</h2>
+            <p class="panel-note">Browse the working directory and choose one CSV file.</p>
+          </div>
+          <div class="schema-picker__head-actions">
+            <button id="csv-refresh-button" class="button button--secondary button--small" type="button">Refresh</button>
+            <button id="csv-picker-close-button" class="button button--secondary button--small" type="button">Close</button>
+          </div>
+        </div>
+
+        <label class="filter-field" for="csv-picker-filter-input">
+          <span>Filter files</span>
+          <input id="csv-picker-filter-input" type="search" placeholder="Filter by filename or folder" autocomplete="off">
+        </label>
+
+        <div class="browser-toolbar">
+          <code id="csv-current-path">/</code>
+          <button id="csv-up-button" class="button button--secondary button--small" type="button">Up</button>
+        </div>
+
+        <div id="csv-directory-list" class="directory-list" aria-live="polite"></div>
+        <select id="csv-file-select" class="file-select file-select--modal" size="12"></select>
+
+        <div class="picker-actions">
+          <p id="csv-picker-selection-summary" class="selection-summary">No file selected.</p>
+          <button id="csv-picker-choose-button" class="button button--primary" type="button">Use selected file</button>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
+    </script>
+    <script src="/static/js/file_browser.js?v={{.Version}}-schema-workbench" defer></script>
+    <script src="/static/js/schema_workbench.js?v={{.Version}}-schema-workbench" defer></script>
+  </body>
+</html>

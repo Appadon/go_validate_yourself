@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -246,7 +247,58 @@ func sampleByteSpread(ctx context.Context, inputPath string, header []string, da
 		seenOffsets[record.offsetEnd] = struct{}{}
 		records = append(records, record)
 	}
+	if len(records) < sampleSize {
+		backfilled, err := sampleHeadSkippingOffsets(ctx, inputPath, header, sampleSize-len(records), seenOffsets)
+		if err != nil {
+			return records, warnings, err
+		}
+		records = append(records, backfilled...)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].offsetEnd < records[j].offsetEnd
+	})
 	return records, warnings, nil
+}
+
+func sampleHeadSkippingOffsets(ctx context.Context, inputPath string, header []string, needed int, seenOffsets map[int64]struct{}) ([]sampleRecord, error) {
+	if needed <= 0 {
+		return nil, nil
+	}
+	f, err := os.Open(inputPath)
+	if err != nil {
+		return nil, fmt.Errorf("open input: %w", err)
+	}
+	defer f.Close()
+
+	reader := csv.NewReader(f)
+	reader.FieldsPerRecord = -1
+	if _, err := reader.Read(); err != nil {
+		return nil, fmt.Errorf("read header: %w", err)
+	}
+
+	records := make([]sampleRecord, 0, needed)
+	for len(records) < needed {
+		if err := ctx.Err(); err != nil {
+			return records, err
+		}
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			return records, nil
+		}
+		if err != nil {
+			return records, fmt.Errorf("read sample row: %w", err)
+		}
+		offsetEnd := reader.InputOffset()
+		if _, ok := seenOffsets[offsetEnd]; ok {
+			continue
+		}
+		seenOffsets[offsetEnd] = struct{}{}
+		records = append(records, sampleRecord{
+			offsetEnd: offsetEnd,
+			values:    normalizeRecord(record, len(header)),
+		})
+	}
+	return records, nil
 }
 
 func spreadTargets(start, end int64, sampleSize int) []int64 {

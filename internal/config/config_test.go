@@ -44,8 +44,8 @@ func TestDefaultConfigResolvesToCurrentDefaults(t *testing.T) {
 	if resolved.Batch.Size != 1000 {
 		t.Fatalf("Batch.Size = %d, want 1000", resolved.Batch.Size)
 	}
-	if resolved.Server.Host != "127.0.0.1" || resolved.Server.Port != 8080 {
-		t.Fatalf("Server = %s:%d, want 127.0.0.1:8080", resolved.Server.Host, resolved.Server.Port)
+	if resolved.Server.Host != "127.0.0.1" || resolved.Server.Port != 1818 {
+		t.Fatalf("Server = %s:%d, want 127.0.0.1:1818", resolved.Server.Host, resolved.Server.Port)
 	}
 	if resolved.Inputs.ValidateDir != "split" {
 		t.Fatalf("ValidateDir = %q, want split", resolved.Inputs.ValidateDir)
