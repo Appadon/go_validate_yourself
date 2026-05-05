@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{.Title}}</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/static/css/app.css?v={{.Version}}-error-explorer">
+    <link rel="stylesheet" href="/static/css/error_explorer.css?v={{.Version}}-error-explorer">
+  </head>
+  <body>
+    <div class="app-shell error-shell {{if .SchemaEditorEmbed}}error-shell--embed{{end}}">
+      {{if not .SchemaEditorEmbed}}
+      <header class="topbar">
+        <div class="topbar__copy">
+          <p class="eyebrow">Errors</p>
+          <h1>Error Explorer</h1>
+          <p class="lede">Validation error summaries and row samples.</p>
+        </div>
+        <div class="topbar__status">
+          <section class="status-card">
+            <span class="status-card__label">Root</span>
+            <strong class="status-card__path">{{.WorkingRoot}}</strong>
+          </section>
+        </div>
+      </header>
+      {{end}}
+
+      <main class="error-layout">
+        <section class="panel error-panel" aria-labelledby="error-explorer-title">
+          <div class="panel__head">
+            <div>
+              <h2 id="error-explorer-title">Error Explorer</h2>
+              <p class="panel-note">Browsing is limited to <code>{{.WorkingRoot}}</code></p>
+            </div>
+            <span id="error-report-status" class="badge badge--muted">Not loaded</span>
+          </div>
+
+          <div class="error-toolbar">
+            <label class="field-control" for="error-report-path-input">
+              <span>Error directory</span>
+              <input id="error-report-path-input" type="text" autocomplete="off" placeholder="errors">
+            </label>
+            <label class="field-control" for="error-report-query-input">
+              <span>Search</span>
+              <input id="error-report-query-input" type="search" autocomplete="off" placeholder="Message, row value, or file">
+            </label>
+            <label class="field-control" for="error-report-field-input">
+              <span>Field</span>
+              <input id="error-report-field-input" type="search" autocomplete="off" placeholder="Any field">
+            </label>
+            <button id="error-report-load-button" class="button button--primary" type="button">Load errors</button>
+          </div>
+
+          <p id="error-report-message" class="form-message" aria-live="polite"></p>
+          <div id="error-report-content" class="error-report-content"></div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
+    </script>
+    <script src="/static/js/error_explorer.js?v={{.Version}}-error-explorer" defer></script>
+  </body>
+</html>
