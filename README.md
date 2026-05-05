@@ -62,17 +62,6 @@ The console is built around a six-step workflow:
 
 The UI style matches the CLI help screen: compact panels, electric blue focus states, green success signals, amber warnings, and a workflow-first layout instead of a raw flag form.
 
-### Console Palette
-
-| Token | Colour | Use |
-| --- | --- | --- |
-| `#06080d` | ![Background](https://img.shields.io/badge/background-06080d?labelColor=06080d&color=06080d) | App shell and page backdrop. |
-| `#121827` | ![Panel](https://img.shields.io/badge/panel-121827?labelColor=121827&color=121827) | Panels, topbar, and elevated surfaces. |
-| `#4b8dff` | ![Accent](https://img.shields.io/badge/accent-4b8dff?labelColor=4b8dff&color=4b8dff) | Primary actions and focus. |
-| `#b7ff5a` | ![Success](https://img.shields.io/badge/success-b7ff5a?labelColor=b7ff5a&color=b7ff5a) | Ready, complete, and valid states. |
-| `#ffd25f` | ![Warning](https://img.shields.io/badge/warning-ffd25f?labelColor=ffd25f&color=ffd25f) | Caution, cache, and output-clearing states. |
-| `#ff6d78` | ![Error](https://img.shields.io/badge/error-ff6d78?labelColor=ff6d78&color=ff6d78) | Validation errors and failed runs. |
-
 ### Included UI Tools
 
 | Tool | Route | Notes |
@@ -85,35 +74,47 @@ The UI style matches the CLI help screen: compact panels, electric blue focus st
 
 Browser file access is intentionally scoped to the process working directory. The API is loopback-only and allows one active run at a time.
 
-## Requirements
+## Quick Start
+
+GVY releases include a compiled Linux binary. Download the latest release asset, make it executable, and start the console:
+
+```bash
+curl -L -o gvy https://github.com/Appadon/go_validate_yourself/releases/latest/download/gvy
+chmod +x gvy
+./gvy
+```
+
+Then open:
+
+```text
+http://127.0.0.1:1818/
+```
+
+Run the full pipeline from the downloaded binary in the cli:
+
+```bash
+./gvy main.csv schema.json
+```
+
+## Build Requirements
+
+You only need these if you are building from source or running the SDK.
 
 | Runtime | Version |
 | --- | --- |
 | Go | `1.25+` |
 | Python SDK | `3.10+` |
 
-## Quick Start
-
-Build the binary:
+Build from source:
 
 ```bash
 go mod tidy
 go build -o gvy .
 ```
 
-Launch the console:
+## Common Commands
 
-```bash
-./gvy
-```
-
-Run the full pipeline from the CLI:
-
-```bash
-./gvy main.csv schema.json
-```
-
-Validate one Structured Data file:
+Validate a single file:
 
 ```bash
 ./gvy -mode validate input.csv -schema schema.json
