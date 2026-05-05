@@ -1,5 +1,3 @@
-# Go Validate Yourself
-
 <p align="center">
   <img alt="GVY" src="https://img.shields.io/badge/GVY-Go%20Validate%20Yourself-4B8DFF?style=for-the-badge&labelColor=06080d">
 </p>
