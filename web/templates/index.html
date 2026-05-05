@@ -33,7 +33,6 @@
               <h2 id="selection-title">Start run</h2>
               <p class="panel-note">Browsing is limited to <code>{{.WorkingRoot}}</code></p>
             </div>
-            <button id="refresh-files-button" class="button button--secondary" type="button">Refresh file lists</button>
           </div>
 
           <nav class="wizard-steps" aria-label="Run setup steps">
@@ -56,6 +55,10 @@
             <button class="wizard-step" type="button" data-wizard-step="4">
               <span class="wizard-step__number">5</span>
               <span class="wizard-step__label">Progress</span>
+            </button>
+            <button class="wizard-step" type="button" data-wizard-step="5">
+              <span class="wizard-step__number">6</span>
+              <span class="wizard-step__label">Review</span>
             </button>
           </nav>
 
@@ -255,24 +258,20 @@
               <div class="wizard-card__head">
                 <div>
                   <p class="eyebrow">Step 4</p>
-                  <h2 id="wizard-step-confirm-title">Run settings confirmation</h2>
+                  <div class="wizard-title-row">
+                    <h2 id="wizard-step-confirm-title">Review and start</h2>
+                    <span id="preview-status" class="badge badge--muted">Waiting</span>
+                  </div>
                 </div>
               </div>
 
-              <section class="config-section config-section--preview" aria-labelledby="preview-title">
-                <div class="config-section__head">
-                  <div>
-                    <h3 id="preview-title">Run preview</h3>
-                    <p>Effective phases, inputs, outputs, workers, and resolver errors.</p>
-                  </div>
-                  <span id="preview-status" class="badge badge--muted">Waiting</span>
-                </div>
+              <section class="config-section config-section--preview" aria-labelledby="wizard-step-confirm-title">
                 <div id="preview-errors" class="preview-errors" hidden></div>
                 <dl id="resolved-preview" class="preview-grid"></dl>
               </section>
 
               <p class="form-note">
-                Runs start from files already present under the server root.
+                The run uses files already present under the server root. Review any output-clearing settings before starting.
               </p>
               <p id="form-message" class="form-message" aria-live="polite"></p>
             </section>
@@ -282,19 +281,14 @@
             <div class="wizard-card__head">
               <div>
                 <p class="eyebrow">Step 5</p>
-                <h2 id="wizard-step-progress-title">Run progress</h2>
+                <div class="wizard-title-row">
+                  <h2 id="wizard-step-progress-title">Run progress</h2>
+                  <span id="run-state-badge" class="badge badge--muted">No run selected</span>
+                </div>
               </div>
             </div>
 
-            <section class="panel--run" aria-labelledby="run-title">
-              <div class="panel__head">
-                <div>
-                  <p class="eyebrow">Run State</p>
-                  <h2 id="run-title">Run state</h2>
-                </div>
-                <span id="run-state-badge" class="badge badge--muted">No run selected</span>
-              </div>
-
+            <section class="panel--run" aria-labelledby="wizard-step-progress-title">
               <div class="progress-card" aria-live="polite">
                 <div class="progress-card__topline">
                   <div class="progress-card__copy">
@@ -324,16 +318,6 @@
                   <dd id="run-progress-value">Not started</dd>
                 </div>
               </dl>
-
-              <div id="summary-cards" class="summary-cards"></div>
-
-              <div class="error-explorer-launch">
-                <div>
-                  <p class="eyebrow">Errors</p>
-                  <h3>Error Explorer</h3>
-                </div>
-                <button id="error-explorer-open-button" class="button button--primary" type="button">Open Error Explorer</button>
-              </div>
             </section>
 
             <details class="event-details">
@@ -349,9 +333,43 @@
             </details>
           </section>
 
+          <section class="wizard-card" data-step="5" aria-labelledby="wizard-step-review-title">
+            <div class="wizard-card__head">
+              <div>
+                <p class="eyebrow">Step 6</p>
+                <h2 id="wizard-step-review-title">Review</h2>
+              </div>
+            </div>
+
+            <section class="config-section review-section" aria-labelledby="review-report-title">
+              <div class="config-section__head">
+                <div>
+                  <h3 id="review-report-title">Run report</h3>
+                  <p>Final metrics, report exports, and validation error review.</p>
+                </div>
+                <div class="report-actions">
+                  <button id="copy-report-button" class="button button--secondary" type="button">Copy summary</button>
+                  <button id="download-report-button" class="button button--secondary" type="button">Download JSON</button>
+                </div>
+              </div>
+
+              <p id="report-status" class="form-message" aria-live="polite"></p>
+              <div id="review-error-summary" class="review-error-summary"></div>
+              <div id="summary-cards" class="summary-cards"></div>
+
+              <div class="error-explorer-launch">
+                <div>
+                  <p class="eyebrow">Errors</p>
+                  <h3>Error Explorer</h3>
+                </div>
+                <button id="error-explorer-open-button" class="button button--primary" type="button">Open Error Explorer</button>
+              </div>
+            </section>
+          </section>
+
           <div class="wizard-nav" aria-label="Wizard navigation">
             <button id="wizard-back-button" class="button button--secondary" type="button">Back</button>
-            <span id="wizard-step-status" class="wizard-nav__status" aria-live="polite">Step 1 of 5</span>
+            <span id="wizard-step-status" class="wizard-nav__status" aria-live="polite">Step 1 of 6</span>
             <button id="wizard-next-button" class="button button--primary" type="button">Next</button>
           </div>
         </section>

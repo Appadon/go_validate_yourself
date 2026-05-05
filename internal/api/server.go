@@ -224,6 +224,7 @@ type ErrorReportResponse struct {
 	File         string               `json:"file,omitempty"`
 	Fields       []ErrorReportBucket  `json:"fields"`
 	Messages     []ErrorReportMessage `json:"messages"`
+	Issues       []ErrorReportIssue   `json:"issues"`
 	Files        []ErrorReportBucket  `json:"files"`
 	Samples      []ErrorReportSample  `json:"samples"`
 }
@@ -239,6 +240,15 @@ type ErrorReportMessage struct {
 	Field   string `json:"field"`
 	Message string `json:"message"`
 	Count   int    `json:"count"`
+}
+
+/* ErrorReportIssue is a counted unique field/message/value issue with examples. */
+type ErrorReportIssue struct {
+	Field   string              `json:"field"`
+	Message string              `json:"message"`
+	Value   string              `json:"value"`
+	Count   int                 `json:"count"`
+	Samples []ErrorReportSample `json:"samples"`
 }
 
 /* ErrorReportSample is one bounded row sample from an error CSV. */
@@ -1857,6 +1867,10 @@ type parsedErrorMessage struct {
 	Message string
 }
 
+type errorIssueAggregate struct {
+	issue ErrorReportIssue
+}
+
 /* buildErrorReport streams error CSVs once and returns bounded aggregates and samples. */
 func buildErrorReport(errorDir, relativePath string, opts ErrorReportOptions) (ErrorReportResponse, error) {
 	limit := opts.Limit
@@ -1897,6 +1911,7 @@ func buildErrorReport(errorDir, relativePath string, opts ErrorReportOptions) (E
 
 	fieldCounts := make(map[string]int)
 	messageCounts := make(map[string]ErrorReportMessage)
+	issueCounts := make(map[string]*errorIssueAggregate)
 	fileCounts := make(map[string]int)
 	samples := make([]ErrorReportSample, 0, limit)
 	query := strings.ToLower(strings.TrimSpace(opts.Query))
@@ -1912,7 +1927,7 @@ func buildErrorReport(errorDir, relativePath string, opts ErrorReportOptions) (E
 		if err != nil {
 			return ErrorReportResponse{}, fmt.Errorf("%s: %w", name, err)
 		}
-		fileMatched, fileScanned, err := scanErrorCSV(file, name, query, fieldFilter, offset, limit, &matchedRows, fieldCounts, messageCounts, &samples)
+		fileMatched, fileScanned, err := scanErrorCSV(file, name, query, fieldFilter, offset, limit, &matchedRows, fieldCounts, messageCounts, issueCounts, &samples)
 		closeErr := file.Close()
 		if err != nil {
 			return ErrorReportResponse{}, err
@@ -1944,12 +1959,13 @@ func buildErrorReport(errorDir, relativePath string, opts ErrorReportOptions) (E
 		File:         opts.File,
 		Fields:       topBuckets(fieldCounts, 20),
 		Messages:     topMessages(messageCounts, 30),
+		Issues:       topIssues(issueCounts, 30),
 		Files:        topBuckets(fileCounts, 30),
 		Samples:      samples,
 	}, nil
 }
 
-func scanErrorCSV(file *os.File, name, query, fieldFilter string, offset, limit int, matchedRows *int, fieldCounts map[string]int, messageCounts map[string]ErrorReportMessage, samples *[]ErrorReportSample) (int, int, error) {
+func scanErrorCSV(file *os.File, name, query, fieldFilter string, offset, limit int, matchedRows *int, fieldCounts map[string]int, messageCounts map[string]ErrorReportMessage, issueCounts map[string]*errorIssueAggregate, samples *[]ErrorReportSample) (int, int, error) {
 	reader := csv.NewReader(file)
 	reader.FieldsPerRecord = -1
 	header, err := reader.Read()
@@ -1989,6 +2005,14 @@ func scanErrorCSV(file *os.File, name, query, fieldFilter string, offset, limit 
 
 		*matchedRows = *matchedRows + 1
 		fileMatched++
+		sample := ErrorReportSample{
+			File:        name,
+			RowNumber:   csvCell(record, rowIndex),
+			Errors:      truncateText(errorsText, 500),
+			ErrorFields: errorFieldNames(parsed),
+			Columns:     sampleRecordColumns(header, record, parsed),
+			Values:      sampleRecordValues(header, record),
+		}
 		for _, parsedError := range parsed {
 			field := parsedError.Field
 			if field == "" {
@@ -2004,19 +2028,30 @@ func scanErrorCSV(file *os.File, name, query, fieldFilter string, offset, limit 
 			}
 			current.Count++
 			messageCounts[key] = current
+			issueValue := errorIssueValue(header, record, field)
+			issueKey := field + "\x00" + messagePattern + "\x00" + issueValue
+			aggregate := issueCounts[issueKey]
+			if aggregate == nil {
+				aggregate = &errorIssueAggregate{
+					issue: ErrorReportIssue{
+						Field:   field,
+						Message: messagePattern,
+						Value:   truncateText(issueValue, 160),
+						Samples: make([]ErrorReportSample, 0, 5),
+					},
+				}
+				issueCounts[issueKey] = aggregate
+			}
+			aggregate.issue.Count++
+			if len(aggregate.issue.Samples) < 5 {
+				aggregate.issue.Samples = append(aggregate.issue.Samples, sample)
+			}
 		}
 
 		if *matchedRows <= offset || len(*samples) >= limit {
 			continue
 		}
-		*samples = append(*samples, ErrorReportSample{
-			File:        name,
-			RowNumber:   csvCell(record, rowIndex),
-			Errors:      truncateText(errorsText, 500),
-			ErrorFields: errorFieldNames(parsed),
-			Columns:     sampleRecordColumns(header, record, parsed),
-			Values:      sampleRecordValues(header, record),
-		})
+		*samples = append(*samples, sample)
 	}
 
 	return fileMatched, fileScanned, nil
@@ -2089,6 +2124,14 @@ func errorFieldNames(parsed []parsedErrorMessage) []string {
 	return fields
 }
 
+func errorIssueValue(header, record []string, field string) string {
+	index := indexOfHeader(header, field)
+	if index < 0 {
+		return ""
+	}
+	return csvCell(record, index)
+}
+
 func sampleRecordColumns(header, record []string, parsed []parsedErrorMessage) []ErrorReportColumn {
 	errorFields := make(map[string]struct{})
 	for _, field := range errorFieldNames(parsed) {
@@ -2155,6 +2198,32 @@ func topMessages(counts map[string]ErrorReportMessage, limit int) []ErrorReportM
 		return messages[:limit]
 	}
 	return messages
+}
+
+func topIssues(counts map[string]*errorIssueAggregate, limit int) []ErrorReportIssue {
+	issues := make([]ErrorReportIssue, 0, len(counts))
+	for _, aggregate := range counts {
+		if aggregate == nil {
+			continue
+		}
+		issues = append(issues, aggregate.issue)
+	}
+	sort.Slice(issues, func(i, j int) bool {
+		if issues[i].Count != issues[j].Count {
+			return issues[i].Count > issues[j].Count
+		}
+		if strings.ToLower(issues[i].Field) != strings.ToLower(issues[j].Field) {
+			return strings.ToLower(issues[i].Field) < strings.ToLower(issues[j].Field)
+		}
+		if strings.ToLower(issues[i].Message) != strings.ToLower(issues[j].Message) {
+			return strings.ToLower(issues[i].Message) < strings.ToLower(issues[j].Message)
+		}
+		return strings.ToLower(issues[i].Value) < strings.ToLower(issues[j].Value)
+	})
+	if len(issues) > limit {
+		return issues[:limit]
+	}
+	return issues
 }
 
 func indexOfHeader(header []string, name string) int {

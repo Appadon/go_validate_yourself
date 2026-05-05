@@ -305,6 +305,12 @@ func TestHandleErrorReportNormalizesQuotedMessageValues(t *testing.T) {
 	if response.Messages[0].Message != "invalid float: <value>" || response.Messages[0].Count != 2 {
 		t.Fatalf("unexpected normalized message: %+v", response.Messages[0])
 	}
+	if len(response.Issues) != 2 {
+		t.Fatalf("issues = %+v, want one issue per invalid value", response.Issues)
+	}
+	if response.Issues[0].Value != "ABC" || response.Issues[0].Message != "invalid float: <value>" || response.Issues[0].Count != 1 {
+		t.Fatalf("unexpected first issue: %+v", response.Issues[0])
+	}
 	if !strings.Contains(response.Samples[0].Errors, `"ABC"`) {
 		t.Fatalf("sample errors lost original value: %q", response.Samples[0].Errors)
 	}

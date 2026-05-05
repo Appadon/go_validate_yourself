@@ -87,9 +87,15 @@
     errorExplorer: {
       open: false,
     },
+    reviewErrorSummary: {
+      status: "idle",
+      key: "",
+      data: null,
+      error: "",
+    },
     wizard: {
       activeStep: 0,
-      maxStep: 4,
+      maxStep: 5,
     },
   };
 
@@ -100,7 +106,6 @@
     wizardBackButton: document.getElementById("wizard-back-button"),
     wizardNextButton: document.getElementById("wizard-next-button"),
     wizardStepStatus: document.getElementById("wizard-step-status"),
-    refreshFilesButton: document.getElementById("refresh-files-button"),
     defaultsStatus: document.getElementById("defaults-status"),
     phaseSplit: document.getElementById("phase-split"),
     phaseValidate: document.getElementById("phase-validate"),
@@ -175,6 +180,10 @@
     progressFill: document.getElementById("progress-fill"),
     phaseTimeline: document.getElementById("phase-timeline"),
     summaryCards: document.getElementById("summary-cards"),
+    reviewErrorSummary: document.getElementById("review-error-summary"),
+    copyReportButton: document.getElementById("copy-report-button"),
+    downloadReportButton: document.getElementById("download-report-button"),
+    reportStatus: document.getElementById("report-status"),
     errorExplorerOpenButton: document.getElementById("error-explorer-open-button"),
     errorExplorerModal: document.getElementById("error-explorer-modal"),
     errorExplorerBackdrop: document.getElementById("error-explorer-backdrop"),
@@ -209,10 +218,6 @@
   }
 
   function bindEvents() {
-    els.refreshFilesButton.addEventListener("click", function () {
-      refreshFileLists();
-    });
-
     els.wizardBackButton.addEventListener("click", previousWizardStep);
     els.wizardNextButton.addEventListener("click", nextWizardStep);
     els.wizardStepButtons.forEach(function (button) {
@@ -258,6 +263,8 @@
     els.errorExplorerOpenButton.addEventListener("click", function () {
       openErrorExplorer();
     });
+    els.copyReportButton.addEventListener("click", copyRunReport);
+    els.downloadReportButton.addEventListener("click", downloadRunReport);
 
     configControlElements().forEach(function (control) {
       control.addEventListener("input", handleConfigControlChange);
@@ -705,7 +712,7 @@
       stopPendingConfigRunAttach();
       replaceSnapshot(payload.run);
       render();
-      setFormMessage("Run completed. Final result is shown below.", "ok");
+      setFormMessage("Run completed. Final report is available in Review.", "ok");
       refreshHealth();
     } catch (error) {
       setFormMessage(error.message || "Run creation failed", "error");
@@ -800,6 +807,7 @@
           state.result = null;
           state.events = [];
           state.seenEvents = new Set();
+          resetReviewErrorSummary();
           closeStream();
           render();
           return;
@@ -842,8 +850,12 @@
   }
 
   function replaceSnapshot(snapshot) {
+    const previousRunId = state.snapshot && state.snapshot.run_id;
     state.snapshot = snapshot;
     state.runId = snapshot.run_id;
+    if (previousRunId !== snapshot.run_id) {
+      resetReviewErrorSummary();
+    }
     if (!isTerminalState(snapshot.state)) {
       state.result = null;
     }
@@ -852,6 +864,15 @@
     (snapshot.events || []).forEach(function (event) {
       pushEvent(event);
     });
+  }
+
+  function resetReviewErrorSummary() {
+    state.reviewErrorSummary = {
+      status: "idle",
+      key: "",
+      data: null,
+      error: "",
+    };
   }
 
   function applySelectionFromSnapshot(snapshot) {
@@ -955,6 +976,8 @@
     renderPreview();
     renderRunState();
     renderSummary();
+    renderReviewErrorSummary();
+    renderReportActions();
     renderEvents();
     updateSubmitState();
     renderPicker();
@@ -971,6 +994,9 @@
     }
     state.wizard.activeStep = nextStep;
     renderWizard();
+    if (nextStep === 5) {
+      ensureReviewErrorSummary();
+    }
   }
 
   function nextWizardStep() {
@@ -979,6 +1005,9 @@
       return;
     }
     setWizardStep(state.wizard.activeStep + 1);
+    if (state.wizard.activeStep === 5) {
+      ensureReviewErrorSummary();
+    }
   }
 
   function previousWizardStep() {
@@ -1018,7 +1047,7 @@
     const busy = Boolean(state.health && state.health.busy);
     const runningThisPage = state.snapshot && state.snapshot.state === "running";
     const previewOK = state.preview.status === "ok";
-    els.wizardNextButton.textContent = confirmStep ? "Start run" : "Next";
+    els.wizardNextButton.textContent = confirmStep ? "Start validation run" : "Next";
     els.wizardNextButton.disabled = activeStep === state.wizard.maxStep || (confirmStep && (!previewOK || (busy && !runningThisPage)));
   }
 
@@ -1077,10 +1106,7 @@
 
     const resolved = state.preview.resolved;
     if (!resolved) {
-      els.resolvedPreview.innerHTML = previewSectionHTML("Resolver", [
-        rowHTML("Status", resolverStatusText()),
-        rowHTML("Details", state.preview.error || "Choose inputs to preview the effective pipeline."),
-      ]);
+      els.resolvedPreview.innerHTML = previewHeroHTML("Waiting for a valid setup", state.preview.error || "Choose the input, schema, and workflow options to see the final run summary.", "muted");
       return;
     }
 
@@ -1094,71 +1120,63 @@
     const hasSplit = phaseInPlan(resolved, "split");
     const hasValidate = phaseInPlan(resolved, "validate");
     const hasBatch = phaseInPlan(resolved, "batch");
+    const phaseLabels = Array.isArray(plan.phases) ? plan.phases.map(phaseLabel).filter(Boolean) : [];
     const sections = [
-      previewSectionHTML("Resolver", [
-        rowHTML("Status", resolverStatusText()),
-        rowHTML("Errors", state.preview.error ? state.preview.error : "None"),
-      ]),
       previewSectionHTML("Workflow", [
-        rowHTML("Phases", listText(plan.phases)),
-        rowHTML("Resume policy", valueText(plan.resume_policy)),
-        rowHTML("Worker setting", valueText(runtime.workers)),
-        rowHTML("Effective workers", valueText(resolved.effective_workers)),
+        rowHTML("Phases", phaseLabels.length ? phaseLabels.join(" -> ") : "None selected"),
+        rowHTML("Resume behavior", resumePolicyText(plan.resume_policy)),
+        rowHTML("Workers", workerText(runtime.workers, resolved.effective_workers)),
       ]),
     ];
 
     const inputRows = [];
     if (hasSplit) {
-      inputRows.push(rowHTML("Selected CSV/source", valueText(plan.split_input_csv || inputs.main_csv)));
+      inputRows.push(rowHTML("Main CSV", pathText(plan.split_input_csv || inputs.main_csv)));
     }
     if (hasValidate) {
-      inputRows.push(rowHTML("Selected schema", valueText(plan.validate_schema || inputs.schema)));
-      inputRows.push(rowHTML("Validation source", valueText(plan.validate_input_csv || plan.validate_input_dir || inputs.validate_csv || inputs.validate_dir)));
+      inputRows.push(rowHTML("Schema", pathText(plan.validate_schema || inputs.schema)));
+      inputRows.push(rowHTML("Rows to validate", pathText(plan.validate_input_csv || plan.validate_input_dir || inputs.validate_csv || inputs.validate_dir)));
     }
     if (hasBatch) {
-      inputRows.push(rowHTML("Batch source", valueText(plan.batch_input_dir || batch.input_dir)));
+      inputRows.push(rowHTML("Parquet source", pathText(plan.batch_input_dir || batch.input_dir)));
     }
-    sections.push(previewSectionHTML("Inputs", inputRows.length ? inputRows : [
-      rowHTML("Source", "No phase source selected"),
+    sections.push(previewSectionHTML("Files used", inputRows.length ? inputRows : [
+      rowHTML("Source", "No source selected"),
     ]));
 
     const outputRows = [];
     if (hasSplit) {
-      outputRows.push(rowHTML("Split output", valueText(plan.split_output_dir || outputs.split_dir)));
+      outputRows.push(rowHTML("Split CSVs", pathText(plan.split_output_dir || outputs.split_dir)));
     }
     if (hasValidate) {
-      outputRows.push(rowHTML("Success directory", valueText(plan.validation_success_dir || outputs.success_dir)));
-      outputRows.push(rowHTML("Error directory", valueText(plan.validation_error_dir || outputs.error_dir)));
+      outputRows.push(rowHTML("Valid parquet", pathText(plan.validation_success_dir || outputs.success_dir)));
+      outputRows.push(rowHTML("Error CSVs", pathText(plan.validation_error_dir || outputs.error_dir)));
     }
     if (hasBatch) {
-      outputRows.push(rowHTML("Batch export", valueText(plan.batch_output_dir || outputs.batch_export_dir)));
+      outputRows.push(rowHTML("Batch export", pathText(plan.batch_output_dir || outputs.batch_export_dir)));
     }
-    sections.push(previewSectionHTML("Output Directories", outputRows.length ? outputRows : [
+    sections.push(previewSectionHTML("Output folders", outputRows.length ? outputRows : [
       rowHTML("Outputs", "No output directories for the selected phases"),
     ]));
 
+    const settingRows = [];
     if (hasSplit) {
-      sections.push(previewSectionHTML("Split", [
-        rowHTML("Primary key", splitPrimaryKeyText(resolved)),
-        rowHTML("Max open writers", valueText(split.max_open_writers)),
-        rowHTML("Missing keys file", valueText(split.missing_keys_file)),
-        rowHTML("Reuse cache", booleanText(split.reuse_cache)),
-      ]));
+      settingRows.push(rowHTML("Split by", splitPrimaryKeyText(resolved)));
+      settingRows.push(rowHTML("Split cache", split.reuse_cache ? "Reuse valid cached split files" : "Create split files again"));
     }
-
     if (hasValidate) {
-      sections.push(previewSectionHTML("Validation Options", [
-        rowHTML("Write empty error files", booleanText(validation.write_empty_error)),
-        rowHTML("Clear validation outputs", booleanText(validation.clear_outputs)),
-      ]));
+      settingRows.push(rowHTML("Validation outputs", validation.clear_outputs ? "Clear existing validation outputs first" : "Keep existing validation outputs"));
+      settingRows.push(rowHTML("Empty error files", validation.write_empty_error ? "Write an error file even when no rows fail" : "Only write error files when rows fail"));
     }
-
     if (hasBatch) {
-      sections.push(previewSectionHTML("Batch / Export", [
-        rowHTML("Batch size", valueText(batch.size)),
-        rowHTML("Clear batch output", booleanText(batch.clear_output)),
-      ]));
+      settingRows.push(rowHTML("Batch size", valueText(batch.size)));
+      settingRows.push(rowHTML("Batch output", batch.clear_output ? "Clear existing batch export first" : "Keep existing batch export files"));
     }
+    sections.push(previewSectionHTML("Important settings", settingRows.length ? settingRows : [
+      rowHTML("Settings", "No extra settings for this workflow"),
+    ]));
+
+    sections.push(previewSectionHTML("Before you start", confirmationNotes(resolved, state.preview.error)));
 
     els.resolvedPreview.innerHTML = sections.join("");
   }
@@ -1287,7 +1305,10 @@
     const batchSummary = field(result, "batch_summary") || {};
 
     if (!snapshot) {
-      els.summaryCards.innerHTML = "";
+      els.summaryCards.innerHTML = cardHTML("Report", [
+        rowHTML("Status", "No run selected"),
+        rowHTML("Details", "Run metrics will appear here after validation starts."),
+      ]);
       return;
     }
 
@@ -1330,6 +1351,358 @@
     }
 
     els.summaryCards.innerHTML = cards.join("");
+  }
+
+  function renderReportActions() {
+    const hasSnapshot = Boolean(state.snapshot);
+    els.copyReportButton.disabled = !hasSnapshot;
+    els.downloadReportButton.disabled = !hasSnapshot;
+    if (!hasSnapshot && !els.reportStatus.textContent) {
+      els.reportStatus.textContent = "Start a run to generate report data.";
+      els.reportStatus.dataset.tone = "info";
+    } else if (hasSnapshot && els.reportStatus.textContent === "Start a run to generate report data.") {
+      els.reportStatus.textContent = "";
+      els.reportStatus.dataset.tone = "info";
+    }
+  }
+
+  function renderReviewErrorSummary() {
+    const summary = state.reviewErrorSummary;
+    if (!state.snapshot) {
+      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Validation error patterns will appear here after a run is available.</p>';
+      return;
+    }
+    if (summary.status === "loading") {
+      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Loading validation error summary.</p>';
+      return;
+    }
+    if (summary.status === "error") {
+      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">' + escapeHTML(summary.error || "Could not load validation error summary.") + "</p>";
+      return;
+    }
+    if (!summary.data) {
+      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Open Review to load grouped validation errors and examples.</p>';
+      return;
+    }
+    if (!summary.data.issues.length) {
+      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">No validation error patterns were found in ' + escapeHTML(summary.data.path || currentErrorDir()) + ".</p>";
+      return;
+    }
+    els.reviewErrorSummary.innerHTML = summary.data.issues.map(reviewIssueHTML).join("");
+  }
+
+  function ensureReviewErrorSummary() {
+    if (!state.snapshot) {
+      return;
+    }
+    const key = reviewErrorSummaryKey();
+    if (state.reviewErrorSummary.key === key && (state.reviewErrorSummary.status === "loading" || state.reviewErrorSummary.status === "ok")) {
+      return;
+    }
+    loadReviewErrorSummary(key);
+  }
+
+  function reviewErrorSummaryKey() {
+    return (state.snapshot && state.snapshot.run_id ? state.snapshot.run_id : "run") + "|" + currentErrorDir();
+  }
+
+  async function loadReviewErrorSummary(key) {
+    state.reviewErrorSummary = {
+      status: "loading",
+      key: key,
+      data: null,
+      error: "",
+    };
+    renderReviewErrorSummary();
+
+    try {
+      const path = currentErrorDir();
+      const report = await fetchErrorReport({ path: path, limit: 1 });
+      const primaryKey = reviewPrimaryKeyName(report);
+      const issues = await reviewIssuesFromMessages(path, report, primaryKey);
+      state.reviewErrorSummary = {
+        status: "ok",
+        key: key,
+        data: {
+          path: report.relative_path || path,
+          primaryKey: primaryKey,
+          matchedRows: report.matched_rows || 0,
+          issues: issues,
+        },
+        error: "",
+      };
+      renderReviewErrorSummary();
+    } catch (error) {
+      state.reviewErrorSummary = {
+        status: "error",
+        key: key,
+        data: null,
+        error: error.message || "Could not load validation error summary.",
+      };
+      renderReviewErrorSummary();
+    }
+  }
+
+  async function reviewIssuesFromMessages(path, report, primaryKey) {
+    const messages = uniqueReviewMessages(report.messages).slice(0, 8);
+    return Promise.all(messages.map(async function (message) {
+      const examplesReport = await fetchErrorReport({
+        path: path,
+        field: message.field || "",
+        q: queryForErrorPattern(message.message || ""),
+        limit: 50,
+      });
+      const examples = reviewExamples(examplesReport.samples || [], message.field || "", primaryKey);
+      return {
+        field: message.field || "Unspecified",
+        message: message.message || "Validation error",
+        count: message.count || 0,
+        examples: examples,
+      };
+    }));
+  }
+
+  async function fetchErrorReport(options) {
+    const params = new URLSearchParams();
+    params.set("path", cleanRelativePath(options.path || currentErrorDir()) || "errors");
+    params.set("limit", String(options.limit || 5));
+    if (options.offset) {
+      params.set("offset", String(options.offset));
+    }
+    if (options.field) {
+      params.set("field", options.field);
+    }
+    if (options.q) {
+      params.set("q", options.q);
+    }
+    const response = await fetch("/api/errors/report?" + params.toString());
+    const payload = await parseJSON(response);
+    if (!response.ok) {
+      throw new Error(payload && payload.message ? payload.message : "Could not load error report");
+    }
+    return payload || {};
+  }
+
+  function reviewPrimaryKeyName(report) {
+    const final = finalResultInfo();
+    const result = final.pipeline || {};
+    const resolved = final.resolved || state.lastSubmittedResolved || state.preview.resolved || {};
+    const configured = result.split_primary_key || (resolved.split && resolved.split.primary_key) || els.splitPrimaryKeyInput.value.trim();
+    if (configured) {
+      return configured;
+    }
+    const sample = report && Array.isArray(report.samples) && report.samples.length ? report.samples[0] : null;
+    const columns = sampleColumnsForReview(sample);
+    return columns.length ? columns[0].name : "Primary key";
+  }
+
+  function reviewExamples(samples, fieldName, primaryKey) {
+    const seen = new Set();
+    const examples = [];
+    samples.forEach(function (sample) {
+      const values = sample.values || {};
+      const columns = sampleColumnsForReview(sample);
+      const errored = columns.find(function (column) {
+        return column.name === fieldName;
+      }) || columns.find(function (column) {
+        return column.errored;
+      }) || { name: fieldName || "Value", value: "" };
+      const primary = Object.prototype.hasOwnProperty.call(values, primaryKey)
+        ? values[primaryKey]
+        : columns.length ? columns[0].value : "";
+      const example = {
+        primaryKey: primaryKey || "Primary key",
+        primaryValue: primary,
+        field: errored.name || fieldName || "Value",
+        value: errored.value || "",
+      };
+      const key = [example.primaryValue, example.field, example.value].join("\x00");
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      examples.push(example);
+    });
+    return examples.slice(0, 5);
+  }
+
+  function uniqueReviewMessages(messages) {
+    const seen = new Set();
+    const out = [];
+    (Array.isArray(messages) ? messages : []).forEach(function (message) {
+      const field = message.field || "Unspecified";
+      const text = message.message || "Validation error";
+      const key = field.toLowerCase() + "\x00" + text.toLowerCase();
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      out.push(message);
+    });
+    return out;
+  }
+
+  function sampleColumnsForReview(sample) {
+    if (!sample) {
+      return [];
+    }
+    if (Array.isArray(sample.columns) && sample.columns.length) {
+      return sample.columns.map(function (column) {
+        return {
+          name: column.name || "",
+          value: column.value == null ? "" : String(column.value),
+          errored: Boolean(column.errored),
+        };
+      });
+    }
+    const values = sample.values || {};
+    const errorFields = new Set(Array.isArray(sample.error_fields) ? sample.error_fields : []);
+    return Object.keys(values).map(function (key) {
+      return {
+        name: key,
+        value: values[key],
+        errored: errorFields.has(key),
+      };
+    });
+  }
+
+  function reviewIssueHTML(issue) {
+    return [
+      '<article class="review-issue">',
+      '<div class="review-issue__head">',
+      '<div><h4>' + escapeHTML(issue.field) + '</h4><p class="review-issue__message">' + escapeHTML(issue.message) + '</p></div>',
+      '<span class="badge badge--warn">' + escapeHTML(compactNumber(issue.count)) + ' rows</span>',
+      '</div>',
+      '<dl class="review-examples">',
+      issue.examples.length ? issue.examples.map(reviewExampleHTML).join("") : '<p class="review-error-summary__empty">No row examples available for this pattern.</p>',
+      '</dl>',
+      '</article>',
+    ].join("");
+  }
+
+  function reviewExampleHTML(example) {
+    return [
+      '<div class="review-example">',
+      '<div><dt>' + escapeHTML(example.primaryKey || "Primary key") + '</dt><dd>' + escapeHTML(displayCellValue(example.primaryValue)) + '</dd></div>',
+      '<div><dt>' + escapeHTML(example.field || "Value") + '</dt><dd>' + escapeHTML(displayCellValue(example.value)) + '</dd></div>',
+      '</div>',
+    ].join("");
+  }
+
+  function queryForErrorPattern(message) {
+    return String(message || "").replace(/<value>/g, "").replace(/\s+/g, " ").replace(/:\s*$/, "").trim();
+  }
+
+  async function copyRunReport() {
+    if (!state.snapshot) {
+      setReportStatus("Start a run before copying a report.", "warn");
+      return;
+    }
+    if (!state.reviewErrorSummary.data && state.reviewErrorSummary.status !== "loading") {
+      await loadReviewErrorSummary(reviewErrorSummaryKey());
+    }
+    const text = buildRunReportText();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        copyTextFallback(text);
+      }
+      setReportStatus("Report summary copied.", "ok");
+    } catch (error) {
+      setReportStatus("Could not copy the report summary.", "error");
+    }
+  }
+
+  async function downloadRunReport() {
+    if (!state.snapshot) {
+      setReportStatus("Start a run before downloading a report.", "warn");
+      return;
+    }
+    if (!state.reviewErrorSummary.data && state.reviewErrorSummary.status !== "loading") {
+      await loadReviewErrorSummary(reviewErrorSummaryKey());
+    }
+    const blob = new Blob([JSON.stringify(buildRunReportData(), null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = (state.snapshot.run_id || "gvy-run") + ".report.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setReportStatus("JSON report downloaded.", "ok");
+  }
+
+  function buildRunReportData() {
+    const final = finalResultInfo();
+    return {
+      run: state.snapshot || null,
+      resolved_config: final.resolved || state.lastSubmittedResolved || state.preview.resolved || null,
+      result: final.pipeline || null,
+      error_summary: state.reviewErrorSummary.data || null,
+      events: state.events || [],
+    };
+  }
+
+  function buildRunReportText() {
+    const snapshot = state.snapshot || {};
+    const final = finalResultInfo();
+    const result = final.pipeline || {};
+    const splitSummary = field(result, "split_summary") || {};
+    const validation = field(result, "validation", "validation_dir") || {};
+    const validationSummary = field(validation, "summary") || {};
+    const batchSummary = field(result, "batch_summary") || {};
+    return [
+      "GVY Run Report",
+      "Run ID: " + valueText(snapshot.run_id),
+      "Status: " + formatState(snapshot.state),
+      "Runtime: " + runTimeText(snapshot),
+      "Rows validated: " + totalRowsText(),
+      "Split rows: " + numberText(field(splitSummary, "total_rows", "TotalRows")),
+      "Validation valid rows: " + numberText(field(validationSummary, "valid_rows", "ValidRows")),
+      "Validation invalid rows: " + numberText(field(validationSummary, "invalid_rows", "InvalidRows")),
+      "Batch rows written: " + numberText(field(batchSummary, "total_rows", "TotalRows")),
+      "Final error: " + valueText((state.result && state.result.final_error) || snapshot.final_error),
+      "",
+      buildErrorSummaryText(),
+    ].join("\n");
+  }
+
+  function buildErrorSummaryText() {
+    const data = state.reviewErrorSummary.data;
+    if (!data || !Array.isArray(data.issues)) {
+      return "Validation error summary: Not loaded";
+    }
+    if (!data.issues.length) {
+      return "Validation error summary: No error patterns found";
+    }
+    const lines = ["Validation error summary:"];
+    data.issues.forEach(function (issue, index) {
+      lines.push("");
+      lines.push(String(index + 1) + ". " + issue.field + " - " + issue.message + " (" + issue.count + " rows)");
+      issue.examples.forEach(function (example) {
+        lines.push("   - " + example.primaryKey + "=" + displayCellValue(example.primaryValue) + "; " + example.field + "=" + displayCellValue(example.value));
+      });
+    });
+    return lines.join("\n");
+  }
+
+  function copyTextFallback(text) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+
+  function setReportStatus(message, tone) {
+    els.reportStatus.textContent = message;
+    els.reportStatus.dataset.tone = tone || "info";
   }
 
   function currentErrorDir() {
@@ -2219,6 +2592,13 @@
     return String(value);
   }
 
+  function displayCellValue(value) {
+    if (value == null || value === "") {
+      return "(blank)";
+    }
+    return String(value);
+  }
+
   function valueOrEmpty(value) {
     if (value == null) {
       return "";
@@ -2240,6 +2620,65 @@
 
   function booleanText(value) {
     return value ? "Yes" : "No";
+  }
+
+  function pathText(value) {
+    const text = valueText(value);
+    return text === "Not available" ? "Not selected" : text;
+  }
+
+  function phaseLabel(phase) {
+    switch (phase) {
+      case "split":
+        return "Split";
+      case "validate":
+        return "Validate";
+      case "batch":
+        return "Batch export";
+      default:
+        return valueText(phase);
+    }
+  }
+
+  function resumePolicyText(value) {
+    switch (value) {
+      case "reuse_valid_outputs":
+        return "Reuse valid existing outputs where possible";
+      case "start_at_first_missing":
+        return "Resume from the first missing output";
+      case "run_all":
+        return "Run every selected phase from scratch";
+      default:
+        return valueText(value);
+    }
+  }
+
+  function workerText(configured, effective) {
+    const effectiveText = valueText(effective);
+    if (!configured) {
+      return "Auto (" + effectiveText + " effective)";
+    }
+    return String(configured) + " configured (" + effectiveText + " effective)";
+  }
+
+  function confirmationNotes(resolved, error) {
+    if (error) {
+      return [
+        rowHTML("Blocked", error),
+      ];
+    }
+    const validation = resolved.validation || {};
+    const batch = resolved.batch || {};
+    const notes = [
+      rowHTML("Validation", "The server has resolved this setup successfully."),
+    ];
+    if (validation.clear_outputs || batch.clear_output) {
+      notes.push(rowHTML("Output clearing", "One or more clear-output settings are enabled."));
+    } else {
+      notes.push(rowHTML("Output clearing", "Existing output folders will not be cleared first."));
+    }
+    notes.push(rowHTML("Next action", "Start validation run will begin immediately."));
+    return notes;
   }
 
   function resolverStatusText() {
@@ -2287,6 +2726,15 @@
       rows.join(""),
       "</dl>",
       "</dd>",
+      "</div>",
+    ].join("");
+  }
+
+  function previewHeroHTML(title, detail, tone) {
+    return [
+      '<div class="preview-group preview-group--hero preview-group--' + escapeHTML(tone || "muted") + '">',
+      '<dt class="preview-group__title">' + escapeHTML(title) + "</dt>",
+      '<dd class="preview-group__summary">' + escapeHTML(detail) + "</dd>",
       "</div>",
     ].join("");
   }
