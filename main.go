@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go_validate_yourself/internal/api"
+	"go_validate_yourself/internal/banner"
 	gvyconfig "go_validate_yourself/internal/config"
 	"go_validate_yourself/internal/console"
 	"go_validate_yourself/internal/service"
@@ -761,7 +762,15 @@ func runResolvedServer(resolved gvyconfig.ResolvedConfig) error {
 	if !isLoopbackHost(resolved.Server.Host) {
 		return fmt.Errorf("server mode only supports loopback hosts; got %q", resolved.Server.Host)
 	}
-	fmt.Fprintf(os.Stdout, "server running on http://%s:%d/\n", resolved.Server.Host, resolved.Server.Port)
+	if err := banner.PrintStartup(os.Stdout); err != nil {
+		return fmt.Errorf("print startup banner: %w", err)
+	}
+	if err := banner.AnimateConsoleReady(os.Stdout); err != nil {
+		return fmt.Errorf("animate web console startup: %w", err)
+	}
+	if err := banner.PrintConsoleURL(os.Stdout, fmt.Sprintf("http://%s:%d/", resolved.Server.Host, resolved.Server.Port)); err != nil {
+		return fmt.Errorf("print server URL: %w", err)
+	}
 	server := api.NewServer(resolved.Server.Host, resolved.Server.Port, service.New())
 	return server.ListenAndServe()
 }
