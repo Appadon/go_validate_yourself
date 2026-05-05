@@ -70,6 +70,7 @@
     inferenceSection: document.getElementById("inference-section"),
     inferenceResultToggleButton: document.getElementById("inference-result-toggle-button"),
     csvSelectionSummary: document.getElementById("csv-selection-summary"),
+    inferenceCloseButton: document.getElementById("inference-close-button"),
     sampleSizeInput: document.getElementById("sample-size-input"),
     strategyInput: document.getElementById("strategy-input"),
     keepSamplesInput: document.getElementById("keep-samples-input"),
@@ -180,6 +181,7 @@
       loadSelectedSchema();
     });
     els.generateToggleButton.addEventListener("click", toggleInferencePanel);
+    els.inferenceCloseButton.addEventListener("click", closeInferencePanel);
     els.inferenceResultToggleButton.addEventListener("click", toggleInferenceResult);
     els.saveButton.addEventListener("click", function () {
       saveToDefaultOrPicker(false);
@@ -205,6 +207,7 @@
     });
     els.csvFileSelect.addEventListener("dblclick", chooseCSVPickerSelection);
     els.csvPickerChooseButton.addEventListener("click", chooseCSVPickerSelection);
+    window.addEventListener("message", handleParentMessage);
     els.sampleSizeInput.addEventListener("input", function () {
       state.sampleSize = parseSampleSize();
     });
@@ -436,12 +439,31 @@
     }
   }
 
+  function closeInferencePanel() {
+    state.inferencePanelOpen = false;
+    render();
+    if (els.generateToggleButton && !els.generateToggleButton.hidden) {
+      els.generateToggleButton.focus({ preventScroll: true });
+    }
+  }
+
   function toggleInferenceResult() {
     if (!state.inferenceResult) {
       return;
     }
     state.inferenceResultOpen = !state.inferenceResultOpen;
     render();
+  }
+
+  function handleParentMessage(event) {
+    if (event.origin !== window.location.origin) {
+      return;
+    }
+    const data = event.data || {};
+    if (data.type !== "gvy:schema-save-request") {
+      return;
+    }
+    saveToDefaultOrPicker(Boolean(data.close));
   }
 
   function openColumnOptions(index) {

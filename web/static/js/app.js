@@ -141,6 +141,9 @@
     schemaEditorNewButton: document.getElementById("schema-editor-new-button"),
     schemaEditorModal: document.getElementById("schema-editor-modal"),
     schemaEditorBackdrop: document.getElementById("schema-editor-backdrop"),
+    schemaEditorTitle: document.getElementById("schema-editor-title"),
+    schemaEditorSaveButton: document.getElementById("schema-editor-save-button"),
+    schemaEditorSaveQuitButton: document.getElementById("schema-editor-save-quit-button"),
     schemaEditorCloseButton: document.getElementById("schema-editor-close-button"),
     schemaEditorFrame: document.getElementById("schema-editor-frame"),
     schemaDraftModal: document.getElementById("schema-draft-modal"),
@@ -317,6 +320,12 @@
     window.addEventListener("message", handleFrameMessage);
     els.schemaInferCloseButton.addEventListener("click", closeSchemaInfer);
     els.schemaInferBackdrop.addEventListener("click", closeSchemaInfer);
+    els.schemaEditorSaveButton.addEventListener("click", function () {
+      requestSchemaEditorSave(false);
+    });
+    els.schemaEditorSaveQuitButton.addEventListener("click", function () {
+      requestSchemaEditorSave(true);
+    });
     els.schemaEditorCloseButton.addEventListener("click", closeSchemaEditor);
     els.schemaEditorBackdrop.addEventListener("click", closeSchemaEditor);
     els.errorExplorerCloseButton.addEventListener("click", closeErrorExplorer);
@@ -1436,6 +1445,7 @@
       params.set("csv", state.selected.csv);
     }
     state.schemaEditor.open = true;
+    els.schemaEditorTitle.textContent = "Generate Schema";
     els.schemaEditorFrame.src = "/schema-workbench?" + params.toString();
     renderSchemaEditorModal();
   }
@@ -1501,6 +1511,7 @@
     }
     addSelectedCSVParam(params);
     state.schemaEditor.open = true;
+    els.schemaEditorTitle.textContent = "Schema Editor";
     els.schemaEditorFrame.src = "/schema-workbench?" + params.toString();
     renderSchemaEditorModal();
   }
@@ -1517,6 +1528,7 @@
     params.set("path", clean);
     addSelectedCSVParam(params);
     state.schemaEditor.open = true;
+    els.schemaEditorTitle.textContent = "Schema Editor";
     els.schemaEditorFrame.src = "/schema-workbench?" + params.toString();
     renderSchemaEditorModal();
   }
@@ -1531,6 +1543,7 @@
     params.set("draft", clean);
     addSelectedCSVParam(params);
     state.schemaEditor.open = true;
+    els.schemaEditorTitle.textContent = "Schema Editor";
     els.schemaEditorFrame.src = "/schema-workbench?" + params.toString();
     renderSchemaEditorModal();
   }
@@ -1539,6 +1552,16 @@
     if (state.selected.csv) {
       params.set("csv", state.selected.csv);
     }
+  }
+
+  function requestSchemaEditorSave(closeAfter) {
+    if (!state.schemaEditor.open || !els.schemaEditorFrame.contentWindow) {
+      return;
+    }
+    els.schemaEditorFrame.contentWindow.postMessage({
+      type: "gvy:schema-save-request",
+      close: Boolean(closeAfter),
+    }, window.location.origin);
   }
 
   function closeSchemaEditor() {

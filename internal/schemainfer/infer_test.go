@@ -42,6 +42,25 @@ func TestInferByteSpreadInfersCommonGVYTypes(t *testing.T) {
 	}
 }
 
+func TestInferByteSpreadReturnsRequestedSamplesWhenEnoughRowsExist(t *testing.T) {
+	path := writeInferenceFixture(t, 120)
+
+	result, err := Infer(context.Background(), path, Options{
+		SampleSize:  100,
+		Strategy:    StrategyByteSpread,
+		KeepSamples: true,
+	})
+	if err != nil {
+		t.Fatalf("Infer() error = %v", err)
+	}
+	if result.SampledRows != 100 {
+		t.Fatalf("sampled rows = %d, want 100", result.SampledRows)
+	}
+	if len(result.Samples) != 100 {
+		t.Fatalf("retained samples = %d, want 100", len(result.Samples))
+	}
+}
+
 func TestInferHeadHandlesQuotedNewlines(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "quoted.csv")

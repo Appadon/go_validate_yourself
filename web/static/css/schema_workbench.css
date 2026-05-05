@@ -72,6 +72,14 @@
   gap: 0.55rem;
 }
 
+.schema-shell--embed .schema-workflow {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.schema-shell--embed .schema-workflow__right {
+  display: none;
+}
+
 .schema-workflow__save {
   justify-self: end;
 }
@@ -196,12 +204,25 @@
   top: 50%;
   left: 50%;
   z-index: 12;
-  width: min(76rem, calc(100% - 1.7rem));
+  width: min(68rem, calc(100% - 1.7rem));
   max-height: calc(100% - 1.7rem);
   overflow: auto;
   transform: translate(-50%, -50%);
-  border-color: rgba(118, 168, 255, 0.48);
-  box-shadow: 0 1.6rem 3.4rem rgba(0, 0, 0, 0.56);
+  padding: 0;
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.99), rgba(9, 13, 21, 0.99));
+  border-color: rgba(151, 171, 204, 0.3);
+  box-shadow: 0 1.7rem 3.8rem rgba(0, 0, 0, 0.62);
+}
+
+.schema-inference .schema-section-head {
+  align-items: center;
+  padding: 0.85rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.schema-inference .schema-inference__controls {
+  padding: 0.9rem;
 }
 
 .schema-inference-results {
@@ -777,6 +798,14 @@
   .schema-workflow__right {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .schema-shell--embed .schema-workflow__right {
+    display: none;
+  }
+
+  .schema-inference .schema-section-head {
+    align-items: flex-start;
   }
 
   .draft-location-panel {

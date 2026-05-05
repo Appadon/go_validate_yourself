@@ -821,6 +821,13 @@ body::before {
   border-bottom: 1px solid var(--border);
 }
 
+.schema-editor-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 .schema-editor-card__bar h2 {
   margin: 0.12rem 0 0;
   font-size: 1.1rem;
@@ -1776,6 +1783,11 @@ code {
   .schema-editor-card {
     height: calc(100dvh - 0.9rem);
     min-height: 0;
+  }
+
+  .schema-editor-card__actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .draft-location-panel {
