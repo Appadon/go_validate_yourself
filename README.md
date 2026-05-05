@@ -2,11 +2,18 @@
 
 <p align="center">
   <strong>GVY</strong><br>
-  A localhost-first CSV validation console for splitting large files, validating rows, exporting Parquet, and reviewing errors without leaving the browser.
+  A localhost-first Structured Data validation console for splitting large files, validating records, exporting Parquet, and reviewing errors without leaving the browser.
 </p>
 
 <p align="center">
-  <code>web console</code> · <code>config-first runs</code> · <code>CSV to Parquet</code> · <code>schema inference</code> · <code>Python SDK</code>
+  <img alt="Console" src="https://img.shields.io/badge/console-121827?style=for-the-badge&labelColor=06080d&color=121827">
+  <img alt="Structured Data" src="https://img.shields.io/badge/structured%20data-4B8DFF?style=for-the-badge&labelColor=06080d&color=4B8DFF">
+  <img alt="Parquet" src="https://img.shields.io/badge/parquet-B7FF5A?style=for-the-badge&labelColor=06080d&color=B7FF5A">
+  <img alt="Python SDK" src="https://img.shields.io/badge/python%20sdk-FFD25F?style=for-the-badge&labelColor=06080d&color=FFD25F">
+</p>
+
+<p align="center">
+  <code>web console</code> · <code>config-first runs</code> · <code>Structured Data to Parquet</code> · <code>schema inference</code> · <code>Python SDK</code>
 </p>
 
 ```text
@@ -18,12 +25,12 @@
 
 ## What GVY Does
 
-GVY turns a CSV validation job into a repeatable pipeline:
+GVY turns a Structured Data validation job into a repeatable pipeline. The current implementation works with `.csv` files, and the language is intentionally broader so the workflow can grow into additional data sources later.
 
 | Phase | Purpose | Main output |
 | --- | --- | --- |
-| `split` | Split one large CSV into smaller CSV files by primary key. | `split/` |
-| `validate` | Validate a CSV file or directory against a JSON schema. | `success/*.parquet`, `errors/*_error.csv` |
+| `split` | Split one large Structured Data file into smaller working files by primary key. | `split/` |
+| `validate` | Validate one file or directory against a JSON schema. | `success/*.parquet`, `errors/*_error.csv` |
 | `batch` | Group generated Parquet files into larger batch files. | `batch_export/validation_batch_*.parquet` |
 
 The current app is **config-first**. The browser UI, CLI, HTTP API, and Python SDK all resolve the same GVY run config before execution, so a run preview in the UI maps directly to the payload sent to `/api/runs/config`.
@@ -46,24 +53,35 @@ The console is built around a six-step workflow:
 
 | Step | Screen | What happens |
 | --- | --- | --- |
-| 1 | Input | Select a main CSV, validation CSV/directory, or batch input directory from the server working root. |
-| 2 | Schema | Load a schema, generate one from a CSV sample, or edit an existing schema. |
+| 1 | Input | Select a main Structured Data file, validation file/directory, or batch input directory from the server working root. |
+| 2 | Schema | Load a schema, generate one from a data sample, or edit an existing schema. |
 | 3 | Options | Choose `split`, `validate`, and `batch`; set workers, output directories, cache behavior, batch size, and resume policy. |
 | 4 | Confirm | Preview the resolved server config before starting. |
 | 5 | Progress | Watch live phase progress, run state, row counts, and recent diagnostics. |
 | 6 | Review | Copy or download the run report and open the Error Explorer. |
 
-The UI style matches the CLI help screen: compact panels, green/cyan status accents, and a workflow-first layout instead of a raw flag form.
+The UI style matches the CLI help screen: compact panels, electric blue focus states, green success signals, amber warnings, and a workflow-first layout instead of a raw flag form.
+
+### Console Palette
+
+| Token | Colour | Use |
+| --- | --- | --- |
+| `#06080d` | ![Background](https://img.shields.io/badge/background-06080d?labelColor=06080d&color=06080d) | App shell and page backdrop. |
+| `#121827` | ![Panel](https://img.shields.io/badge/panel-121827?labelColor=121827&color=121827) | Panels, topbar, and elevated surfaces. |
+| `#4b8dff` | ![Accent](https://img.shields.io/badge/accent-4b8dff?labelColor=4b8dff&color=4b8dff) | Primary actions and focus. |
+| `#b7ff5a` | ![Success](https://img.shields.io/badge/success-b7ff5a?labelColor=b7ff5a&color=b7ff5a) | Ready, complete, and valid states. |
+| `#ffd25f` | ![Warning](https://img.shields.io/badge/warning-ffd25f?labelColor=ffd25f&color=ffd25f) | Caution, cache, and output-clearing states. |
+| `#ff6d78` | ![Error](https://img.shields.io/badge/error-ff6d78?labelColor=ff6d78&color=ff6d78) | Validation errors and failed runs. |
 
 ### Included UI Tools
 
 | Tool | Route | Notes |
 | --- | --- | --- |
 | Run Console | `/` | Main run wizard and progress view. |
-| Schema Inference | `/schema-infer` | Samples a CSV and proposes a validation schema. |
+| Schema Inference | `/schema-infer` | Samples a Structured Data file and proposes a validation schema. |
 | Schema Editor | `/schema-editor` | Loads, edits, validates, and saves schema JSON under the working root. |
 | Schema Workbench | `/schema-workbench` | Combined schema browsing, inference, and editing workspace. |
-| Error Explorer | `/error-explorer` | Summarizes error CSV files by field, message, file, and sample rows. |
+| Error Explorer | `/error-explorer` | Summarizes validation error files by field, message, file, and sample rows. |
 
 Browser file access is intentionally scoped to the process working directory. The API is loopback-only and allows one active run at a time.
 
@@ -95,7 +113,7 @@ Run the full pipeline from the CLI:
 ./gvy main.csv schema.json
 ```
 
-Validate one CSV:
+Validate one Structured Data file:
 
 ```bash
 ./gvy -mode validate input.csv -schema schema.json
@@ -144,8 +162,8 @@ Print the built-in help UI:
 | --- | --- | --- |
 | `server` | Starts the localhost web console and HTTP API. This is the default when no args are passed. | None |
 | `auto` | Runs `split`, then `validate`, then `batch`. | `<main.csv> <schema.json>` |
-| `validate` | Validates one CSV file or every CSV file in a directory. | `<input.csv>` or `-dir <input_dir>` plus schema |
-| `split` | Splits one CSV into smaller CSV files by primary key. | `<input.csv>` or `-split-input <input.csv>` |
+| `validate` | Validates one data file or every supported file in a directory. | `<input.csv>` or `-dir <input_dir>` plus schema |
+| `split` | Splits one Structured Data file into smaller working files by primary key. | `<input.csv>` or `-split-input <input.csv>` |
 | `batch` | Groups Parquet files into batched Parquet outputs. | `-batch-dir <input_dir>` |
 
 Useful examples:
@@ -165,7 +183,7 @@ GVY uses two JSON document types:
 | File | Purpose |
 | --- | --- |
 | GVY run config | Chooses phases, inputs, outputs, runtime settings, and server settings. |
-| Validation schema | Describes field-level CSV validation rules. |
+| Validation schema | Describes field-level Structured Data validation rules. |
 
 A minimal full-pipeline config:
 
@@ -237,7 +255,7 @@ Notes:
 
 ## Validation Schema
 
-Schemas describe how CSV columns are normalized, validated, and written to Parquet.
+Schemas describe how source columns are normalized, validated, and written to Parquet.
 
 ```json
 {
@@ -273,7 +291,7 @@ Supported field settings:
 
 | Key | Meaning |
 | --- | --- |
-| `name` | Source CSV header. |
+| `name` | Source data header. |
 | `parquet_name` | Output Parquet column name. |
 | `type` | `string`, `float`, `int`, `date`, or `datetime`. |
 | `required` | Reject blank or missing values. |
@@ -312,7 +330,7 @@ Useful endpoints:
 | `GET` | `/api/files?kind=csv` or `/api/files?kind=schema` | Working-root-scoped file browser data. |
 | `GET` | `/api/errors/report` | Aggregated validation error report. |
 | `GET` / `PUT` | `/api/schema` | Load or save schema JSON. |
-| `POST` | `/api/schema/infer` | Infer a schema from a CSV sample. |
+| `POST` | `/api/schema/infer` | Infer a schema from a Structured Data sample. |
 | `POST` | `/shutdown` | Stop the local server. |
 
 Resolve a config:
@@ -409,13 +427,13 @@ success/input.parquet
 errors/input_error.csv
 ```
 
-Error CSV files include:
+Validation error files include:
 
 ```text
-__row_number,__errors,<original CSV columns...>
+__row_number,__errors,<original data columns...>
 ```
 
-Split writes one CSV per key into `split/` by default. Rows with blank split keys are written to `missing_keys.csv` unless configured otherwise.
+Split writes one working file per key into `split/` by default. Rows with blank split keys are written to `missing_keys.csv` unless configured otherwise.
 
 Batch writes:
 
@@ -445,7 +463,7 @@ batch_export/validation_batch_2.parquet
 │   ├── config/        # canonical run config and resolver
 │   ├── help/          # styled CLI help renderer
 │   ├── schemaeditor/  # schema load/save normalization
-│   ├── schemainfer/   # CSV sampling and schema inference
+│   ├── schemainfer/   # data sampling and schema inference
 │   ├── service/       # pipeline orchestration
 │   ├── splitcsv/      # split phase
 │   └── validator/     # schema validation and Parquet writing
