@@ -1,39 +1,87 @@
 # Go Validate Yourself
 
 <p align="center">
-  <strong>GVY</strong><br>
-  A localhost-first Structured Data validation console for splitting large files, validating records, exporting Parquet, and reviewing errors without leaving the browser.
+  <img alt="GVY" src="https://img.shields.io/badge/GVY-Go%20Validate%20Yourself-4B8DFF?style=for-the-badge&labelColor=06080d">
 </p>
 
 <p align="center">
-  <img alt="Console" src="https://img.shields.io/badge/console-121827?style=for-the-badge&labelColor=06080d&color=121827">
-  <img alt="Structured Data" src="https://img.shields.io/badge/structured%20data-4B8DFF?style=for-the-badge&labelColor=06080d&color=4B8DFF">
-  <img alt="Parquet" src="https://img.shields.io/badge/parquet-B7FF5A?style=for-the-badge&labelColor=06080d&color=B7FF5A">
-  <img alt="Python SDK" src="https://img.shields.io/badge/python%20sdk-FFD25F?style=for-the-badge&labelColor=06080d&color=FFD25F">
+    Local Data validation pipeline with schema based validation.
 </p>
 
 <p align="center">
-  <code>web console</code> · <code>config-first runs</code> · <code>Structured Data to Parquet</code> · <code>schema inference</code> · <code>Python SDK</code>
+  <img alt="Console" src="https://img.shields.io/badge/console-local-121827?style=flat-square&labelColor=06080d">
+  <img alt="Config first" src="https://img.shields.io/badge/config-first-4B8DFF?style=flat-square&labelColor=06080d">
+  <img alt="Parquet" src="https://img.shields.io/badge/parquet-export-B7FF5A?style=flat-square&labelColor=06080d">
+  <img alt="Warnings" src="https://img.shields.io/badge/warnings-visible-FFD25F?style=flat-square&labelColor=06080d">
+  <img alt="Errors" src="https://img.shields.io/badge/errors-reviewable-FF6D78?style=flat-square&labelColor=06080d">
 </p>
 
-```text
-+--------------------------------------------------------------+
-| GVY                                                          |
-| Multithreaded data validation framework                      |
-+--------------------------------------------------------------+
+<p align="center">
+  <a href="#quick-start">Quick start</a> |
+  <a href="#workflow">Workflow</a> |
+  <a href="#web-console">Web console</a> |
+  <a href="#configuration">Configuration</a> |
+  <a href="#api-and-sdk">API and SDK</a> |
+  <a href="#development">Development</a>
+</p>
+
+## Why GVY
+
+GVY turns one-off structured data checks into a repeatable local pipeline. The browser UI, CLI, HTTP API, and Python SDK all resolve the same run config before execution, so a preview in the console maps directly to the payload sent to `/api/runs/config`.
+
+| You need to | GVY gives you |
+| --- | --- |
+| Validate rows against a schema | Clean Parquet output plus row-level error files |
+| Review failures quickly | Browser error summaries by field, message, file, and sample row |
+| Automate repeat runs | One config model across UI, CLI, API, and SDK |
+
+## Quick Start
+
+Download the Linux release binary and start the console:
+
+```bash
+curl -L -o gvy https://github.com/Appadon/go_validate_yourself/releases/latest/download/gvy
+chmod +x gvy
+./gvy
 ```
 
-## What GVY Does
+Open the local console:
 
-GVY turns a Structured Data validation job into a repeatable pipeline. The current implementation works with `.csv` files, and the language is intentionally broader so the workflow can grow into additional data sources later.
+```text
+http://127.0.0.1:1818/
+```
 
-| Phase | Purpose | Main output |
-| --- | --- | --- |
-| `split` | Split one large Structured Data file into smaller working files by primary key. | `split/` |
-| `validate` | Validate one file or directory against a JSON schema. | `success/*.parquet`, `errors/*_error.csv` |
-| `batch` | Group generated Parquet files into larger batch files. | `batch_export/validation_batch_*.parquet` |
+Run the full pipeline from the CLI:
 
-The current app is **config-first**. The browser UI, CLI, HTTP API, and Python SDK all resolve the same GVY run config before execution, so a run preview in the UI maps directly to the payload sent to `/api/runs/config`.
+```bash
+./gvy main.csv schema.json
+```
+
+Build from source when you are working inside the repo:
+
+```bash
+go mod tidy
+go build -o gvy .
+./gvy
+```
+
+## Workflow
+
+<p>
+  <img alt="split" src="https://img.shields.io/badge/1-split-4B8DFF?style=for-the-badge&labelColor=06080d">
+  <img alt="validate" src="https://img.shields.io/badge/2-validate-B7FF5A?style=for-the-badge&labelColor=06080d">
+  <img alt="batch" src="https://img.shields.io/badge/3-batch-FFD25F?style=for-the-badge&labelColor=06080d">
+</p>
+
+Useful commands:
+
+```bash
+./gvy main.csv schema.json -t 10
+./gvy -mode validate -dir split/ -schema schema.json
+./gvy -mode split main.csv -split-primary-key policy_number
+./gvy -mode batch -batch-dir success/ -batch-export-dir batch_export
+./gvy -config gvy.config.json -phases validate,batch -dir split/
+```
 
 ## Web Console
 
@@ -43,102 +91,9 @@ Start GVY with no arguments:
 ./gvy
 ```
 
-Then open:
+## CLI Reference
 
-```text
-http://127.0.0.1:1818/
-```
-
-The console is built around a six-step workflow:
-
-| Step | Screen | What happens |
-| --- | --- | --- |
-| 1 | Input | Select a main Structured Data file, validation file/directory, or batch input directory from the server working root. |
-| 2 | Schema | Load a schema, generate one from a data sample, or edit an existing schema. |
-| 3 | Options | Choose `split`, `validate`, and `batch`; set workers, output directories, cache behavior, batch size, and resume policy. |
-| 4 | Confirm | Preview the resolved server config before starting. |
-| 5 | Progress | Watch live phase progress, run state, row counts, and recent diagnostics. |
-| 6 | Review | Copy or download the run report and open the Error Explorer. |
-
-The UI style matches the CLI help screen: compact panels, electric blue focus states, green success signals, amber warnings, and a workflow-first layout instead of a raw flag form.
-
-### Included UI Tools
-
-| Tool | Route | Notes |
-| --- | --- | --- |
-| Run Console | `/` | Main run wizard and progress view. |
-| Schema Inference | `/schema-infer` | Samples a Structured Data file and proposes a validation schema. |
-| Schema Editor | `/schema-editor` | Loads, edits, validates, and saves schema JSON under the working root. |
-| Schema Workbench | `/schema-workbench` | Combined schema browsing, inference, and editing workspace. |
-| Error Explorer | `/error-explorer` | Summarizes validation error files by field, message, file, and sample rows. |
-
-Browser file access is intentionally scoped to the process working directory. The API is loopback-only and allows one active run at a time.
-
-## Quick Start
-
-GVY releases include a compiled Linux binary. Download the latest release asset, make it executable, and start the console:
-
-```bash
-curl -L -o gvy https://github.com/Appadon/go_validate_yourself/releases/latest/download/gvy
-chmod +x gvy
-./gvy
-```
-
-Then open:
-
-```text
-http://127.0.0.1:1818/
-```
-
-Run the full pipeline from the downloaded binary in the cli:
-
-```bash
-./gvy main.csv schema.json
-```
-
-## Build Requirements
-
-You only need these if you are building from source or running the SDK.
-
-| Runtime | Version |
-| --- | --- |
-| Go | `1.25+` |
-| Python SDK | `3.10+` |
-
-Build from source:
-
-```bash
-go mod tidy
-go build -o gvy .
-```
-
-## Common Commands
-
-Validate a single file:
-
-```bash
-./gvy -mode validate input.csv -schema schema.json
-```
-
-Validate a directory:
-
-```bash
-./gvy -mode validate -dir split/ -schema schema.json
-```
-
-Run a saved config:
-
-```bash
-./gvy -config gvy.config.json
-```
-
-Preview a saved config without executing:
-
-```bash
-./gvy -config gvy.config.json -print-config
-```
-
-## Command Shapes
+Command shapes:
 
 ```text
 gvy
@@ -151,42 +106,32 @@ gvy -mode server [-host 127.0.0.1] [-port 1818]
 gvy -config gvy.config.json [flags]
 ```
 
-Print the built-in help UI:
-
-```bash
-./gvy -h
-```
-
-## Modes
+Modes:
 
 | Mode | Behavior | Required input |
 | --- | --- | --- |
 | `server` | Starts the localhost web console and HTTP API. This is the default when no args are passed. | None |
 | `auto` | Runs `split`, then `validate`, then `batch`. | `<main.csv> <schema.json>` |
 | `validate` | Validates one data file or every supported file in a directory. | `<input.csv>` or `-dir <input_dir>` plus schema |
-| `split` | Splits one Structured Data file into smaller working files by primary key. | `<input.csv>` or `-split-input <input.csv>` |
+| `split` | Splits one structured data file into smaller working files by primary key. | `<input.csv>` or `-split-input <input.csv>` |
 | `batch` | Groups Parquet files into batched Parquet outputs. | `-batch-dir <input_dir>` |
 
-Useful examples:
+Print the built-in help UI:
 
 ```bash
-./gvy main.csv schema.json -t 10
-./gvy -mode validate -dir split/ -schema schema.json
-./gvy -mode split main.csv -split-primary-key policy_number
-./gvy -mode batch -batch-dir success/ -batch-export-dir batch_export
-./gvy -config gvy.config.json -phases validate,batch -dir split/
+./gvy -h
 ```
 
-## Run Config
+## Configuration
 
 GVY uses two JSON document types:
 
 | File | Purpose |
 | --- | --- |
 | GVY run config | Chooses phases, inputs, outputs, runtime settings, and server settings. |
-| Validation schema | Describes field-level Structured Data validation rules. |
+| Validation schema | Describes field-level structured data validation rules. |
 
-A minimal full-pipeline config:
+Minimal full-pipeline config:
 
 ```json
 {
@@ -198,7 +143,8 @@ A minimal full-pipeline config:
 }
 ```
 
-An explicit config with current defaults shown:
+<details>
+<summary>Show explicit run config with defaults</summary>
 
 ```json
 {
@@ -245,14 +191,18 @@ An explicit config with current defaults shown:
 }
 ```
 
-Notes:
+</details>
 
-- `pipeline.phases` overrides the `mode` preset.
-- `auto` expands to `split`, `validate`, `batch`.
-- `runtime.workers: 0` means GVY picks its default worker count.
-- When `validate` follows `split`, `inputs.validate_dir` is derived from `outputs.split_dir`.
-- When `batch` follows `validate`, `batch.input_dir` is derived from `outputs.success_dir`.
-- Resume policies are `reuse_valid_outputs`, `start_at_first_missing`, and `run_all`.
+Config notes:
+
+| Setting | Meaning |
+| --- | --- |
+| `pipeline.phases` | Overrides the `mode` preset. |
+| `auto` | Expands to `split`, `validate`, `batch`. |
+| `runtime.workers: 0` | Lets GVY pick its default worker count. |
+| `inputs.validate_dir` | Derived from `outputs.split_dir` when `validate` follows `split`. |
+| `batch.input_dir` | Derived from `outputs.success_dir` when `batch` follows `validate`. |
+| Resume policies | `reuse_valid_outputs`, `start_at_first_missing`, `run_all`. |
 
 ## Validation Schema
 
@@ -309,7 +259,7 @@ Supported field settings:
 
 GVY treats these values as missing: empty string, `none`, `null`, `nan`, `na`, and `n/a`.
 
-## HTTP API
+## API and SDK
 
 Start the server:
 
@@ -317,7 +267,7 @@ Start the server:
 ./gvy
 ```
 
-Useful endpoints:
+Useful HTTP endpoints:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -331,7 +281,7 @@ Useful endpoints:
 | `GET` | `/api/files?kind=csv` or `/api/files?kind=schema` | Working-root-scoped file browser data. |
 | `GET` | `/api/errors/report` | Aggregated validation error report. |
 | `GET` / `PUT` | `/api/schema` | Load or save schema JSON. |
-| `POST` | `/api/schema/infer` | Infer a schema from a Structured Data sample. |
+| `POST` | `/api/schema/infer` | Infer a schema from a structured data sample. |
 | `POST` | `/shutdown` | Stop the local server. |
 
 Resolve a config:
@@ -367,7 +317,7 @@ curl -s -X POST http://127.0.0.1:1818/api/runs/config \
 
 Legacy callers can still use `POST /run/validate-auto`, but new clients should prefer `/api/config/resolve` and `/api/runs/config`.
 
-## Python SDK
+### Python SDK
 
 Install from Git:
 
@@ -458,26 +408,33 @@ batch_export/validation_batch_2.parquet
 
 ```text
 .
-├── main.go
-├── internal/
-│   ├── api/           # localhost HTTP API and UI routes
-│   ├── config/        # canonical run config and resolver
-│   ├── help/          # styled CLI help renderer
-│   ├── schemaeditor/  # schema load/save normalization
-│   ├── schemainfer/   # data sampling and schema inference
-│   ├── service/       # pipeline orchestration
-│   ├── splitcsv/      # split phase
-│   └── validator/     # schema validation and Parquet writing
-├── web/
-│   ├── templates/     # console, schema, and error explorer pages
-│   └── static/        # CSS and browser JavaScript
-├── gvy_sdk/           # Python SDK
-├── tests/             # Python SDK tests
-├── schema.example.json
-└── README.md
+|-- main.go
+|-- internal/
+|   |-- api/           # localhost HTTP API and UI routes
+|   |-- config/        # canonical run config and resolver
+|   |-- help/          # styled CLI help renderer
+|   |-- schemaeditor/  # schema load/save normalization
+|   |-- schemainfer/   # data sampling and schema inference
+|   |-- service/       # pipeline orchestration
+|   |-- splitcsv/      # split phase
+|   `-- validator/     # schema validation and Parquet writing
+|-- web/
+|   |-- templates/     # console, schema, and error explorer pages
+|   `-- static/        # CSS and browser JavaScript
+|-- gvy_sdk/           # Python SDK
+|-- tests/             # Python SDK tests
+|-- schema.example.json
+`-- README.md
 ```
 
 ## Development
+
+Requirements:
+
+| Runtime | Version |
+| --- | --- |
+| Go | `1.25+` |
+| Python SDK | `3.10+` |
 
 Run Go tests:
 
@@ -493,7 +450,9 @@ pytest -q
 
 Operational notes:
 
-- Directory validation exits non-zero if any input file fails.
-- Failed single-file validation and failed batch writes remove partial output files.
-- Full auto runs can reuse compatible split output while clearing validation and batch outputs.
-- New clients should not duplicate defaults client-side; ask the server with `/api/config/defaults`.
+| Note | Detail |
+| --- | --- |
+| Directory validation | Exits non-zero if any input file fails. |
+| Partial outputs | Failed single-file validation and failed batch writes remove partial output files. |
+| Auto runs | Can reuse compatible split output while clearing validation and batch outputs. |
+| Client defaults | New clients should ask `/api/config/defaults` instead of duplicating defaults client-side. |
