@@ -851,6 +851,10 @@ body::before {
   border-bottom: 1px solid var(--border);
 }
 
+#error-explorer-modal .schema-editor-card__bar {
+  border-bottom: 0;
+}
+
 .schema-editor-card__actions {
   display: flex;
   flex-wrap: wrap;

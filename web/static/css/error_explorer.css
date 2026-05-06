@@ -51,8 +51,12 @@ body:has(.error-shell--embed) {
   overflow: hidden;
   border: 0;
   border-radius: 0;
-  background: transparent;
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.95), rgba(11, 15, 24, 0.95));
   box-shadow: none;
+}
+
+.error-shell--embed .error-toolbar {
+  padding-top: 0.38rem;
 }
 
 .error-panel .form-message:empty {
