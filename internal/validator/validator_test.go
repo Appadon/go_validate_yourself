@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"go_validate_yourself/internal/errorstore"
 	"go_validate_yourself/internal/progress"
 )
 
@@ -177,5 +178,60 @@ func TestProcessDirectoryReturnsContextCanceled(t *testing.T) {
 	_, err := ProcessDirectory(ctx, []string{input}, 1, successDir, errorDir, schema, false, progress.Emitter{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ProcessDirectory() error = %v, want context canceled", err)
+	}
+}
+
+func TestRunValidationWritesErrorParquet(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.csv")
+	successDir := filepath.Join(dir, "success")
+	errorDir := filepath.Join(dir, "errors")
+	successPath := filepath.Join(successDir, "input.parquet")
+	errorPath := filepath.Join(errorDir, "input_error.parquet")
+
+	if err := os.MkdirAll(successDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(success) error = %v", err)
+	}
+	if err := os.MkdirAll(errorDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(errors) error = %v", err)
+	}
+	if err := os.WriteFile(input, []byte("Record ID,Amount\n1,10\n2,not-number\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(input) error = %v", err)
+	}
+
+	schema := SchemaConfig{
+		Fields: []FieldRule{
+			{Name: "Record ID", Type: "string", Required: true},
+			{Name: "Amount", Type: "int", Required: true},
+		},
+	}
+	if err := ValidateSchema(&schema); err != nil {
+		t.Fatalf("ValidateSchema() error = %v", err)
+	}
+
+	stats, err := RunValidationAndWriteParquet(context.Background(), input, successPath, errorPath, schema, false)
+	if err != nil {
+		t.Fatalf("RunValidationAndWriteParquet() error = %v", err)
+	}
+	if stats.InvalidRows != 1 {
+		t.Fatalf("InvalidRows = %d, want 1", stats.InvalidRows)
+	}
+
+	var rows []errorstore.StoredErrorRow
+	if err := errorstore.Scan(errorPath, func(row errorstore.StoredErrorRow) error {
+		rows = append(rows, row)
+		return nil
+	}); err != nil {
+		t.Fatalf("Scan(error parquet) error = %v", err)
+	}
+	if len(rows) != 1 || rows[0].RowNumber != 3 {
+		t.Fatalf("unexpected stored rows: %+v", rows)
+	}
+	columns, err := errorstore.DecodeColumns(rows[0])
+	if err != nil {
+		t.Fatalf("DecodeColumns() error = %v", err)
+	}
+	if len(columns) != 2 || columns[1].Name != "Amount" || columns[1].Value != "not-number" {
+		t.Fatalf("unexpected stored columns: %+v", columns)
 	}
 }

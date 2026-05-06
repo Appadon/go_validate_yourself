@@ -66,7 +66,7 @@ body::before {
 }
 
 .app-shell {
-  width: min(1240px, calc(100% - 2rem));
+  width: min(1520px, calc(100% - 1.5rem));
   height: 100dvh;
   margin: 0 auto;
   padding: 0.8rem 0;
@@ -83,7 +83,7 @@ body::before {
   gap: 1rem;
   padding: 0.48rem 0.75rem;
   background: linear-gradient(180deg, rgba(18, 25, 39, 0.92), rgba(11, 15, 24, 0.92));
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-sm);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
 }
@@ -98,9 +98,6 @@ body::before {
 .topbar__copy {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  column-gap: 0.7rem;
-  row-gap: 0.22rem;
   min-width: 0;
 }
 
@@ -113,20 +110,8 @@ body::before {
   font-weight: 700;
 }
 
-.topbar__copy h1 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: 1.16rem;
-  line-height: 1.08;
-  letter-spacing: 0;
-}
-
-.lede {
-  margin: 0;
-  max-width: 62ch;
-  color: var(--muted);
-  font-size: 0.86rem;
-  line-height: 1.25;
+.topbar__copy .eyebrow {
+  font-size: 0.99rem;
 }
 
 .topbar__status {
@@ -178,6 +163,10 @@ body::before {
 
 .panel--activity {
   grid-column: 1 / -1;
+}
+
+.panel--selector {
+  border: 0;
 }
 
 .panel__head {
@@ -232,7 +221,7 @@ body::before {
 
 .wizard-shell {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0.9rem;
   min-height: 0;
   overflow: hidden;
@@ -310,7 +299,7 @@ body::before {
 }
 
 .wizard-card {
-  grid-row: 3;
+  grid-row: 2;
   display: grid;
   align-content: start;
   gap: 1rem;
@@ -319,7 +308,7 @@ body::before {
   height: 100%;
   overflow: auto;
   padding: 1rem;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-sm);
   background: rgba(4, 7, 12, 0.2);
 }
@@ -338,7 +327,7 @@ body::before {
   gap: 1rem;
   align-items: flex-start;
   padding-bottom: 0.85rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 0;
 }
 
 .wizard-card__head h2 {
@@ -356,7 +345,7 @@ body::before {
 }
 
 .wizard-nav {
-  grid-row: 4;
+  grid-row: 3;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -848,7 +837,21 @@ body::before {
   gap: 1rem;
   min-width: 0;
   padding: 0.75rem 0.9rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 0;
+}
+
+#error-explorer-modal .schema-editor-card__bar {
+  border-bottom: 0;
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.92), rgba(11, 15, 24, 0.92));
+}
+
+#error-explorer-modal .schema-editor-card {
+  width: min(1520px, calc(100vw - 1.5rem));
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.98), rgba(11, 15, 24, 0.98));
+}
+
+#error-explorer-modal .schema-editor-frame {
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.98), rgba(11, 15, 24, 0.98));
 }
 
 .schema-editor-card__actions {
@@ -909,6 +912,21 @@ body::before {
   margin-bottom: 0;
 }
 
+.picker-path-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.picker-path-row code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-select--modal {
   min-height: 8rem;
   height: clamp(8rem, 28dvh, 14rem);
@@ -940,7 +958,11 @@ body::before {
 }
 
 .facts--compact {
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) minmax(0, 0.8fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.facts--performance {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .fact,
@@ -953,6 +975,15 @@ body::before {
   font-weight: 700;
   line-height: 1.45;
   word-break: break-word;
+}
+
+.fact__meta {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .error-explorer {
@@ -1068,9 +1099,13 @@ body::before {
 
 .error-toolbar {
   display: grid;
-  grid-template-columns: minmax(14rem, 1.2fr) minmax(12rem, 1fr) minmax(10rem, 0.8fr) auto;
+  grid-template-columns: auto minmax(16rem, 1.2fr) minmax(12rem, 0.85fr) auto;
   align-items: end;
   gap: 0.7rem;
+}
+
+.error-toolbar > .button {
+  min-height: 2.85rem;
 }
 
 .error-report-content {
@@ -1080,6 +1115,20 @@ body::before {
 
 .error-facts {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.error-facts .fact {
+  padding: 0.48rem 0.62rem;
+}
+
+.error-facts .fact dt {
+  font-size: 0.86rem;
+}
+
+.error-facts .fact dd {
+  margin-top: 0.18rem;
+  line-height: 1.25;
 }
 
 .error-report-grid {

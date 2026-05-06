@@ -11,9 +11,7 @@
     <div class="app-shell">
       <header class="topbar">
         <div class="topbar__copy">
-          <p class="eyebrow">CONSOLE</p>
-          <h1>Go Validate Yourself</h1>
-          <p class="lede">Workflow setup and live progress.</p>
+          <p class="eyebrow">GO VALIDATE YOURSELF</p>
         </div>
         <div class="topbar__status">
           <section class="status-card">
@@ -27,14 +25,7 @@
       </header>
 
       <main class="layout">
-        <section class="panel panel--selector wizard-shell" aria-labelledby="selection-title">
-          <div class="panel__head wizard-shell__head">
-            <div>
-              <h2 id="selection-title">Start run</h2>
-              <p class="panel-note">Browsing is limited to <code>{{.WorkingRoot}}</code></p>
-            </div>
-          </div>
-
+        <section class="panel panel--selector wizard-shell" aria-label="Run setup">
           <nav class="wizard-steps" aria-label="Run setup steps">
             <button class="wizard-step" type="button" data-wizard-step="0">
               <span class="wizard-step__number">1</span>
@@ -58,7 +49,7 @@
             </button>
             <button class="wizard-step" type="button" data-wizard-step="5">
               <span class="wizard-step__number">6</span>
-              <span class="wizard-step__label">Review</span>
+              <span class="wizard-step__label">Reporting</span>
             </button>
           </nav>
 
@@ -310,17 +301,15 @@
                   <dd id="run-id-value">{{if .LatestRunID}}{{.LatestRunID}}{{else}}Waiting for submission{{end}}</dd>
                 </div>
                 <div class="fact">
-                  <dt>Total rows</dt>
-                  <dd id="run-stage-value">Not available</dd>
-                </div>
-                <div class="fact">
-                  <dt>Run time</dt>
-                  <dd id="run-progress-value">Not started</dd>
+                  <dt>Input filename</dt>
+                  <dd id="run-input-filename-value">Not selected</dd>
                 </div>
               </dl>
+
+              <dl id="performance-cards" class="facts facts--performance" aria-label="Resource usage"></dl>
             </section>
 
-            <details class="event-details">
+            <details class="event-details" hidden>
               <summary class="event-details__summary">
                 <span>
                   <strong id="activity-title">Progress stream</strong>
@@ -337,7 +326,7 @@
             <div class="wizard-card__head">
               <div>
                 <p class="eyebrow">Step 6</p>
-                <h2 id="wizard-step-review-title">Review</h2>
+                <h2 id="wizard-step-review-title">Reporting</h2>
               </div>
             </div>
 
@@ -348,11 +337,17 @@
                   <p>Final metrics, report exports, and validation error review.</p>
                 </div>
                 <div class="report-actions">
+                  <button id="report-folder-open-button" class="button button--secondary" type="button">Select folder</button>
+                  <button id="load-report-folder-button" class="button button--secondary" type="button">Load report</button>
                   <button id="copy-report-button" class="button button--secondary" type="button">Copy summary</button>
                   <button id="download-report-button" class="button button--secondary" type="button">Download JSON</button>
                 </div>
               </div>
 
+              <div class="selection-compact report-folder-selection">
+                <span class="selection-compact__label">Report source folder</span>
+                <strong id="report-folder-summary" class="selection-compact__value">Current run</strong>
+              </div>
               <p id="report-status" class="form-message" aria-live="polite"></p>
               <div id="review-error-summary" class="review-error-summary"></div>
               <div id="summary-cards" class="summary-cards"></div>
@@ -425,12 +420,10 @@
 
     <div id="schema-editor-modal" class="schema-editor-modal" hidden>
       <div id="schema-editor-backdrop" class="schema-editor-modal__backdrop"></div>
-      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-labelledby="schema-editor-title">
+      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-label="Schema editor">
         <div class="schema-editor-card__bar">
-          <div>
-            <p class="eyebrow">Schema</p>
-            <h2 id="schema-editor-title">Schema Editor</h2>
-          </div>
+          <button id="schema-editor-generate-button" class="button button--primary button--small" type="button">Generate Schema</button>
+          <h2 id="schema-editor-title" hidden>Schema Editor</h2>
           <div class="schema-editor-card__actions">
             <button id="schema-editor-save-button" class="button button--primary button--small" type="button">Save</button>
             <button id="schema-editor-save-quit-button" class="button button--secondary button--small" type="button">Save and Quit</button>
@@ -443,11 +436,10 @@
 
     <div id="error-explorer-modal" class="schema-editor-modal" hidden>
       <div id="error-explorer-backdrop" class="schema-editor-modal__backdrop"></div>
-      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-labelledby="error-explorer-modal-title">
+      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-label="Error Explorer">
         <div class="schema-editor-card__bar">
           <div>
-            <p class="eyebrow">Errors</p>
-            <h2 id="error-explorer-modal-title">Error Explorer</h2>
+            <p class="eyebrow">Error Explorer</p>
           </div>
           <button id="error-explorer-close-button" class="button button--secondary button--small" type="button">Close</button>
         </div>

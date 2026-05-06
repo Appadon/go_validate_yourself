@@ -15,6 +15,7 @@ import (
 	"time"
 
 	gvyconfig "go_validate_yourself/internal/config"
+	"go_validate_yourself/internal/errorstore"
 	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/runs"
 	"go_validate_yourself/internal/schemaeditor"
@@ -181,6 +182,47 @@ func TestHandleConfigResolveExpandsAutoAndDerivedInputs(t *testing.T) {
 	}
 }
 
+func TestHandleConfigResolveIncludesDiskEstimate(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	if err := os.WriteFile("input.csv", []byte("id,name\n1,Ada\n"), 0o644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	if err := os.WriteFile("schema.json", []byte(`{"columns":[]}`), 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	server := NewServer("127.0.0.1", 8080, service.New())
+	request := httptest.NewRequest(http.MethodPost, "/api/config/resolve", strings.NewReader(`{
+		"mode": "auto",
+		"inputs": {
+			"main_csv": "input.csv",
+			"schema": "schema.json"
+		}
+	}`))
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleConfigResolve(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response ConfigResolveResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.DiskEstimate.InputFileBytes != int64(len("id,name\n1,Ada\n")) {
+		t.Fatalf("input file bytes = %d, want %d", response.DiskEstimate.InputFileBytes, len("id,name\n1,Ada\n"))
+	}
+	if response.DiskEstimate.AvailableBytes == 0 {
+		t.Fatal("available bytes was 0")
+	}
+	if response.DiskEstimate.EstimatedRunBytes <= response.DiskEstimate.InputFileBytes {
+		t.Fatalf("estimated run bytes = %d, want greater than input size", response.DiskEstimate.EstimatedRunBytes)
+	}
+}
+
 func TestHandleConfigResolveExplicitPhasesOverrideMode(t *testing.T) {
 	server := NewServer("127.0.0.1", 8080, service.New())
 	request := httptest.NewRequest(http.MethodPost, "/api/config/resolve", strings.NewReader(`{
@@ -219,20 +261,30 @@ func TestHandleConfigResolveRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-func TestHandleErrorReportSummarizesErrorCSVs(t *testing.T) {
+func TestHandleErrorReportSummarizesErrorParquet(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
 	if err := os.MkdirAll("errors", 0o755); err != nil {
 		t.Fatalf("mkdir errors: %v", err)
 	}
-	errorCSV := strings.Join([]string{
-		"__row_number,__errors,Policy Number,Name",
-		`2,"Policy Number: value is required | Name: min length 3",P-1,A`,
-		`3,"Policy Number: value is required",,Bob`,
-		"",
-	}, "\n")
-	if err := os.WriteFile(filepath.Join("errors", "policies_error.csv"), []byte(errorCSV), 0o644); err != nil {
-		t.Fatalf("write error csv: %v", err)
+	if err := errorstore.Write(filepath.Join("errors", "policies_error.parquet"), []string{"Policy Number", "Name"}, []errorstore.InvalidRow{
+		{
+			RowNumber: 2,
+			Record:    []string{"P-1", "A"},
+			Errors: []errorstore.FieldError{
+				{Field: "Policy Number", Message: "value is required"},
+				{Field: "Name", Message: "min length 3"},
+			},
+		},
+		{
+			RowNumber: 3,
+			Record:    []string{"", "Bob"},
+			Errors: []errorstore.FieldError{
+				{Field: "Policy Number", Message: "value is required"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write error parquet: %v", err)
 	}
 
 	server := NewServer("127.0.0.1", 8080, service.New())
@@ -275,14 +327,23 @@ func TestHandleErrorReportNormalizesQuotedMessageValues(t *testing.T) {
 	if err := os.MkdirAll("errors", 0o755); err != nil {
 		t.Fatalf("mkdir errors: %v", err)
 	}
-	errorCSV := strings.Join([]string{
-		"__row_number,__errors,ID",
-		`2,"ID: invalid float: ""ABC""",ABC`,
-		`3,"ID: invalid float: ""XYZ""",XYZ`,
-		"",
-	}, "\n")
-	if err := os.WriteFile(filepath.Join("errors", "ids_error.csv"), []byte(errorCSV), 0o644); err != nil {
-		t.Fatalf("write error csv: %v", err)
+	if err := errorstore.Write(filepath.Join("errors", "ids_error.parquet"), []string{"ID"}, []errorstore.InvalidRow{
+		{
+			RowNumber: 2,
+			Record:    []string{"ABC"},
+			Errors: []errorstore.FieldError{
+				{Field: "ID", Message: `invalid float: "ABC"`},
+			},
+		},
+		{
+			RowNumber: 3,
+			Record:    []string{"XYZ"},
+			Errors: []errorstore.FieldError{
+				{Field: "ID", Message: `invalid float: "XYZ"`},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write error parquet: %v", err)
 	}
 
 	server := NewServer("127.0.0.1", 8080, service.New())
@@ -338,14 +399,19 @@ func TestHandleConfigRunExecutesThroughRunPipeline(t *testing.T) {
 	writeTestFile(t, schemaPath, `{"fields":[{"name":"Record ID","type":"string","required":true},{"name":"Amount","type":"int","required":true}]}`)
 
 	server := NewServer("127.0.0.1", 8080, service.New())
+	server.workspaceBaseDir = filepath.Join(tempDir, "runs")
 	called := false
 	server.runPipeline = func(ctx context.Context, opts service.PipelineOptions) (service.PipelineResult, error) {
 		called = true
 		if !servicePhasesEqual(opts.Phases, []service.PipelinePhase{service.PipelinePhaseSplit, service.PipelinePhaseValidate, service.PipelinePhaseBatch}) {
 			t.Fatalf("pipeline phases = %v, want auto phases", opts.Phases)
 		}
-		if opts.Split.InputPath != inputPath || opts.Validate.SchemaPath != schemaPath {
+		wantRunRoot := filepath.Join(server.workspaceBaseDir, "input")
+		if opts.Split.InputPath != inputPath || opts.Validate.SchemaPath != filepath.Join(wantRunRoot, "schema.json") {
 			t.Fatalf("unexpected pipeline inputs: %+v %+v", opts.Split, opts.Validate)
+		}
+		if opts.Split.OutputDir != filepath.Join(wantRunRoot, "split") || opts.Validate.SuccessDir != filepath.Join(wantRunRoot, "success") || opts.Batch.OutputDir != filepath.Join(wantRunRoot, "batch_export") {
+			t.Fatalf("unexpected workspace outputs: %+v %+v %+v", opts.Split, opts.Validate, opts.Batch)
 		}
 		return service.PipelineResult{
 			Phases:    opts.Phases,
@@ -381,6 +447,9 @@ func TestHandleConfigRunExecutesThroughRunPipeline(t *testing.T) {
 	}
 	if response.Run.State != runs.StateCompleted {
 		t.Fatalf("run state = %q, want completed", response.Run.State)
+	}
+	if response.Run.Workspace == nil || response.Run.Workspace.InputSHA256 == "" {
+		t.Fatalf("expected persisted run workspace with input hash: %+v", response.Run.Workspace)
 	}
 	if response.ResolvedConfig.Inputs.MainCSV != inputPath {
 		t.Fatalf("resolved input = %q, want %q", response.ResolvedConfig.Inputs.MainCSV, inputPath)
@@ -692,6 +761,182 @@ func TestHandleFileListBrowsesCurrentDirectoryOnly(t *testing.T) {
 	}
 }
 
+func TestHandleFileListReturnsRunFolders(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workspaceBaseDir, "run-old", "run.json"), `{"run_id":"run-old","state":"completed","created_at":"2026-01-01T00:00:00Z"}`)
+	writeTestFile(t, filepath.Join(server.workspaceBaseDir, "run-new", "run.json"), `{"run_id":"run-new","state":"completed","created_at":"2026-01-01T00:00:00Z"}`)
+	writeTestFile(t, filepath.Join(server.workingRoot, "incoming", "alpha.csv"), "Record ID\n1\n")
+
+	request := httptest.NewRequest(http.MethodGet, "/api/files?kind=run", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleFileList(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response FileListResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Kind != "run" {
+		t.Fatalf("kind = %q, want run", response.Kind)
+	}
+	if response.CurrentPath != "runs" {
+		t.Fatalf("current path = %q, want runs", response.CurrentPath)
+	}
+	if response.ParentPath != "" {
+		t.Fatalf("parent path = %q, want empty", response.ParentPath)
+	}
+	if len(response.Entries) != 2 {
+		t.Fatalf("entry count = %d, want 2", len(response.Entries))
+	}
+	if response.Entries[0].RelativePath != "runs/run-new" || response.Entries[1].RelativePath != "runs/run-old" {
+		t.Fatalf("entries = %+v", response.Entries)
+	}
+	if !response.Entries[0].HasRunMetadata || response.Entries[0].RunID != "run-new" || response.Entries[0].RunState != runs.StateCompleted {
+		t.Fatalf("run metadata entry = %+v", response.Entries[0])
+	}
+}
+
+func TestHandleFileListDiscoversNestedRunFolders(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workspaceBaseDir, "archive", "policy-run", "run.json"), `{"run_id":"run-nested","state":"failed","created_at":"2026-01-02T00:00:00Z"}`)
+	writeTestFile(t, filepath.Join(server.workspaceBaseDir, "archive", "not-a-run", "notes.txt"), "ignore me")
+
+	request := httptest.NewRequest(http.MethodGet, "/api/files?kind=run", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleFileList(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response FileListResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Entries) != 1 {
+		t.Fatalf("entry count = %d, want 1: %+v", len(response.Entries), response.Entries)
+	}
+	if response.Entries[0].RelativePath != "runs/archive/policy-run" || response.Entries[0].RunID != "run-nested" || response.Entries[0].RunState != runs.StateFailed {
+		t.Fatalf("nested run entry = %+v", response.Entries[0])
+	}
+}
+
+func TestHandleRunFolderReportLoadsCompletedSnapshot(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workspaceBaseDir, "run-old", "run.json"), `{
+		"run_id": "run-old",
+		"state": "completed",
+		"created_at": "2026-01-01T00:00:00Z",
+		"started_at": "2026-01-01T00:00:01Z",
+		"finished_at": "2026-01-01T00:00:03Z",
+		"final_result": {
+			"mode": "auto",
+			"result": {"phases": ["split", "validate", "batch"]}
+		}
+	}`)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/reports/run?path=runs/run-old", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleRunFolderReport(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response RunFolderReportResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.RelativePath != "runs/run-old" {
+		t.Fatalf("relative path = %q", response.RelativePath)
+	}
+	if response.Run.RunID != "run-old" || response.Run.State != runs.StateCompleted {
+		t.Fatalf("run = %+v", response.Run)
+	}
+	if response.Run.FinalResult == nil {
+		t.Fatal("FinalResult was nil")
+	}
+}
+
+func TestHandleRunFolderReportRejectsUnfinishedRun(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workspaceBaseDir, "run-active", "run.json"), `{
+		"run_id": "run-active",
+		"state": "running",
+		"created_at": "2026-01-01T00:00:00Z"
+	}`)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/reports/run?path=runs/run-active", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleRunFolderReport(recorder, request)
+
+	assertAPIErrorCode(t, recorder, http.StatusConflict, "RUN_NOT_FINISHED")
+}
+
+func TestHandleAssociatedRunLoadsSnapshotForSelectedCSV(t *testing.T) {
+	server := newSelectionTestServer(t)
+	csvPath := filepath.Join(server.workingRoot, "incoming", "Policy Export FINAL.csv")
+	writeTestFile(t, csvPath, "Record ID\n1\n")
+	ws, err := workspace.NewForInput(server.workspaceBaseDir, "ignored-run-id", csvPath)
+	if err != nil {
+		t.Fatalf("NewForInput() error = %v", err)
+	}
+	metadata, err := json.Marshal(runs.Snapshot{
+		RunID:     "run-associated",
+		State:     runs.StateRunning,
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Workspace: &ws,
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	writeTestFile(t, ws.MetadataPath, string(metadata))
+
+	request := httptest.NewRequest(http.MethodGet, "/api/runs/associated?path=incoming/Policy+Export+FINAL.csv", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleAssociatedRun(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response AssociatedRunResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.RelativePath != "runs/policy_export_final" {
+		t.Fatalf("relative path = %q", response.RelativePath)
+	}
+	if response.Run.RunID != "run-associated" || response.Run.State != runs.StateRunning {
+		t.Fatalf("run = %+v", response.Run)
+	}
+	if response.Run.Workspace == nil || response.Run.Workspace.SplitDir != ws.SplitDir {
+		t.Fatalf("workspace = %+v, want split dir %q", response.Run.Workspace, ws.SplitDir)
+	}
+}
+
+func TestHandleAssociatedRunReturnsNotFoundWhenMetadataMissing(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workingRoot, "incoming", "input.csv"), "Record ID\n1\n")
+
+	request := httptest.NewRequest(http.MethodGet, "/api/runs/associated?path=incoming/input.csv", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleAssociatedRun(recorder, request)
+
+	assertAPIErrorCode(t, recorder, http.StatusNotFound, "RUN_NOT_FOUND")
+}
+
 func TestHandleCreateRunFromSelectionSuccessAndInspectability(t *testing.T) {
 	server := newSelectionTestServer(t)
 	csvPath := filepath.Join(server.workingRoot, "incoming", "input.csv")
@@ -726,6 +971,15 @@ func TestHandleCreateRunFromSelectionSuccessAndInspectability(t *testing.T) {
 	}
 	if response.Run.Workspace.SchemaPath != schemaPath {
 		t.Fatalf("schema path = %q, want %q", response.Run.Workspace.SchemaPath, schemaPath)
+	}
+	if response.Run.Workspace.RootDir != filepath.Join(server.workspaceBaseDir, "input") {
+		t.Fatalf("workspace root = %q, want filename-derived run folder", response.Run.Workspace.RootDir)
+	}
+	if response.Run.Workspace.SplitDir != filepath.Join(response.Run.Workspace.RootDir, "split") {
+		t.Fatalf("split dir = %q", response.Run.Workspace.SplitDir)
+	}
+	if response.Run.Workspace.InputSHA256 == "" {
+		t.Fatal("expected input hash in workspace metadata")
 	}
 
 	finalSnapshot := waitForRunState(t, server.runManager, response.Run.RunID, runs.StateCompleted)
@@ -1110,7 +1364,7 @@ func newSelectionTestServer(t *testing.T) *Server {
 	server := NewServer("127.0.0.1", 8080, service.New())
 	server.workingRoot = t.TempDir()
 	server.workingRootReal = resolveRealPath(server.workingRoot)
-	server.workspaceBaseDir = filepath.Join(server.workingRoot, ".gvy", "runs")
+	server.workspaceBaseDir = filepath.Join(server.workingRoot, "runs")
 	server.runAuto = server.service.RunAuto
 	server.detectPrimaryKey = service.DetectPrimaryKey
 	return server

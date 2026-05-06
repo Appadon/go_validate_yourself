@@ -1,30 +1,82 @@
 (function () {
   "use strict";
 
+  const fileBrowser = window.GVYFileBrowser;
+
   const state = {
     status: "idle",
     error: "",
     data: null,
     limit: 1,
     offset: 0,
+    picker: {
+      open: false,
+      status: "idle",
+      error: "",
+      currentPath: "",
+      parentPath: "",
+      entries: [],
+      selection: "",
+      filter: "",
+    },
+    fileModal: {
+      open: false,
+      status: "idle",
+      error: "",
+      file: "",
+      data: null,
+      limit: 100,
+    },
   };
 
   const els = {
     pathInput: document.getElementById("error-report-path-input"),
     queryInput: document.getElementById("error-report-query-input"),
     fieldInput: document.getElementById("error-report-field-input"),
-    loadButton: document.getElementById("error-report-load-button"),
+    browseButton: document.getElementById("error-report-browse-button"),
     status: document.getElementById("error-report-status"),
     message: document.getElementById("error-report-message"),
     content: document.getElementById("error-report-content"),
+    pickerModal: document.getElementById("error-dir-picker-modal"),
+    pickerBackdrop: document.getElementById("error-dir-picker-backdrop"),
+    pickerCloseButton: document.getElementById("error-dir-picker-close-button"),
+    pickerFilterInput: document.getElementById("error-dir-picker-filter-input"),
+    pickerPathValue: document.getElementById("error-dir-picker-path-value"),
+    pickerUpButton: document.getElementById("error-dir-picker-up-button"),
+    pickerDirectories: document.getElementById("error-dir-picker-directories"),
+    pickerSelect: document.getElementById("error-dir-picker-select"),
+    pickerSelectionSummary: document.getElementById("error-dir-picker-selection-summary"),
+    pickerCurrentButton: document.getElementById("error-dir-picker-current-button"),
+    pickerChooseButton: document.getElementById("error-dir-picker-choose-button"),
+    fileModal: document.getElementById("error-file-modal"),
+    fileBackdrop: document.getElementById("error-file-backdrop"),
+    fileCloseButton: document.getElementById("error-file-close-button"),
+    fileTitle: document.getElementById("error-file-title"),
+    fileContent: document.getElementById("error-file-content"),
   };
 
   function init() {
     const params = new URLSearchParams(window.location.search);
-    els.pathInput.value = cleanRelativePath(params.get("path") || "errors");
-    els.loadButton.addEventListener("click", function () {
-      loadErrorReport(0);
+    setErrorPath(params.get("path") || "errors");
+    els.browseButton.addEventListener("click", openDirectoryPicker);
+    els.pickerBackdrop.addEventListener("click", closeDirectoryPicker);
+    els.pickerCloseButton.addEventListener("click", closeDirectoryPicker);
+    els.pickerFilterInput.addEventListener("input", function () {
+      state.picker.filter = fileBrowser.normalizeFilter(els.pickerFilterInput.value);
+      renderDirectoryPicker();
     });
+    els.pickerUpButton.addEventListener("click", function () {
+      loadDirectoryList(state.picker.parentPath || "");
+    });
+    els.pickerSelect.addEventListener("change", function () {
+      state.picker.selection = els.pickerSelect.value || "";
+      renderDirectoryPicker();
+    });
+    els.pickerSelect.addEventListener("dblclick", commitPickerSelection);
+    els.pickerCurrentButton.addEventListener("click", commitCurrentDirectory);
+    els.pickerChooseButton.addEventListener("click", commitPickerSelection);
+    els.fileBackdrop.addEventListener("click", closeFileModal);
+    els.fileCloseButton.addEventListener("click", closeFileModal);
     els.queryInput.addEventListener("keydown", submitOnEnter);
     els.fieldInput.addEventListener("keydown", submitOnEnter);
     render();
@@ -40,7 +92,7 @@
 
   async function loadErrorReport(offset) {
     const path = cleanRelativePath(els.pathInput.value || "errors");
-    els.pathInput.value = path;
+    setErrorPath(path);
     state.status = "loading";
     state.error = "";
     state.offset = Math.max(0, offset || 0);
@@ -76,6 +128,74 @@
     }
   }
 
+  async function loadDirectoryList(path) {
+    state.picker.status = "loading";
+    state.picker.error = "";
+    renderDirectoryPicker();
+
+    try {
+      const params = new URLSearchParams();
+      params.set("kind", "parquet");
+      if (path) {
+        params.set("path", path);
+      }
+      const response = await fetch("/api/files?" + params.toString());
+      const payload = await parseJSON(response);
+      if (!response.ok) {
+        throw new Error(payload && payload.message ? payload.message : "Could not load directories");
+      }
+      state.picker.status = "ok";
+      state.picker.currentPath = payload.current_path || "";
+      state.picker.parentPath = payload.parent_path || "";
+      state.picker.entries = payload.entries || [];
+      state.picker.error = "";
+      renderDirectoryPicker();
+    } catch (error) {
+      state.picker.status = "error";
+      state.picker.error = error.message || "Could not load directories";
+      state.picker.entries = [];
+      renderDirectoryPicker();
+    }
+  }
+
+  async function loadFileReport(fileName) {
+    state.fileModal.status = "loading";
+    state.fileModal.error = "";
+    state.fileModal.file = fileName;
+    state.fileModal.data = null;
+    renderFileModal();
+
+    try {
+      const params = new URLSearchParams();
+      params.set("path", cleanRelativePath(els.pathInput.value || "errors"));
+      params.set("file", fileName);
+      params.set("limit", String(state.fileModal.limit));
+      params.set("offset", "0");
+      const query = els.queryInput.value.trim();
+      const field = els.fieldInput.value.trim();
+      if (query) {
+        params.set("q", query);
+      }
+      if (field) {
+        params.set("field", field);
+      }
+
+      const response = await fetch("/api/errors/report?" + params.toString());
+      const payload = await parseJSON(response);
+      if (!response.ok) {
+        throw new Error(payload && payload.message ? payload.message : "Could not load error file");
+      }
+      state.fileModal.status = "ok";
+      state.fileModal.data = payload;
+      state.fileModal.error = "";
+      renderFileModal();
+    } catch (error) {
+      state.fileModal.status = "error";
+      state.fileModal.error = error.message || "Could not load error file";
+      renderFileModal();
+    }
+  }
+
   async function parseJSON(response) {
     const text = await response.text();
     if (!text) {
@@ -90,25 +210,20 @@
 
   function render() {
     setBadge(els.status, statusText(), toneForStatus(state.status));
-    els.loadButton.disabled = state.status === "loading";
     els.message.textContent = state.error || "";
     if (state.error) {
       els.message.setAttribute("data-tone", "error");
     } else {
       els.message.removeAttribute("data-tone");
     }
+    renderDirectoryPicker();
+    renderFileModal();
 
     const report = state.data;
     if (!report) {
       els.content.innerHTML = '<p class="event-log__empty">Load an errors directory to see grouped fields, messages, files, and row samples.</p>';
       return;
     }
-
-    const samples = Array.isArray(report.samples) ? report.samples : [];
-    const canPrev = Number(report.offset || 0) > 0;
-    const nextOffset = Number(report.offset || 0) + Number(report.limit || state.limit);
-    const canNext = nextOffset < Number(report.matched_rows || 0);
-    const rowPosition = Number(report.matched_rows || 0) > 0 ? Number(report.offset || 0) + 1 : 0;
 
     els.content.innerHTML = [
       '<dl class="facts facts--compact error-facts">',
@@ -121,17 +236,8 @@
       '<div class="error-report-grid">',
       errorBucketHTML("Problem columns", "Rows grouped by the column named in the validation error.", report.fields || [], "field"),
       errorMessageHTML("Error patterns", report.messages || []),
-      errorBucketHTML("Source files", "Rows grouped by the error CSV they came from.", report.files || [], "file"),
+      errorBucketHTML("Source files", "Open a file to inspect its error rows.", report.files || [], "file"),
       "</div>",
-      '<div class="error-samples__head">',
-      "<h3>Row sample</h3>",
-      '<div class="error-samples__actions">',
-      '<span class="error-sample-position">' + escapeHTML(rowPosition + " of " + compactNumber(report.matched_rows)) + "</span>",
-      '<button class="button button--secondary button--small" type="button" data-error-page="prev"' + (canPrev ? "" : " disabled") + ">Previous row</button>",
-      '<button class="button button--secondary button--small" type="button" data-error-page="next"' + (canNext ? "" : " disabled") + ">Next row</button>",
-      "</div>",
-      "</div>",
-      samples.length ? samples.map(errorSampleHTML).join("") : '<p class="event-log__empty">No matching rows for these filters.</p>',
     ].join("");
 
     els.content.querySelectorAll("[data-error-field]").forEach(function (button) {
@@ -155,8 +261,7 @@
     });
     els.content.querySelectorAll("[data-error-file]").forEach(function (button) {
       button.addEventListener("click", function () {
-        els.queryInput.value = button.getAttribute("data-error-file") || "";
-        loadErrorReport(0);
+        openFileModal(button.getAttribute("data-error-file") || "");
       });
     });
     els.content.querySelectorAll("[data-clear-filter]").forEach(function (button) {
@@ -173,18 +278,141 @@
         loadErrorReport(0);
       });
     });
-    const previous = els.content.querySelector('[data-error-page="prev"]');
-    const next = els.content.querySelector('[data-error-page="next"]');
-    if (previous) {
-      previous.addEventListener("click", function () {
-        loadErrorReport(Math.max(0, Number(report.offset || 0) - Number(report.limit || state.limit)));
-      });
+  }
+
+  function renderDirectoryPicker() {
+    els.pickerModal.hidden = !state.picker.open;
+    if (!state.picker.open) {
+      return;
     }
-    if (next) {
-      next.addEventListener("click", function () {
-        loadErrorReport(nextOffset);
-      });
+
+    const directories = fileBrowser.filteredEntries(state.picker.entries, {
+      filter: state.picker.filter,
+      wantDirectory: true,
+    });
+    const currentPath = state.picker.currentPath || "";
+    const selectedValue = state.picker.selection || "";
+
+    els.pickerFilterInput.value = state.picker.filter || "";
+    els.pickerPathValue.textContent = "/" + currentPath;
+    els.pickerUpButton.disabled = !state.picker.parentPath && !currentPath;
+    els.pickerCurrentButton.disabled = !currentPath || state.picker.status === "loading";
+    els.pickerChooseButton.disabled = !selectedValue || state.picker.status === "loading";
+
+    fileBrowser.renderDirectoryList(els.pickerDirectories, directories, {
+      onChoose: function (path) {
+        loadDirectoryList(path);
+      },
+      emptyText: state.picker.status === "loading" ? "Loading directories..." : "No subdirectories match the current filter.",
+    });
+
+    fileBrowser.populateSelect(els.pickerSelect, directories, {
+      selectedValue: selectedValue,
+      clearWhenEmptySelection: true,
+      emptyText: state.picker.status === "loading" ? "Loading directories..." : "No subdirectories match the current filter",
+    });
+
+    if (state.picker.error) {
+      els.pickerSelectionSummary.textContent = state.picker.error;
+      els.pickerSelectionSummary.setAttribute("data-tone", "error");
+      return;
     }
+    els.pickerSelectionSummary.removeAttribute("data-tone");
+    els.pickerSelectionSummary.textContent = selectedValue ? selectedValue : currentPath ? "Current: " + currentPath : "No directory selected.";
+  }
+
+  function openDirectoryPicker() {
+    const currentValue = cleanRelativePath(els.pathInput.value || "errors");
+    state.picker.open = true;
+    state.picker.selection = currentValue;
+    state.picker.filter = "";
+    state.picker.error = "";
+    loadDirectoryList(currentValue ? dirName(currentValue) : "");
+    renderDirectoryPicker();
+    window.setTimeout(function () {
+      els.pickerFilterInput.focus();
+    }, 0);
+  }
+
+  function closeDirectoryPicker() {
+    state.picker.open = false;
+    renderDirectoryPicker();
+  }
+
+  function commitCurrentDirectory() {
+    const value = cleanRelativePath(state.picker.currentPath || "");
+    if (!value) {
+      return;
+    }
+    applyDirectorySelection(value);
+  }
+
+  function commitPickerSelection() {
+    const value = cleanRelativePath(state.picker.selection || "");
+    if (!value) {
+      return;
+    }
+    applyDirectorySelection(value);
+  }
+
+  function applyDirectorySelection(value) {
+    setErrorPath(value);
+    closeDirectoryPicker();
+    loadErrorReport(0);
+  }
+
+  function setErrorPath(value) {
+    const path = cleanRelativePath(value || "errors") || "errors";
+    els.pathInput.value = path;
+    els.browseButton.title = "Selected: " + path;
+  }
+
+  function openFileModal(fileName) {
+    if (!fileName) {
+      return;
+    }
+    state.fileModal.open = true;
+    state.fileModal.file = fileName;
+    state.fileModal.data = null;
+    state.fileModal.error = "";
+    loadFileReport(fileName);
+    renderFileModal();
+  }
+
+  function closeFileModal() {
+    state.fileModal.open = false;
+    renderFileModal();
+  }
+
+  function renderFileModal() {
+    els.fileModal.hidden = !state.fileModal.open;
+    if (!state.fileModal.open) {
+      return;
+    }
+
+    const fileName = state.fileModal.file || "Error file";
+    els.fileTitle.textContent = fileName;
+    if (state.fileModal.status === "loading") {
+      els.fileContent.innerHTML = '<p class="event-log__empty">Loading file rows...</p>';
+      return;
+    }
+    if (state.fileModal.error) {
+      els.fileContent.innerHTML = '<p class="event-log__empty">' + escapeHTML(state.fileModal.error) + "</p>";
+      return;
+    }
+
+    const report = state.fileModal.data;
+    const samples = report && Array.isArray(report.samples) ? report.samples : [];
+    if (!report || !samples.length) {
+      els.fileContent.innerHTML = '<p class="event-log__empty">No matching rows in this file.</p>';
+      return;
+    }
+
+    els.fileContent.innerHTML = [
+      '<div class="error-file-rows">',
+      samples.map(fileRowHTML).join(""),
+      "</div>",
+    ].join("");
   }
 
   function statusText() {
@@ -246,10 +474,10 @@
       '<section class="summary-card error-card">',
       "<h3>" + escapeHTML(title) + "</h3>",
       '<p class="error-card__note">' + escapeHTML(note) + "</p>",
-      '<ol class="error-bucket-list">',
+      '<ol class="error-bucket-list' + (mode === "file" ? " error-bucket-list--files" : "") + '">',
       buckets.map(function (bucket) {
         const attr = mode === "field" ? ' data-error-field="' + escapeAttr(bucket.name) + '"' : ' data-error-file="' + escapeAttr(bucket.name) + '"';
-        const label = mode === "field" ? "Filter column" : "Filter file";
+        const label = mode === "field" ? "Filter column" : "Open file";
         return '<li><button class="error-chip" type="button"' + attr + '><span><em>' + escapeHTML(label) + "</em>" + escapeHTML(bucket.name) + '</span><strong>' + compactNumber(bucket.count) + "</strong></button></li>";
       }).join(""),
       "</ol>",
@@ -309,6 +537,19 @@
       "<summary>All row columns</summary>",
       '<dl class="error-column-grid">' + allColumnRows + "</dl>",
       "</details>",
+      "</article>",
+    ].join("");
+  }
+
+  function fileRowHTML(sample) {
+    const columns = sampleColumns(sample);
+    const allColumnRows = columns.length ? columns.map(errorColumnHTML).join("") : '<p class="event-log__empty">No row columns available.</p>';
+    return [
+      '<article class="error-file-row">',
+      '<div class="error-file-row__head">',
+      "<strong>Row " + escapeHTML(sample.row_number || "unknown") + "</strong>",
+      "</div>",
+      '<dl class="error-column-grid">' + allColumnRows + "</dl>",
       "</article>",
     ].join("");
   }
@@ -410,6 +651,12 @@
       parts.push(part);
     });
     return parts.join("/");
+  }
+
+  function dirName(path) {
+    const clean = cleanRelativePath(path);
+    const index = clean.lastIndexOf("/");
+    return index >= 0 ? clean.slice(0, index) : "";
   }
 
   function escapeHTML(value) {

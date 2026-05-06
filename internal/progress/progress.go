@@ -18,6 +18,7 @@ const (
 	TypeCompleted = "completed"
 	TypeFailed    = "failed"
 	TypeLog       = "log"
+	TypeTelemetry = "telemetry"
 )
 
 /* Event captures one structured progress update for a validation run. */

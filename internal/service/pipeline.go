@@ -47,6 +47,7 @@ type PipelineOptions struct {
 	Validate                  ValidateOptions
 	Batch                     BatchOptions
 	ReuseSplitCache           bool
+	ClearSplitOutputDir       bool
 	ClearValidationOutputDirs bool
 	RunID                     string
 	Reporter                  progress.Reporter
@@ -82,21 +83,17 @@ func (s Service) RunPipeline(ctx context.Context, opts PipelineOptions) (Pipelin
 		"mode": mode,
 	})
 
-	if normalized.ClearValidationOutputDirs {
+	if normalized.ClearSplitOutputDir || normalized.ClearValidationOutputDirs {
+		dirsToClear := outputDirsToClear(normalized)
 		emitter.Log(
 			progress.PhaseRun,
-			fmt.Sprintf("clearing validation cache directories: %s, %s, %s",
-				normalized.Validate.SuccessDir,
-				normalized.Validate.ErrorDir,
-				normalized.Batch.OutputDir,
-			), map[string]any{
-				"success_dir":      normalized.Validate.SuccessDir,
-				"error_dir":        normalized.Validate.ErrorDir,
-				"batch_export_dir": normalized.Batch.OutputDir,
+			fmt.Sprintf("clearing output directories: %s", strings.Join(dirsToClear, ", ")),
+			map[string]any{
+				"dirs": dirsToClear,
 			},
 		)
 		emitter.Log(progress.PhaseRun, "this might take a while depending on the size of the cache", nil)
-		if err := clearValidationOutputDirs(normalized.Validate.SuccessDir, normalized.Validate.ErrorDir, normalized.Batch.OutputDir); err != nil {
+		if err := clearPipelineOutputDirs(normalized); err != nil {
 			emitter.Failed(progress.PhaseRun, err.Error(), nil)
 			return PipelineResult{Phases: append([]PipelinePhase(nil), normalized.Phases...)}, err
 		}

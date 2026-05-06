@@ -117,9 +117,9 @@ func Print(w io.Writer, opts Options) error {
 	r.flagGroup("Validation",
 		[2]string{"-schema <path>", "Schema JSON file for validation"},
 		[2]string{"-dir <path>", "Directory of CSV files to validate"},
-		[2]string{"-write-empty-error", "Write empty error CSVs for valid inputs"},
+		[2]string{"-write-empty-error", "Write empty error Parquet files for valid inputs"},
 		[2]string{"-success-dir <path>", "Directory for valid parquet output (default success)"},
-		[2]string{"-error-dir <path>", "Directory for error CSV output (default errors)"},
+		[2]string{"-error-dir <path>", "Directory for error Parquet output (default errors)"},
 	)
 	r.flagGroup("Split",
 		[2]string{"-split-input <path>", "Input CSV for split mode"},
