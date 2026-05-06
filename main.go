@@ -20,7 +20,10 @@ import (
 	gvyconfig "go_validate_yourself/internal/config"
 	"go_validate_yourself/internal/console"
 	"go_validate_yourself/internal/help"
+	"go_validate_yourself/internal/progress"
+	"go_validate_yourself/internal/runs"
 	"go_validate_yourself/internal/service"
+	"go_validate_yourself/internal/workspace"
 )
 
 /* cliOptions holds parsed command-line flags. */
@@ -581,13 +584,141 @@ func dispatchResolvedConfig(resolution cliConfigResolution) error {
 		return fmt.Errorf("unsupported pipeline phase sequence %v", resolved.Plan.Phases)
 	}
 
+	runWorkspace, err := prepareResolvedRunWorkspace(&resolved)
+	if err != nil {
+		return err
+	}
 	primaryKey, err := printResolvedPipelineBanners(resolved, resolution.ThreadSource)
 	if err != nil {
 		return err
 	}
 	pipelineOpts := pipelineOptionsFromResolved(resolved, primaryKey)
-	_, err = service.New().RunPipeline(context.Background(), pipelineOpts)
-	return err
+	return runResolvedPipeline(context.Background(), pipelineOpts, runWorkspace)
+}
+
+func prepareResolvedRunWorkspace(resolved *gvyconfig.ResolvedConfig) (*workspace.RunWorkspace, error) {
+	inputPath := workspaceInputPath(*resolved)
+	if strings.TrimSpace(inputPath) == "" {
+		return nil, nil
+	}
+
+	ws, err := workspace.NewForInput("runs", progress.NewRunID(), inputPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := ws.Prepare(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(resolved.Inputs.Schema) != "" && containsResolvedPhase(resolved.Plan.Phases, gvyconfig.PhaseValidate) {
+		if !sameFilePath(resolved.Inputs.Schema, ws.SchemaPath) {
+			if err := copyFile(resolved.Inputs.Schema, ws.SchemaPath); err != nil {
+				return nil, fmt.Errorf("copy schema into run workspace: %w", err)
+			}
+		}
+		resolved.Inputs.Schema = ws.SchemaPath
+		resolved.Plan.ValidateSchema = ws.SchemaPath
+	}
+	ws, err = ws.WithInputHash()
+	if err != nil {
+		return nil, err
+	}
+	applyWorkspaceOutputs(resolved, ws)
+	return &ws, nil
+}
+
+func workspaceInputPath(resolved gvyconfig.ResolvedConfig) string {
+	if containsResolvedPhase(resolved.Plan.Phases, gvyconfig.PhaseSplit) {
+		return resolved.Inputs.MainCSV
+	}
+	if strings.TrimSpace(resolved.Inputs.ValidateCSV) != "" {
+		return resolved.Inputs.ValidateCSV
+	}
+	return ""
+}
+
+func applyWorkspaceOutputs(resolved *gvyconfig.ResolvedConfig, ws workspace.RunWorkspace) {
+	hadSplit := containsResolvedPhase(resolved.Plan.Phases, gvyconfig.PhaseSplit)
+	hadValidate := containsResolvedPhase(resolved.Plan.Phases, gvyconfig.PhaseValidate)
+	hadBatch := containsResolvedPhase(resolved.Plan.Phases, gvyconfig.PhaseBatch)
+
+	if hadSplit {
+		resolved.Outputs.SplitDir = ws.SplitDir
+		resolved.Plan.SplitOutputDir = ws.SplitDir
+		if hadValidate {
+			resolved.Inputs.ValidateDir = ws.SplitDir
+			resolved.Plan.ValidateInputDir = ws.SplitDir
+		}
+	}
+	if hadValidate {
+		resolved.Outputs.SuccessDir = ws.SuccessDir
+		resolved.Outputs.ErrorDir = ws.ErrorDir
+		resolved.Plan.ValidationSuccessDir = ws.SuccessDir
+		resolved.Plan.ValidationErrorDir = ws.ErrorDir
+		if hadBatch {
+			resolved.Batch.InputDir = ws.SuccessDir
+			resolved.Plan.BatchInputDir = ws.SuccessDir
+		}
+	}
+	if hadBatch {
+		resolved.Outputs.BatchExportDir = ws.BatchExportDir
+		resolved.Plan.BatchOutputDir = ws.BatchExportDir
+	}
+}
+
+func runResolvedPipeline(ctx context.Context, opts service.PipelineOptions, ws *workspace.RunWorkspace) error {
+	if ws == nil {
+		_, err := service.New().RunPipeline(ctx, opts)
+		return err
+	}
+
+	manager := runs.NewManager()
+	if _, err := manager.Create(ws.RunID, ws); err != nil {
+		return err
+	}
+	if _, err := manager.Start(ws.RunID); err != nil {
+		return err
+	}
+	opts.RunID = ws.RunID
+	opts.Reporter = progress.Combine(opts.Reporter, manager.Reporter(ws.RunID))
+
+	result, err := service.New().RunPipeline(ctx, opts)
+	if err != nil {
+		_, _ = manager.Fail(ws.RunID, err)
+		return err
+	}
+	_, _ = manager.Complete(ws.RunID, result)
+	return nil
+}
+
+func copyFile(source, destination string) error {
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	out, err := os.Create(destination)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+func sameFilePath(left, right string) bool {
+	leftAbs, leftErr := filepath.Abs(left)
+	rightAbs, rightErr := filepath.Abs(right)
+	if leftErr != nil || rightErr != nil {
+		return filepath.Clean(left) == filepath.Clean(right)
+	}
+	return leftAbs == rightAbs
 }
 
 /* supportedResolvedPhases reports whether the CLI can dispatch a resolved phase sequence. */

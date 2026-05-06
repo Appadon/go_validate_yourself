@@ -49,7 +49,7 @@
             </button>
             <button class="wizard-step" type="button" data-wizard-step="5">
               <span class="wizard-step__number">6</span>
-              <span class="wizard-step__label">Review</span>
+              <span class="wizard-step__label">Reporting</span>
             </button>
           </nav>
 
@@ -309,9 +309,11 @@
                   <dd id="run-progress-value">Not started</dd>
                 </div>
               </dl>
+
+              <dl id="performance-cards" class="facts facts--performance" aria-label="Resource usage"></dl>
             </section>
 
-            <details class="event-details">
+            <details class="event-details" hidden>
               <summary class="event-details__summary">
                 <span>
                   <strong id="activity-title">Progress stream</strong>
@@ -328,7 +330,7 @@
             <div class="wizard-card__head">
               <div>
                 <p class="eyebrow">Step 6</p>
-                <h2 id="wizard-step-review-title">Review</h2>
+                <h2 id="wizard-step-review-title">Reporting</h2>
               </div>
             </div>
 
@@ -339,11 +341,17 @@
                   <p>Final metrics, report exports, and validation error review.</p>
                 </div>
                 <div class="report-actions">
+                  <button id="report-folder-open-button" class="button button--secondary" type="button">Select folder</button>
+                  <button id="load-report-folder-button" class="button button--secondary" type="button">Load report</button>
                   <button id="copy-report-button" class="button button--secondary" type="button">Copy summary</button>
                   <button id="download-report-button" class="button button--secondary" type="button">Download JSON</button>
                 </div>
               </div>
 
+              <div class="selection-compact report-folder-selection">
+                <span class="selection-compact__label">Report source folder</span>
+                <strong id="report-folder-summary" class="selection-compact__value">Current run</strong>
+              </div>
               <p id="report-status" class="form-message" aria-live="polite"></p>
               <div id="review-error-summary" class="review-error-summary"></div>
               <div id="summary-cards" class="summary-cards"></div>

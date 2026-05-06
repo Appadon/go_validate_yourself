@@ -1457,10 +1457,16 @@
     if (!csvPath) {
       return "";
     }
-    const dir = dirName(csvPath);
-    const file = baseName(csvPath).replace(/\.csv$/i, "") || "inferred";
-    const schemaName = file + ".inferred.schema.json";
-    return dir ? dir + "/" + schemaName : schemaName;
+    const slug = snakeCaseStem(baseName(csvPath).replace(/\.csv$/i, "")) || "inferred";
+    return "runs/" + slug + "/schema.json";
+  }
+
+  function snakeCaseStem(value) {
+    return String(value || "")
+      .trim()
+      .replace(/[^A-Za-z0-9]+/g, "_")
+      .replace(/[A-Z]/g, function (match) { return match.toLowerCase(); })
+      .replace(/^_+|_+$/g, "");
   }
 
   function formatBytes(bytes) {

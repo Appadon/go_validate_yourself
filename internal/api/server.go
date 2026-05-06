@@ -21,6 +21,7 @@ import (
 
 	gvyconfig "go_validate_yourself/internal/config"
 	"go_validate_yourself/internal/errorstore"
+	"go_validate_yourself/internal/monitor"
 	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/runs"
 	"go_validate_yourself/internal/schemaeditor"
@@ -124,6 +125,7 @@ type ConfigDefaultsResponse struct {
 type ConfigResolveResponse struct {
 	OK             bool                     `json:"ok"`
 	ResolvedConfig gvyconfig.ResolvedConfig `json:"resolved_config"`
+	DiskEstimate   monitor.DiskEstimate     `json:"disk_estimate"`
 }
 
 /* ConfigRunResponse returns metadata and the resolved config for a config-first run. */
@@ -290,6 +292,13 @@ type RunSnapshotResponse struct {
 	Run runs.Snapshot `json:"run"`
 }
 
+/* RunFolderReportResponse returns a persisted run snapshot loaded from disk. */
+type RunFolderReportResponse struct {
+	OK           bool          `json:"ok"`
+	RelativePath string        `json:"relative_path"`
+	Run          runs.Snapshot `json:"run"`
+}
+
 /* RunResultResponse returns the terminal result or error for one run. */
 type RunResultResponse struct {
 	OK         bool       `json:"ok"`
@@ -306,7 +315,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 	if workingRootReal == "" {
 		workingRootReal = workingRoot
 	}
-	workspaceBaseDir := filepath.Join(workingRoot, ".gvy", "runs")
+	workspaceBaseDir := filepath.Join(workingRoot, "runs")
 	templates := template.Must(template.ParseFS(web.Files, "templates/*.html"))
 	staticFiles := mustSubFS(web.Files, "static")
 
@@ -338,6 +347,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 	mux.HandleFunc("/api/config/resolve", server.handleConfigResolve)
 	mux.HandleFunc("/api/files", server.handleFileList)
 	mux.HandleFunc("/api/errors/report", server.handleErrorReport)
+	mux.HandleFunc("/api/reports/run", server.handleRunFolderReport)
 	mux.HandleFunc("/api/schema/infer", server.handleSchemaInfer)
 	mux.HandleFunc("/api/schema", server.handleSchemaDocument)
 	mux.HandleFunc("/api/runs", server.handleRuns)
@@ -613,6 +623,8 @@ func (s *Server) handleValidateAuto(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "RUN_START_FAILED", err.Error())
 		return
 	}
+	stopMonitor := s.startRunMonitor(r.Context(), runID, s.workingRoot)
+	defer stopMonitor()
 
 	opts.RunID = runID
 	opts.Reporter = progress.Combine(opts.Reporter, s.runManager.Reporter(runID))
@@ -686,6 +698,7 @@ func (s *Server) handleConfigResolve(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ConfigResolveResponse{
 		OK:             true,
 		ResolvedConfig: resolved,
+		DiskEstimate:   s.buildDiskEstimate(resolved),
 	})
 }
 
@@ -714,8 +727,16 @@ func (s *Server) handleConfigRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runID := progress.NewRunID()
-	snapshot, err := s.runManager.Create(runID, nil)
+	runWorkspace, err := s.prepareResolvedRunWorkspace(&resolved, runID)
 	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "WORKSPACE_INIT_FAILED", err.Error())
+		return
+	}
+	snapshot, err := s.runManager.Create(runID, runWorkspace)
+	if err != nil {
+		if runWorkspace != nil {
+			_ = os.RemoveAll(runWorkspace.RootDir)
+		}
 		if errors.Is(err, runs.ErrActiveRunExists) {
 			writeAPIError(w, http.StatusConflict, "BUSY", "another run is already active")
 			return
@@ -725,9 +746,18 @@ func (s *Server) handleConfigRun(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot, err = s.runManager.Start(runID)
 	if err != nil {
+		if runWorkspace != nil {
+			_ = os.RemoveAll(runWorkspace.RootDir)
+		}
 		writeAPIError(w, http.StatusInternalServerError, "RUN_START_FAILED", err.Error())
 		return
 	}
+	monitorPath := s.workingRoot
+	if runWorkspace != nil {
+		monitorPath = runWorkspace.RootDir
+	}
+	stopMonitor := s.startRunMonitor(r.Context(), runID, monitorPath)
+	defer stopMonitor()
 
 	opts := pipelineOptionsFromResolved(resolved)
 	opts.RunID = runID
@@ -786,9 +816,25 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	if kind == "run" {
+		currentPath, parentPath, entries, err := s.listRunFolderEntries(strings.TrimSpace(r.URL.Query().Get("path")))
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "FILE_LIST_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, FileListResponse{
+			OK:          true,
+			Kind:        kind,
+			WorkingRoot: s.workingRoot,
+			CurrentPath: currentPath,
+			ParentPath:  parentPath,
+			Entries:     entries,
+		})
+		return
+	}
 	ext := extForKind(kind)
 	if ext == "" {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_KIND", "kind must be csv, parquet, or schema")
+		writeAPIError(w, http.StatusBadRequest, "INVALID_KIND", "kind must be csv, parquet, schema, or run")
 		return
 	}
 
@@ -837,6 +883,46 @@ func (s *Server) handleErrorReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+/* handleRunFolderReport loads a persisted run.json from a selected completed run folder. */
+func (s *Server) handleRunFolderReport(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/api/reports/run" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	runDir, relativePath, err := s.resolveSelectedDirectory(r.URL.Query().Get("path"), "path")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_RUN_DIR", err.Error())
+		return
+	}
+	baseReal := resolveRealPath(s.workspaceBaseDir)
+	runReal := resolveRealPath(runDir)
+	if baseReal == "" || runReal == "" || !isWithinRoot(baseReal, runReal) {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_RUN_DIR", "run folder must be under the GVY runs directory")
+		return
+	}
+	snapshot, err := loadRunSnapshotFile(filepath.Join(runDir, "run.json"))
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "RUN_REPORT_NOT_FOUND", err.Error())
+		return
+	}
+	if snapshot.State != runs.StateCompleted && snapshot.State != runs.StateFailed {
+		writeAPIError(w, http.StatusConflict, "RUN_NOT_FINISHED", "selected run has not finished")
+		return
+	}
+	writeJSON(w, http.StatusOK, RunFolderReportResponse{
+		OK:           true,
+		RelativePath: relativePath,
+		Run:          snapshot,
+	})
 }
 
 /* handleSchemaDocument loads or saves a working-root-scoped schema document. */
@@ -1038,6 +1124,12 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, status, code, err.Error())
 		return
 	}
+	ws, err = ws.WithInputHash()
+	if err != nil {
+		_ = os.RemoveAll(ws.RootDir)
+		writeAPIError(w, http.StatusInternalServerError, "WORKSPACE_INIT_FAILED", err.Error())
+		return
+	}
 
 	snapshot, err := s.runManager.Create(runID, &ws)
 	if err != nil {
@@ -1085,7 +1177,7 @@ func (s *Server) handleCreateRunFromSelection(w http.ResponseWriter, r *http.Req
 	}
 
 	runID := progress.NewRunID()
-	ws, err := workspace.NewUnder(s.workspaceBaseDir, runID)
+	ws, err := workspace.NewForInput(s.workspaceBaseDir, runID, inputCSVPath)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "WORKSPACE_INIT_FAILED", err.Error())
 		return
@@ -1093,6 +1185,11 @@ func (s *Server) handleCreateRunFromSelection(w http.ResponseWriter, r *http.Req
 	ws.InputCSVPath = inputCSVPath
 	ws.SchemaPath = schemaPath
 	if err := ws.Prepare(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "WORKSPACE_INIT_FAILED", err.Error())
+		return
+	}
+	ws, err = ws.WithInputHash()
+	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "WORKSPACE_INIT_FAILED", err.Error())
 		return
 	}
@@ -1247,6 +1344,9 @@ func (s *Server) executeUploadRun(runID string, ws workspace.RunWorkspace) {
 
 /* executeWorkspaceRun maps a prepared workspace into auto-run options and completes the run asynchronously. */
 func (s *Server) executeWorkspaceRun(runID string, ws workspace.RunWorkspace) {
+	stopMonitor := s.startRunMonitor(context.Background(), runID, ws.RootDir)
+	defer stopMonitor()
+
 	reporter := s.runManager.Reporter(runID)
 	primaryKey, err := s.detectPrimaryKey(ws.InputCSVPath)
 	if err != nil {
@@ -1284,6 +1384,136 @@ func (s *Server) executeWorkspaceRun(runID string, ws workspace.RunWorkspace) {
 		return
 	}
 	_, _ = s.runManager.Complete(runID, result)
+}
+
+func (s *Server) startRunMonitor(parent context.Context, runID, diskPath string) func() {
+	ctx, cancel := context.WithCancel(parent)
+	sampler := monitor.NewSampler(firstNonEmpty(diskPath, s.workingRoot))
+	reporter := s.runManager.Reporter(runID)
+	emitter := progress.NewEmitter(runID, reporter)
+
+	emit := func() {
+		sample, err := sampler.Sample()
+		if err != nil {
+			return
+		}
+		emitter.Emit(progress.PhaseRun, progress.TypeTelemetry, "resource usage update", nil, map[string]any{
+			"performance": sample,
+		})
+	}
+	emit()
+
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				emit()
+			}
+		}
+	}()
+	return cancel
+}
+
+func (s *Server) buildDiskEstimate(resolved gvyconfig.ResolvedConfig) monitor.DiskEstimate {
+	estimate := monitor.DiskEstimate{}
+	disk, err := monitor.StatDisk(s.workingRoot)
+	if err == nil {
+		estimate.AvailableBytes = disk.AvailableBytes
+		estimate.FreeBytes = disk.FreeBytes
+	} else {
+		estimate.Warnings = append(estimate.Warnings, err.Error())
+	}
+
+	inputPath := primaryEstimateInputPath(resolved)
+	if inputPath == "" {
+		estimate.Warnings = append(estimate.Warnings, "no primary input path was available for disk estimation")
+		return estimate
+	}
+	inputBytes, err := pathSize(inputPath)
+	if err != nil {
+		estimate.Warnings = append(estimate.Warnings, fmt.Sprintf("could not size %s: %v", inputPath, err))
+		return estimate
+	}
+	estimate.InputFileBytes = inputBytes
+
+	addComponent := func(name string, ratio float64) {
+		bytes := int64(float64(inputBytes) * ratio)
+		estimate.EstimatedComponents = append(estimate.EstimatedComponents, monitor.EstimateComponent{
+			Name:  name,
+			Bytes: bytes,
+			Ratio: ratio,
+		})
+		estimate.EstimatedRunBytes += bytes
+	}
+	for _, phase := range resolved.Plan.Phases {
+		switch phase {
+		case gvyconfig.PhaseSplit:
+			addComponent("Split CSV cache", 1.10)
+		case gvyconfig.PhaseValidate:
+			addComponent("Validation parquet and errors", 1.25)
+		case gvyconfig.PhaseBatch:
+			addComponent("Batch parquet export", 0.75)
+		}
+	}
+	if estimate.EstimatedRunBytes > 0 {
+		overhead := int64(64 << 20)
+		estimate.EstimatedComponents = append(estimate.EstimatedComponents, monitor.EstimateComponent{
+			Name:  "Run overhead",
+			Bytes: overhead,
+		})
+		estimate.EstimatedRunBytes += overhead
+	}
+	estimate.EstimatedPeakBytes = estimate.InputFileBytes + estimate.EstimatedRunBytes
+	return estimate
+}
+
+func primaryEstimateInputPath(resolved gvyconfig.ResolvedConfig) string {
+	for _, candidate := range []string{
+		resolved.Plan.SplitInputCSV,
+		resolved.Inputs.MainCSV,
+		resolved.Plan.ValidateInputCSV,
+		resolved.Inputs.ValidateCSV,
+		resolved.Plan.ValidateInputDir,
+		resolved.Inputs.ValidateDir,
+		resolved.Plan.BatchInputDir,
+		resolved.Batch.InputDir,
+	} {
+		clean := strings.TrimSpace(candidate)
+		if clean != "" {
+			return clean
+		}
+	}
+	return ""
+}
+
+func pathSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return info.Size(), nil
+	}
+	var total int64
+	err = filepath.WalkDir(path, func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
 
 /* buildAutoOptions is a compatibility-only adapter for legacy tests and SDK callers. */
@@ -1409,6 +1639,75 @@ func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig) service.Pipe
 	}
 }
 
+func (s *Server) prepareResolvedRunWorkspace(resolved *gvyconfig.ResolvedConfig, runID string) (*workspace.RunWorkspace, error) {
+	inputPath := resolvedWorkspaceInputPath(*resolved)
+	if strings.TrimSpace(inputPath) == "" {
+		return nil, nil
+	}
+
+	ws, err := workspace.NewForInput(s.workspaceBaseDir, runID, inputPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := ws.Prepare(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(resolved.Inputs.Schema) != "" && containsConfigPhase(resolved.Plan.Phases, gvyconfig.PhaseValidate) {
+		if !sameCleanPath(resolved.Inputs.Schema, ws.SchemaPath) {
+			if err := copyFile(resolved.Inputs.Schema, ws.SchemaPath); err != nil {
+				return nil, fmt.Errorf("copy schema into run workspace: %w", err)
+			}
+		}
+		resolved.Inputs.Schema = ws.SchemaPath
+		resolved.Plan.ValidateSchema = ws.SchemaPath
+	}
+	ws, err = ws.WithInputHash()
+	if err != nil {
+		return nil, err
+	}
+	applyResolvedWorkspaceOutputs(resolved, ws)
+	return &ws, nil
+}
+
+func resolvedWorkspaceInputPath(resolved gvyconfig.ResolvedConfig) string {
+	if containsConfigPhase(resolved.Plan.Phases, gvyconfig.PhaseSplit) {
+		return resolved.Inputs.MainCSV
+	}
+	if strings.TrimSpace(resolved.Inputs.ValidateCSV) != "" {
+		return resolved.Inputs.ValidateCSV
+	}
+	return ""
+}
+
+func applyResolvedWorkspaceOutputs(resolved *gvyconfig.ResolvedConfig, ws workspace.RunWorkspace) {
+	hadSplit := containsConfigPhase(resolved.Plan.Phases, gvyconfig.PhaseSplit)
+	hadValidate := containsConfigPhase(resolved.Plan.Phases, gvyconfig.PhaseValidate)
+	hadBatch := containsConfigPhase(resolved.Plan.Phases, gvyconfig.PhaseBatch)
+
+	if hadSplit {
+		resolved.Outputs.SplitDir = ws.SplitDir
+		resolved.Plan.SplitOutputDir = ws.SplitDir
+		if hadValidate {
+			resolved.Inputs.ValidateDir = ws.SplitDir
+			resolved.Plan.ValidateInputDir = ws.SplitDir
+		}
+	}
+	if hadValidate {
+		resolved.Outputs.SuccessDir = ws.SuccessDir
+		resolved.Outputs.ErrorDir = ws.ErrorDir
+		resolved.Plan.ValidationSuccessDir = ws.SuccessDir
+		resolved.Plan.ValidationErrorDir = ws.ErrorDir
+		if hadBatch {
+			resolved.Batch.InputDir = ws.SuccessDir
+			resolved.Plan.BatchInputDir = ws.SuccessDir
+		}
+	}
+	if hadBatch {
+		resolved.Outputs.BatchExportDir = ws.BatchExportDir
+		resolved.Plan.BatchOutputDir = ws.BatchExportDir
+	}
+}
+
 /* autoOptionsFromResolved keeps the legacy options shape available at the API edge only. */
 func autoOptionsFromResolved(resolved gvyconfig.ResolvedConfig) service.AutoOptions {
 	return service.AutoOptions{
@@ -1481,6 +1780,45 @@ func configPhasesEqual(actual, expected []gvyconfig.Phase) bool {
 		}
 	}
 	return true
+}
+
+func containsConfigPhase(phases []gvyconfig.Phase, target gvyconfig.Phase) bool {
+	for _, phase := range phases {
+		if phase == target {
+			return true
+		}
+	}
+	return false
+}
+
+func sameCleanPath(left, right string) bool {
+	leftAbs, leftErr := filepath.Abs(left)
+	rightAbs, rightErr := filepath.Abs(right)
+	if leftErr != nil || rightErr != nil {
+		return filepath.Clean(left) == filepath.Clean(right)
+	}
+	return leftAbs == rightAbs
+}
+
+func copyFile(source, destination string) error {
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	out, err := os.Create(destination)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 /* validateLegacyResolvedPaths preserves absolute-path requirements on /run/validate-auto. */
@@ -2292,8 +2630,98 @@ func (s *Server) listWorkingRootEntries(rawPath, ext string) (string, string, []
 	return displayPath, parentPath, entries, nil
 }
 
+func (s *Server) listRunFolderEntries(rawPath string) (string, string, []FileListEntry, error) {
+	root := filepath.Clean(s.workspaceBaseDir)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", "", nil, err
+	}
+
+	clean := strings.TrimSpace(rawPath)
+	currentDir := root
+	if clean != "" {
+		candidate := clean
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(s.workingRoot, filepath.FromSlash(clean))
+		}
+		absolutePath, err := filepath.Abs(candidate)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("path must resolve to a valid directory")
+		}
+		resolvedRoot := resolveRealPath(root)
+		resolvedCandidate := resolveRealPath(absolutePath)
+		if resolvedRoot == "" || resolvedCandidate == "" || !isWithinRoot(resolvedRoot, resolvedCandidate) {
+			return "", "", nil, fmt.Errorf("path must stay within the GVY runs directory")
+		}
+		currentDir = absolutePath
+	}
+
+	items, err := os.ReadDir(currentDir)
+	if err != nil {
+		return "", "", nil, err
+	}
+	entries := make([]FileListEntry, 0, len(items))
+	for _, item := range items {
+		if !item.IsDir() {
+			continue
+		}
+		absolutePath := filepath.Join(currentDir, item.Name())
+		relativePath, err := filepath.Rel(s.workingRoot, absolutePath)
+		if err != nil {
+			return "", "", nil, err
+		}
+		entries = append(entries, FileListEntry{
+			Name:         item.Name(),
+			RelativePath: filepath.ToSlash(relativePath),
+			IsDir:        true,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+
+	currentRelativePath, err := filepath.Rel(s.workingRoot, currentDir)
+	if err != nil {
+		return "", "", nil, err
+	}
+	displayPath := filepath.ToSlash(currentRelativePath)
+	if displayPath == "." {
+		displayPath = ""
+	}
+	parentPath := ""
+	if !samePath(currentDir, root) {
+		parent := filepath.Dir(currentDir)
+		relativeParent, err := filepath.Rel(s.workingRoot, parent)
+		if err != nil {
+			return "", "", nil, err
+		}
+		parentPath = filepath.ToSlash(relativeParent)
+	}
+	return displayPath, parentPath, entries, nil
+}
+
+func loadRunSnapshotFile(path string) (runs.Snapshot, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return runs.Snapshot{}, fmt.Errorf("run metadata not found in selected folder")
+	}
+	defer file.Close()
+
+	var snapshot runs.Snapshot
+	decoder := json.NewDecoder(io.LimitReader(file, 32<<20))
+	if err := decoder.Decode(&snapshot); err != nil {
+		return runs.Snapshot{}, fmt.Errorf("decode run metadata: %w", err)
+	}
+	if snapshot.RunID == "" {
+		return runs.Snapshot{}, fmt.Errorf("selected run metadata is missing a run id")
+	}
+	return snapshot, nil
+}
+
 func (s *Server) shouldHideBrowsePath(absolutePath string) bool {
 	internalRoot := filepath.Dir(s.workspaceBaseDir)
+	if samePath(internalRoot, s.workingRoot) {
+		return samePath(absolutePath, s.workspaceBaseDir)
+	}
 	return samePath(absolutePath, s.workspaceBaseDir) || samePath(absolutePath, internalRoot)
 }
 
@@ -2424,6 +2852,9 @@ func (s *Server) resolveSchemaSavePath(rawPath string) (string, error) {
 	}
 
 	parent := filepath.Dir(absolutePath)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return "", fmt.Errorf("create schema directory: %w", err)
+	}
 	parentInfo, err := os.Stat(parent)
 	if err != nil {
 		return "", fmt.Errorf("parent directory does not exist")

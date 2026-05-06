@@ -11,6 +11,7 @@
     validateCsv: { apiKind: "csv", mode: "file", title: "Select validation CSV", subtitle: "Choose one existing split CSV file.", target: "validateCsvInput" },
     validateDir: { apiKind: "csv", mode: "dir", title: "Select validation directory", subtitle: "Choose a directory that contains existing split CSV output.", target: "validateDirInput" },
     batchDir: { apiKind: "csv", mode: "dir", title: "Select batch input directory", subtitle: "Choose a directory that contains existing parquet output.", target: "batchInputDirInput" },
+    runFolder: { apiKind: "run", mode: "dir", title: "Select completed run folder", subtitle: "Choose a GVY run folder that contains run.json.", target: "reportFolder" },
   };
 
   const state = {
@@ -23,6 +24,7 @@
     preview: {
       status: "idle",
       resolved: null,
+      diskEstimate: null,
       error: "",
       localError: "",
     },
@@ -40,6 +42,11 @@
         parentPath: "",
         entries: [],
       },
+      run: {
+        currentPath: "",
+        parentPath: "",
+        entries: [],
+      },
     },
     filters: {
       csv: "",
@@ -47,6 +54,7 @@
       validateCsv: "",
       validateDir: "",
       batchDir: "",
+      runFolder: "",
     },
     pickerSelection: {
       csv: "",
@@ -54,6 +62,7 @@
       validateCsv: "",
       validateDir: "",
       batchDir: "",
+      runFolder: "",
     },
     selected: {
       csv: "",
@@ -175,6 +184,7 @@
     runIDValue: document.getElementById("run-id-value"),
     runStageValue: document.getElementById("run-stage-value"),
     runProgressValue: document.getElementById("run-progress-value"),
+    performanceCards: document.getElementById("performance-cards"),
     stageDetail: document.getElementById("stage-detail"),
     phaseHeading: document.getElementById("phase-heading"),
     phaseDetail: document.getElementById("phase-detail"),
@@ -185,6 +195,9 @@
     copyReportButton: document.getElementById("copy-report-button"),
     downloadReportButton: document.getElementById("download-report-button"),
     reportStatus: document.getElementById("report-status"),
+    reportFolderOpenButton: document.getElementById("report-folder-open-button"),
+    loadReportFolderButton: document.getElementById("load-report-folder-button"),
+    reportFolderSummary: document.getElementById("report-folder-summary"),
     errorExplorerOpenButton: document.getElementById("error-explorer-open-button"),
     errorExplorerModal: document.getElementById("error-explorer-modal"),
     errorExplorerBackdrop: document.getElementById("error-explorer-backdrop"),
@@ -264,6 +277,10 @@
     els.errorExplorerOpenButton.addEventListener("click", function () {
       openErrorExplorer();
     });
+    els.reportFolderOpenButton.addEventListener("click", function () {
+      openPicker("runFolder");
+    });
+    els.loadReportFolderButton.addEventListener("click", loadSelectedReportFolder);
     els.copyReportButton.addEventListener("click", copyRunReport);
     els.downloadReportButton.addEventListener("click", downloadRunReport);
 
@@ -529,13 +546,13 @@
     window.clearTimeout(state.resolveTimer);
     const localError = localConfigError();
     if (localError) {
-      state.preview = { status: "error", resolved: null, error: localError, localError: localError };
+      state.preview = { status: "error", resolved: null, diskEstimate: null, error: localError, localError: localError };
       renderPreview();
       updateSubmitState();
       return false;
     }
     if (!state.configDefaultsLoaded) {
-      state.preview = { status: "error", resolved: null, error: "Backend defaults have not loaded yet.", localError: "" };
+      state.preview = { status: "error", resolved: null, diskEstimate: null, error: "Backend defaults have not loaded yet.", localError: "" };
       renderPreview();
       updateSubmitState();
       return false;
@@ -545,6 +562,7 @@
     state.resolveSequence = sequence;
     state.preview.status = "pending";
     state.preview.error = "";
+    state.preview.diskEstimate = null;
     renderPreview();
     updateSubmitState();
 
@@ -565,6 +583,7 @@
       }
       state.preview.status = "ok";
       state.preview.resolved = payload.resolved_config || null;
+      state.preview.diskEstimate = payload.disk_estimate || null;
       state.preview.error = "";
       renderPreview();
       updateSubmitState();
@@ -575,6 +594,7 @@
       }
       state.preview.status = "error";
       state.preview.resolved = null;
+      state.preview.diskEstimate = null;
       state.preview.error = error.message || "Config resolution failed";
       renderPreview();
       updateSubmitState();
@@ -714,7 +734,7 @@
       stopPendingConfigRunAttach();
       replaceSnapshot(payload.run);
       render();
-      setFormMessage("Run completed. Final report is available in Review.", "ok");
+      setFormMessage("Run completed. Final report is available in Reporting.", "ok");
       refreshHealth();
     } catch (error) {
       setFormMessage(error.message || "Run creation failed", "error");
@@ -851,6 +871,38 @@
     }
   }
 
+  async function loadSelectedReportFolder() {
+    const path = state.pickerSelection.runFolder || "";
+    if (!path) {
+      setReportStatus("Select a completed run folder first.", "warn");
+      return;
+    }
+    closeStream();
+    setReportStatus("Loading report from selected folder.", "info");
+    try {
+      const params = new URLSearchParams();
+      params.set("path", path);
+      const response = await fetch("/api/reports/run?" + params.toString());
+      const payload = await parseJSON(response);
+      if (!response.ok) {
+        throw new Error(payload && payload.message ? payload.message : "Could not load report folder");
+      }
+      replaceSnapshot(payload.run);
+      state.result = {
+        result: payload.run.final_result || null,
+        final_error: payload.run.final_error || "",
+      };
+      state.health.busy = false;
+      resetReviewErrorSummary();
+      render();
+      ensureReviewErrorSummary();
+      setReportStatus("Loaded report from " + (payload.relative_path || path) + ".", "ok");
+    } catch (error) {
+      setReportStatus(error.message || "Could not load report folder.", "error");
+      render();
+    }
+  }
+
   function replaceSnapshot(snapshot) {
     const previousRunId = state.snapshot && state.snapshot.run_id;
     state.snapshot = snapshot;
@@ -893,6 +945,12 @@
   }
 
   function pushEvent(event) {
+    if (event && event.type === "telemetry") {
+      if (state.snapshot && event.metrics && event.metrics.performance) {
+        state.snapshot.performance = event.metrics.performance;
+      }
+      return;
+    }
     const key = [
       event.time || "",
       event.phase || "",
@@ -925,6 +983,13 @@
     source.addEventListener("progress", function (message) {
       try {
         const event = JSON.parse(message.data);
+        if (event && event.type === "telemetry") {
+          if (state.snapshot && event.metrics && event.metrics.performance) {
+            state.snapshot.performance = event.metrics.performance;
+          }
+          render();
+          return;
+        }
         pushEvent(event);
         if (state.snapshot) {
           state.snapshot.latest_event = event;
@@ -980,6 +1045,7 @@
     renderSummary();
     renderReviewErrorSummary();
     renderReportActions();
+    renderReportFolderSelection();
     renderEvents();
     updateSubmitState();
     renderPicker();
@@ -1128,6 +1194,7 @@
     const hasBatch = phaseInPlan(resolved, "batch");
     const phaseLabels = Array.isArray(plan.phases) ? plan.phases.map(phaseLabel).filter(Boolean) : [];
     const sections = [
+      previewSectionHTML("Storage check", storageRows(state.preview.diskEstimate)),
       previewSectionHTML("Workflow", [
         rowHTML("Phases", phaseLabels.length ? phaseLabels.join(" -> ") : "None selected"),
         rowHTML("Resume behavior", resumePolicyText(plan.resume_policy)),
@@ -1242,6 +1309,7 @@
       els.phaseDetail.textContent = state.pendingConfigRun ? "Waiting for the run snapshot and progress stream." : state.health.busy ? "A run exists, but this page has not attached to its snapshot yet." : "No active run.";
       els.progressFill.style.width = "0%";
       renderPhaseTimeline(null, null);
+      renderPerformanceCards(null);
       setBadge(els.runStateBadge, state.health.busy ? "Busy" : "No run selected", state.health.busy ? "warn" : "muted");
       return;
     }
@@ -1260,7 +1328,44 @@
     els.phaseDetail.textContent = detail;
     els.progressFill.style.width = (progressPercent == null ? 0 : progressPercent) + "%";
     renderPhaseTimeline(snapshot, stageInfo);
+    renderPerformanceCards(snapshot.performance || null);
     setBadge(els.runStateBadge, formatState(snapshot.state), toneForState(snapshot.state));
+  }
+
+  function renderPerformanceCards(performance) {
+    if (!els.performanceCards) {
+      return;
+    }
+    if (!performance) {
+      els.performanceCards.innerHTML = [
+        performanceCardHTML("CPU", "Waiting", "Process usage"),
+        performanceCardHTML("Memory", "Waiting", "RSS / heap"),
+        performanceCardHTML("Disk used", "Waiting", "Working filesystem"),
+        performanceCardHTML("Disk free", "Waiting", "Available space"),
+      ].join("");
+      return;
+    }
+
+    const memory = performance.memory || {};
+    const disk = performance.disk || {};
+    const cpu = metricNumber(performance.cpu_percent);
+    const diskUsed = metricNumber(disk.used_percent);
+    els.performanceCards.innerHTML = [
+      performanceCardHTML("CPU", cpu == null ? "Sampling" : trimTrailingDecimal(cpu) + "%", "Total across cores"),
+      performanceCardHTML("Memory", bytesText(memory.rss_bytes || memory.alloc_bytes), "RSS / heap " + bytesText(memory.alloc_bytes)),
+      performanceCardHTML("Disk used", diskUsed == null ? "Not available" : trimTrailingDecimal(diskUsed) + "%", bytesText(disk.used_bytes) + " used"),
+      performanceCardHTML("Disk free", bytesText(disk.available_bytes || disk.free_bytes), "Available now"),
+    ].join("");
+  }
+
+  function performanceCardHTML(label, value, detail) {
+    return [
+      '<div class="fact fact--performance">',
+      "<dt>" + escapeHTML(label) + "</dt>",
+      "<dd>" + escapeHTML(value) + "</dd>",
+      '<span class="fact__meta">' + escapeHTML(detail) + "</span>",
+      "</div>",
+    ].join("");
   }
 
   function renderPhaseTimeline(snapshot, stageInfo) {
@@ -1363,12 +1468,20 @@
     const hasSnapshot = Boolean(state.snapshot);
     els.copyReportButton.disabled = !hasSnapshot;
     els.downloadReportButton.disabled = !hasSnapshot;
+    els.loadReportFolderButton.disabled = !state.pickerSelection.runFolder;
     if (!hasSnapshot && !els.reportStatus.textContent) {
       els.reportStatus.textContent = "Start a run to generate report data.";
       els.reportStatus.dataset.tone = "info";
     } else if (hasSnapshot && els.reportStatus.textContent === "Start a run to generate report data.") {
       els.reportStatus.textContent = "";
       els.reportStatus.dataset.tone = "info";
+    }
+  }
+
+  function renderReportFolderSelection() {
+    const selected = state.pickerSelection.runFolder || "";
+    if (els.reportFolderSummary) {
+      els.reportFolderSummary.textContent = selected || (state.snapshot ? "Current run" : "No folder selected");
     }
   }
 
@@ -1387,7 +1500,7 @@
       return;
     }
     if (!summary.data) {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Open Review to load grouped validation errors and examples.</p>';
+      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Open Reporting to load grouped validation errors and examples.</p>';
       return;
     }
     if (!summary.data.issues.length) {
@@ -1716,7 +1829,8 @@
     const resolved = final.resolved || state.lastSubmittedResolved || state.preview.resolved;
     const planDir = resolved && resolved.plan ? resolved.plan.validation_error_dir : "";
     const outputDir = resolved && resolved.outputs ? resolved.outputs.error_dir : "";
-    return planDir || outputDir || els.errorDirInput.value || "errors";
+    const workspaceDir = state.snapshot && state.snapshot.workspace ? toRelativePath(state.snapshot.workspace.error_dir) : "";
+    return planDir || outputDir || workspaceDir || els.errorDirInput.value || "errors";
   }
 
   function renderEvents() {
@@ -2134,7 +2248,9 @@
     applyPickerValue(profile, state.browser[profile.apiKind].currentPath || ".");
     closePicker();
     render();
-    scheduleResolvePreview();
+    if (profile.target !== "reportFolder") {
+      scheduleResolvePreview();
+    }
   }
 
   function commitPickerSelection() {
@@ -2151,7 +2267,9 @@
     clearFormMessage();
     closePicker();
     render();
-    scheduleResolvePreview();
+    if (profile.target !== "reportFolder") {
+      scheduleResolvePreview();
+    }
   }
 
   function pickerCurrentTargetValue(profile) {
@@ -2166,6 +2284,8 @@
         return els.validateDirInput.value.trim();
       case "batchInputDirInput":
         return els.batchInputDirInput.value.trim();
+      case "reportFolder":
+        return state.pickerSelection.runFolder || "";
       default:
         return "";
     }
@@ -2188,6 +2308,10 @@
       case "batchInputDirInput":
         els.batchInputDirInput.value = value;
         break;
+      case "reportFolder":
+        state.pickerSelection.runFolder = value;
+        setReportStatus("Selected report folder. Load it to generate the report.", "info");
+        break;
       default:
         break;
     }
@@ -2203,8 +2327,10 @@
   }
 
   function updateFileCount(kind, text) {
-    const node = kind === "schema" ? els.schemaCount : els.csvCount;
-    node.textContent = text;
+    const node = kind === "schema" ? els.schemaCount : kind === "csv" ? els.csvCount : null;
+    if (node) {
+      node.textContent = text;
+    }
   }
 
   function toRelativePath(value) {
@@ -2538,6 +2664,22 @@
     return String(value);
   }
 
+  function bytesText(value) {
+    const bytes = metricNumber(value);
+    if (bytes == null || bytes <= 0) {
+      return "Not available";
+    }
+    const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let size = bytes;
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex += 1;
+    }
+    const precision = unitIndex === 0 || size >= 100 ? 0 : size >= 10 ? 1 : 2;
+    return size.toFixed(precision).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "") + " " + units[unitIndex];
+  }
+
   function metricNumber() {
     for (let index = 0; index < arguments.length; index += 1) {
       const value = arguments[index];
@@ -2674,6 +2816,30 @@
       return "Auto (" + effectiveText + " effective)";
     }
     return String(configured) + " configured (" + effectiveText + " effective)";
+  }
+
+  function storageRows(estimate) {
+    if (!estimate) {
+      return [
+        rowHTML("Input size", "Checking"),
+        rowHTML("Disk available", "Checking"),
+        rowHTML("Estimated run space", "Checking"),
+      ];
+    }
+    const rows = [
+      rowHTML("Input size", bytesText(estimate.input_file_bytes)),
+      rowHTML("Disk available", bytesText(estimate.available_bytes || estimate.free_bytes)),
+      rowHTML("Estimated run space", bytesText(estimate.estimated_run_bytes)),
+      rowHTML("Estimated peak", bytesText(estimate.estimated_peak_bytes)),
+    ];
+    if (Array.isArray(estimate.warnings) && estimate.warnings.length) {
+      rows.push(rowHTML("Estimate note", estimate.warnings[0]));
+    } else if (estimate.available_bytes && estimate.estimated_run_bytes && Number(estimate.estimated_run_bytes) > Number(estimate.available_bytes)) {
+      rows.push(rowHTML("Capacity", "Estimated run space is larger than available disk."));
+    } else {
+      rows.push(rowHTML("Capacity", "Available disk covers the rough estimate."));
+    }
+    return rows;
   }
 
   function confirmationNotes(resolved, error) {

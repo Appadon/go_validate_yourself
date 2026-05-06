@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"go_validate_yourself/internal/monitor"
 	"go_validate_yourself/internal/progress"
 	"go_validate_yourself/internal/workspace"
 )
@@ -32,16 +33,17 @@ const (
 
 /* Snapshot captures the observable state for one run. */
 type Snapshot struct {
-	RunID       string                  `json:"run_id"`
-	State       State                   `json:"state"`
-	CreatedAt   time.Time               `json:"created_at"`
-	StartedAt   *time.Time              `json:"started_at,omitempty"`
-	FinishedAt  *time.Time              `json:"finished_at,omitempty"`
-	Workspace   *workspace.RunWorkspace `json:"workspace,omitempty"`
-	LatestEvent *progress.Event         `json:"latest_event,omitempty"`
-	Events      []progress.Event        `json:"events,omitempty"`
-	FinalResult any                     `json:"final_result,omitempty"`
-	FinalError  string                  `json:"final_error,omitempty"`
+	RunID       string                    `json:"run_id"`
+	State       State                     `json:"state"`
+	CreatedAt   time.Time                 `json:"created_at"`
+	StartedAt   *time.Time                `json:"started_at,omitempty"`
+	FinishedAt  *time.Time                `json:"finished_at,omitempty"`
+	Workspace   *workspace.RunWorkspace   `json:"workspace,omitempty"`
+	LatestEvent *progress.Event           `json:"latest_event,omitempty"`
+	Events      []progress.Event          `json:"events,omitempty"`
+	Performance *monitor.ResourceSnapshot `json:"performance,omitempty"`
+	FinalResult any                       `json:"final_result,omitempty"`
+	FinalError  string                    `json:"final_error,omitempty"`
 }
 
 type runRecord struct {
@@ -217,6 +219,20 @@ func (m *Manager) AppendEvent(runID string, event progress.Event) (Snapshot, err
 	}
 
 	cloned := cloneEvent(event)
+	if performance, ok := performanceFromEvent(cloned); ok {
+		record.snapshot.Performance = performance
+		m.latestRun = runID
+		if err := persistSnapshot(record.snapshot); err != nil {
+			return Snapshot{}, err
+		}
+		for _, subscriber := range record.subscribers {
+			select {
+			case subscriber <- cloneEvent(cloned):
+			default:
+			}
+		}
+		return cloneSnapshot(record.snapshot), nil
+	}
 	record.snapshot.LatestEvent = &cloned
 	record.snapshot.Events = append(record.snapshot.Events, cloned)
 	if len(record.snapshot.Events) > m.eventLimit {
@@ -357,6 +373,14 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 		latest := cloneEvent(*snapshot.LatestEvent)
 		cloned.LatestEvent = &latest
 	}
+	if snapshot.Performance != nil {
+		performance := *snapshot.Performance
+		if snapshot.Performance.CPUPercent != nil {
+			cpu := *snapshot.Performance.CPUPercent
+			performance.CPUPercent = &cpu
+		}
+		cloned.Performance = &performance
+	}
 	if len(snapshot.Events) > 0 {
 		cloned.Events = make([]progress.Event, len(snapshot.Events))
 		for i, event := range snapshot.Events {
@@ -364,6 +388,34 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 		}
 	}
 	return cloned
+}
+
+func performanceFromEvent(event progress.Event) (*monitor.ResourceSnapshot, bool) {
+	if event.Type != progress.TypeTelemetry || len(event.Metrics) == 0 {
+		return nil, false
+	}
+	raw := event.Metrics["performance"]
+	switch performance := raw.(type) {
+	case monitor.ResourceSnapshot:
+		cloned := performance
+		if performance.CPUPercent != nil {
+			cpu := *performance.CPUPercent
+			cloned.CPUPercent = &cpu
+		}
+		return &cloned, true
+	case *monitor.ResourceSnapshot:
+		if performance == nil {
+			return nil, false
+		}
+		cloned := *performance
+		if performance.CPUPercent != nil {
+			cpu := *performance.CPUPercent
+			cloned.CPUPercent = &cpu
+		}
+		return &cloned, true
+	default:
+		return nil, false
+	}
 }
 
 /* cloneWorkspace copies workspace metadata so callers cannot mutate manager state. */
