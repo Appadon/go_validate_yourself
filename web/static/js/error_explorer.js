@@ -33,7 +33,6 @@
     pathInput: document.getElementById("error-report-path-input"),
     queryInput: document.getElementById("error-report-query-input"),
     fieldInput: document.getElementById("error-report-field-input"),
-    loadButton: document.getElementById("error-report-load-button"),
     browseButton: document.getElementById("error-report-browse-button"),
     status: document.getElementById("error-report-status"),
     message: document.getElementById("error-report-message"),
@@ -58,10 +57,7 @@
 
   function init() {
     const params = new URLSearchParams(window.location.search);
-    els.pathInput.value = cleanRelativePath(params.get("path") || "errors");
-    els.loadButton.addEventListener("click", function () {
-      loadErrorReport(0);
-    });
+    setErrorPath(params.get("path") || "errors");
     els.browseButton.addEventListener("click", openDirectoryPicker);
     els.pickerBackdrop.addEventListener("click", closeDirectoryPicker);
     els.pickerCloseButton.addEventListener("click", closeDirectoryPicker);
@@ -96,7 +92,7 @@
 
   async function loadErrorReport(offset) {
     const path = cleanRelativePath(els.pathInput.value || "errors");
-    els.pathInput.value = path;
+    setErrorPath(path);
     state.status = "loading";
     state.error = "";
     state.offset = Math.max(0, offset || 0);
@@ -214,7 +210,6 @@
 
   function render() {
     setBadge(els.status, statusText(), toneForStatus(state.status));
-    els.loadButton.disabled = state.status === "loading";
     els.message.textContent = state.error || "";
     if (state.error) {
       els.message.setAttribute("data-tone", "error");
@@ -361,9 +356,15 @@
   }
 
   function applyDirectorySelection(value) {
-    els.pathInput.value = value;
+    setErrorPath(value);
     closeDirectoryPicker();
     loadErrorReport(0);
+  }
+
+  function setErrorPath(value) {
+    const path = cleanRelativePath(value || "errors") || "errors";
+    els.pathInput.value = path;
+    els.browseButton.title = "Selected: " + path;
   }
 
   function openFileModal(fileName) {

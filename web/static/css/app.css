@@ -1083,9 +1083,13 @@ body::before {
 
 .error-toolbar {
   display: grid;
-  grid-template-columns: minmax(14rem, 1.2fr) auto minmax(12rem, 1fr) minmax(10rem, 0.8fr) auto;
+  grid-template-columns: auto minmax(16rem, 1.2fr) minmax(12rem, 0.85fr) auto;
   align-items: end;
   gap: 0.7rem;
+}
+
+.error-toolbar > .button {
+  min-height: 2.85rem;
 }
 
 .error-report-content {
@@ -1095,6 +1099,20 @@ body::before {
 
 .error-facts {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.error-facts .fact {
+  padding: 0.48rem 0.62rem;
+}
+
+.error-facts .fact dt {
+  font-size: 0.86rem;
+}
+
+.error-facts .fact dd {
+  margin-top: 0.18rem;
+  line-height: 1.25;
 }
 
 .error-report-grid {

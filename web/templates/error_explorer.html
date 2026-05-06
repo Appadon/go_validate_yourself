@@ -27,21 +27,11 @@
       {{end}}
 
       <main class="error-layout">
-        <section class="panel error-panel" aria-labelledby="error-explorer-title">
-          <div class="panel__head">
-            <div>
-              <h2 id="error-explorer-title">Error Explorer</h2>
-              <p class="panel-note">Browsing is limited to <code>{{.WorkingRoot}}</code></p>
-            </div>
-            <span id="error-report-status" class="badge badge--muted">Not loaded</span>
-          </div>
+        <section class="panel error-panel" aria-label="Error explorer">
 
           <div class="error-toolbar">
-            <label class="field-control" for="error-report-path-input">
-              <span>Error directory</span>
-              <input id="error-report-path-input" type="text" autocomplete="off" placeholder="errors">
-            </label>
-            <button id="error-report-browse-button" class="button button--secondary" type="button">Browse</button>
+            <input id="error-report-path-input" type="hidden" value="errors">
+            <button id="error-report-browse-button" class="button button--secondary" type="button" title="Selected: errors">Browse</button>
             <label class="field-control" for="error-report-query-input">
               <span>Search</span>
               <input id="error-report-query-input" type="search" autocomplete="off" placeholder="Message, row value, or file">
@@ -50,7 +40,7 @@
               <span>Field</span>
               <input id="error-report-field-input" type="search" autocomplete="off" placeholder="Any field">
             </label>
-            <button id="error-report-load-button" class="button button--primary" type="button">Load errors</button>
+            <span id="error-report-status" class="badge badge--muted">Not loaded</span>
           </div>
 
           <p id="error-report-message" class="form-message" aria-live="polite"></p>
