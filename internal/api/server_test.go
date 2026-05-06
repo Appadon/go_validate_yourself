@@ -795,6 +795,35 @@ func TestHandleFileListReturnsRunFolders(t *testing.T) {
 	if response.Entries[0].RelativePath != "runs/run-new" || response.Entries[1].RelativePath != "runs/run-old" {
 		t.Fatalf("entries = %+v", response.Entries)
 	}
+	if !response.Entries[0].HasRunMetadata || response.Entries[0].RunID != "run-new" || response.Entries[0].RunState != runs.StateCompleted {
+		t.Fatalf("run metadata entry = %+v", response.Entries[0])
+	}
+}
+
+func TestHandleFileListDiscoversNestedRunFolders(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workspaceBaseDir, "archive", "policy-run", "run.json"), `{"run_id":"run-nested","state":"failed","created_at":"2026-01-02T00:00:00Z"}`)
+	writeTestFile(t, filepath.Join(server.workspaceBaseDir, "archive", "not-a-run", "notes.txt"), "ignore me")
+
+	request := httptest.NewRequest(http.MethodGet, "/api/files?kind=run", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleFileList(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response FileListResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Entries) != 1 {
+		t.Fatalf("entry count = %d, want 1: %+v", len(response.Entries), response.Entries)
+	}
+	if response.Entries[0].RelativePath != "runs/archive/policy-run" || response.Entries[0].RunID != "run-nested" || response.Entries[0].RunState != runs.StateFailed {
+		t.Fatalf("nested run entry = %+v", response.Entries[0])
+	}
 }
 
 func TestHandleRunFolderReportLoadsCompletedSnapshot(t *testing.T) {

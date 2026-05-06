@@ -151,10 +151,15 @@ type FileSelectionRunRequest struct {
 
 /* FileListEntry exposes one selectable file under the server working root. */
 type FileListEntry struct {
-	Name         string `json:"name"`
-	RelativePath string `json:"relative_path"`
-	IsDir        bool   `json:"is_dir"`
-	SizeBytes    int64  `json:"size_bytes"`
+	Name           string     `json:"name"`
+	RelativePath   string     `json:"relative_path"`
+	IsDir          bool       `json:"is_dir"`
+	SizeBytes      int64      `json:"size_bytes"`
+	HasRunMetadata bool       `json:"has_run_metadata,omitempty"`
+	RunID          string     `json:"run_id,omitempty"`
+	RunState       runs.State `json:"run_state,omitempty"`
+	RunCreatedAt   string     `json:"run_created_at,omitempty"`
+	RunFinishedAt  string     `json:"run_finished_at,omitempty"`
 }
 
 /* FileListResponse returns eligible files scoped to the server working root. */
@@ -2655,29 +2660,10 @@ func (s *Server) listRunFolderEntries(rawPath string) (string, string, []FileLis
 		currentDir = absolutePath
 	}
 
-	items, err := os.ReadDir(currentDir)
+	entries, err := s.runFolderEntries(root, currentDir, clean == "")
 	if err != nil {
 		return "", "", nil, err
 	}
-	entries := make([]FileListEntry, 0, len(items))
-	for _, item := range items {
-		if !item.IsDir() {
-			continue
-		}
-		absolutePath := filepath.Join(currentDir, item.Name())
-		relativePath, err := filepath.Rel(s.workingRoot, absolutePath)
-		if err != nil {
-			return "", "", nil, err
-		}
-		entries = append(entries, FileListEntry{
-			Name:         item.Name(),
-			RelativePath: filepath.ToSlash(relativePath),
-			IsDir:        true,
-		})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
-	})
 
 	currentRelativePath, err := filepath.Rel(s.workingRoot, currentDir)
 	if err != nil {
@@ -2697,6 +2683,98 @@ func (s *Server) listRunFolderEntries(rawPath string) (string, string, []FileLis
 		parentPath = filepath.ToSlash(relativeParent)
 	}
 	return displayPath, parentPath, entries, nil
+}
+
+func (s *Server) runFolderEntries(root, currentDir string, discoverRuns bool) ([]FileListEntry, error) {
+	if discoverRuns {
+		return s.discoverRunFolderEntries(root)
+	}
+
+	items, err := os.ReadDir(currentDir)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]FileListEntry, 0, len(items))
+	for _, item := range items {
+		if !item.IsDir() {
+			continue
+		}
+		absolutePath := filepath.Join(currentDir, item.Name())
+		entry, err := s.runFolderEntry(absolutePath)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	sortRunFolderEntries(entries)
+	return entries, nil
+}
+
+func (s *Server) discoverRunFolderEntries(root string) ([]FileListEntry, error) {
+	entries := []FileListEntry{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if !d.IsDir() || samePath(path, root) {
+			return nil
+		}
+		if _, err := os.Stat(filepath.Join(path, "run.json")); err != nil {
+			return nil
+		}
+		entry, err := s.runFolderEntry(path)
+		if err != nil || !entry.HasRunMetadata {
+			return filepath.SkipDir
+		}
+		entries = append(entries, entry)
+		return filepath.SkipDir
+	})
+	if err != nil {
+		return nil, err
+	}
+	sortRunFolderEntries(entries)
+	return entries, nil
+}
+
+func (s *Server) runFolderEntry(absolutePath string) (FileListEntry, error) {
+	relativePath, err := filepath.Rel(s.workingRoot, absolutePath)
+	if err != nil {
+		return FileListEntry{}, err
+	}
+	entry := FileListEntry{
+		Name:         filepath.Base(absolutePath),
+		RelativePath: filepath.ToSlash(relativePath),
+		IsDir:        true,
+	}
+	snapshot, err := loadRunSnapshotFile(filepath.Join(absolutePath, "run.json"))
+	if err != nil {
+		return entry, nil
+	}
+	entry.HasRunMetadata = true
+	entry.RunID = snapshot.RunID
+	entry.RunState = snapshot.State
+	entry.RunCreatedAt = snapshot.CreatedAt.Format(time.RFC3339)
+	if snapshot.FinishedAt != nil {
+		entry.RunFinishedAt = snapshot.FinishedAt.Format(time.RFC3339)
+	}
+	return entry, nil
+}
+
+func sortRunFolderEntries(entries []FileListEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		leftTime := entries[i].RunFinishedAt
+		if leftTime == "" {
+			leftTime = entries[i].RunCreatedAt
+		}
+		rightTime := entries[j].RunFinishedAt
+		if rightTime == "" {
+			rightTime = entries[j].RunCreatedAt
+		}
+		if leftTime != rightTime {
+			return leftTime > rightTime
+		}
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
 }
 
 func loadRunSnapshotFile(path string) (runs.Snapshot, error) {

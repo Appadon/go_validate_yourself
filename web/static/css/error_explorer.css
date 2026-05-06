@@ -1,8 +1,9 @@
 html,
 body {
-  height: auto;
+  height: 100%;
   min-height: 100%;
   overflow: auto;
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.98), rgba(11, 15, 24, 0.98));
 }
 
 html:has(.error-shell--embed),
@@ -10,6 +11,10 @@ body:has(.error-shell--embed) {
   height: 100%;
   min-height: 0;
   overflow: hidden;
+}
+
+body:has(.error-shell--embed)::before {
+  display: none;
 }
 
 .error-shell {
@@ -21,15 +26,21 @@ body:has(.error-shell--embed) {
 
 .error-shell--embed {
   width: 100%;
-  height: 100dvh;
+  height: 100%;
   min-height: 0;
+  margin: 0;
   padding: 0;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
   overflow: hidden;
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.98), rgba(11, 15, 24, 0.98));
 }
 
 .error-shell--embed .error-layout {
+  grid-row: 1;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .error-layout {
@@ -76,21 +87,74 @@ body:has(.error-shell--embed) {
 }
 
 .error-shell--embed .error-report-grid {
-  height: min(100%, 43rem);
+  height: 100%;
   min-height: 0;
   align-items: stretch;
+  overflow: hidden;
 }
 
 .error-shell--embed .error-card {
   height: 100%;
+  min-height: 0;
   max-height: none;
+  overflow: hidden;
 }
 
 .error-shell--embed .error-bucket-list,
 .error-shell--embed .error-message-list {
   align-content: start;
   min-height: 0;
-  max-height: 35.5rem;
+  max-height: none;
+  overflow: auto;
+}
+
+.error-shell--embed .error-bucket-list--files {
+  max-height: none;
+}
+
+@media (max-width: 1100px) {
+  .error-shell--embed .error-report-content {
+    overflow: auto;
+  }
+
+  .error-shell--embed .error-report-grid {
+    height: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .error-shell--embed .error-card {
+    height: clamp(18rem, 45dvh, 30rem);
+  }
+
+  .error-shell--embed .error-card--wide {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .error-shell--embed .error-panel {
+    padding: 0.65rem;
+    overflow: hidden;
+  }
+
+  .error-shell--embed .error-report-content {
+    padding-right: 0;
+  }
+
+  .error-shell--embed .error-facts,
+  .error-shell--embed .error-report-grid,
+  .error-shell--embed .error-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .error-shell--embed .error-report-grid {
+    gap: 0.65rem;
+  }
+
+  .error-shell--embed .error-card {
+    height: clamp(16rem, 42dvh, 26rem);
+  }
 }
 
 .error-file-panel {

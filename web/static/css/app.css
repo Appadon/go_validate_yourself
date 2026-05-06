@@ -842,6 +842,16 @@ body::before {
 
 #error-explorer-modal .schema-editor-card__bar {
   border-bottom: 0;
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.92), rgba(11, 15, 24, 0.92));
+}
+
+#error-explorer-modal .schema-editor-card {
+  width: min(1520px, calc(100vw - 1.5rem));
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.98), rgba(11, 15, 24, 0.98));
+}
+
+#error-explorer-modal .schema-editor-frame {
+  background: linear-gradient(180deg, rgba(18, 25, 39, 0.98), rgba(11, 15, 24, 0.98));
 }
 
 .schema-editor-card__actions {

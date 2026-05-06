@@ -474,7 +474,7 @@
       '<section class="summary-card error-card">',
       "<h3>" + escapeHTML(title) + "</h3>",
       '<p class="error-card__note">' + escapeHTML(note) + "</p>",
-      '<ol class="error-bucket-list">',
+      '<ol class="error-bucket-list' + (mode === "file" ? " error-bucket-list--files" : "") + '">',
       buckets.map(function (bucket) {
         const attr = mode === "field" ? ' data-error-field="' + escapeAttr(bucket.name) + '"' : ' data-error-file="' + escapeAttr(bucket.name) + '"';
         const label = mode === "field" ? "Filter column" : "Open file";

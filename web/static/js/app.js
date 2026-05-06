@@ -11,7 +11,7 @@
     validateCsv: { apiKind: "csv", mode: "file", title: "Select validation CSV", subtitle: "Choose one existing split CSV file.", target: "validateCsvInput" },
     validateDir: { apiKind: "csv", mode: "dir", title: "Select validation directory", subtitle: "Choose a directory that contains existing split CSV output.", target: "validateDirInput" },
     batchDir: { apiKind: "csv", mode: "dir", title: "Select batch input directory", subtitle: "Choose a directory that contains existing parquet output.", target: "batchInputDirInput" },
-    runFolder: { apiKind: "run", mode: "dir", title: "Select completed run folder", subtitle: "Choose a GVY run folder that contains run.json.", target: "reportFolder" },
+    runFolder: { apiKind: "run", mode: "dir", title: "Select previous run", subtitle: "Choose a detected GVY run folder that contains run.json.", target: "reportFolder" },
   };
 
   const state = {
@@ -888,6 +888,7 @@
         throw new Error(payload && payload.message ? payload.message : "Could not load report folder");
       }
       replaceSnapshot(payload.run);
+      state.pickerSelection.runFolder = payload.relative_path || path;
       state.result = {
         result: payload.run.final_result || null,
         final_error: payload.run.final_error || "",
@@ -1287,6 +1288,7 @@
     fileBrowser.populateSelect(select, files, {
       selectedValue: selectedValue,
       clearWhenEmptySelection: true,
+      textFor: kind === "runFolder" ? runFolderOptionText : null,
       emptyText: profile.mode === "dir"
         ? "No subdirectories match the current filter"
         : hasFileEntries(kind)
@@ -1827,10 +1829,11 @@
   function currentErrorDir() {
     const final = finalResultInfo();
     const resolved = final.resolved || state.lastSubmittedResolved || state.preview.resolved;
-    const planDir = resolved && resolved.plan ? resolved.plan.validation_error_dir : "";
-    const outputDir = resolved && resolved.outputs ? resolved.outputs.error_dir : "";
     const workspaceDir = state.snapshot && state.snapshot.workspace ? toRelativePath(state.snapshot.workspace.error_dir) : "";
-    return planDir || outputDir || workspaceDir || els.errorDirInput.value || "errors";
+    const planDir = resolved && resolved.plan ? toRelativePath(resolved.plan.validation_error_dir) : "";
+    const outputDir = resolved && resolved.outputs ? toRelativePath(resolved.outputs.error_dir) : "";
+    const manualDir = toRelativePath(els.errorDirInput.value);
+    return workspaceDir || planDir || outputDir || manualDir || "errors";
   }
 
   function renderEvents() {
@@ -1924,7 +1927,9 @@
     const profile = pickerProfiles[kind];
     state.browser.activeKind = kind;
     state.pickerSelection[kind] = pickerCurrentTargetValue(profile) || "";
-    if (!state.browser[profile.apiKind].entries.length) {
+    if (kind === "runFolder") {
+      loadFileList(kind, "");
+    } else if (!state.browser[profile.apiKind].entries.length) {
       loadFileList(kind, state.browser[profile.apiKind].currentPath);
     }
     renderPicker();
@@ -2324,6 +2329,20 @@
     els.pickerSelectionSummary.textContent = value ? value : (profile && profile.mode === "dir" ? "No directory selected." : "No file selected.");
     els.pickerChooseButton.disabled = !value;
     els.pickerCurrentDirButton.disabled = !(profile && profile.mode === "dir");
+  }
+
+  function runFolderOptionText(entry) {
+    const parts = [];
+    parts.push(entry.run_id || entry.name || entry.relative_path || "Run");
+    if (entry.run_state) {
+      parts.push(formatState(entry.run_state));
+    }
+    const timestamp = entry.run_finished_at || entry.run_created_at;
+    if (timestamp) {
+      parts.push(formatTimestamp(timestamp));
+    }
+    const path = entry.relative_path ? "/" + entry.relative_path : "";
+    return parts.join(" - ") + (path ? " - " + path : "");
   }
 
   function updateFileCount(kind, text) {
