@@ -136,6 +136,13 @@ type ConfigRunResponse struct {
 	Result         service.PipelineResult   `json:"result,omitempty"`
 }
 
+/* AssociatedRunResponse returns the persisted run tied to a selected source file. */
+type AssociatedRunResponse struct {
+	OK           bool          `json:"ok"`
+	RelativePath string        `json:"relative_path"`
+	Run          runs.Snapshot `json:"run"`
+}
+
 /* ConfigRunResult is stored on run snapshots for config-first executions. */
 type ConfigRunResult struct {
 	Mode           string                   `json:"mode"`
@@ -356,6 +363,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 	mux.HandleFunc("/api/schema/infer", server.handleSchemaInfer)
 	mux.HandleFunc("/api/schema", server.handleSchemaDocument)
 	mux.HandleFunc("/api/runs", server.handleRuns)
+	mux.HandleFunc("/api/runs/associated", server.handleAssociatedRun)
 	mux.HandleFunc("/api/runs/config", server.handleConfigRun)
 	mux.HandleFunc("/api/runs/", server.handleRunByID)
 
@@ -636,6 +644,7 @@ func (s *Server) handleValidateAuto(w http.ResponseWriter, r *http.Request) {
 
 	pipelineResult, err := s.runPipeline(r.Context(), opts)
 	if err != nil {
+		stopMonitor()
 		_, _ = s.runManager.Fail(runID, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			writeAPIError(w, http.StatusRequestTimeout, "REQUEST_CANCELED", err.Error())
@@ -645,6 +654,7 @@ func (s *Server) handleValidateAuto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := autoResultFromPipeline(resolved, pipelineResult)
+	stopMonitor()
 	_, _ = s.runManager.Complete(runID, ConfigRunResult{
 		Mode:           "auto",
 		ResolvedConfig: resolved,
@@ -769,6 +779,7 @@ func (s *Server) handleConfigRun(w http.ResponseWriter, r *http.Request) {
 	opts.Reporter = progress.Combine(opts.Reporter, s.runManager.Reporter(runID))
 	result, err := s.runPipeline(r.Context(), opts)
 	if err != nil {
+		stopMonitor()
 		_, _ = s.runManager.Fail(runID, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			writeAPIError(w, http.StatusRequestTimeout, "REQUEST_CANCELED", err.Error())
@@ -782,6 +793,7 @@ func (s *Server) handleConfigRun(w http.ResponseWriter, r *http.Request) {
 		ResolvedConfig: resolved,
 		Result:         result,
 	}
+	stopMonitor()
 	snapshot, _ = s.runManager.Complete(runID, finalResult)
 
 	writeJSON(w, http.StatusOK, ConfigRunResponse{
@@ -926,6 +938,46 @@ func (s *Server) handleRunFolderReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, RunFolderReportResponse{
 		OK:           true,
 		RelativePath: relativePath,
+		Run:          snapshot,
+	})
+}
+
+/* handleAssociatedRun loads a persisted run.json for the workspace derived from a selected CSV. */
+func (s *Server) handleAssociatedRun(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/api/runs/associated" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	csvPath, err := s.resolveSelectedFile(r.URL.Query().Get("path"), ".csv", "path")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_CSV_PATH", err.Error())
+		return
+	}
+	ws, err := workspace.NewForInput(s.workspaceBaseDir, "associated-run", csvPath)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "RUN_LOOKUP_FAILED", err.Error())
+		return
+	}
+	snapshot, err := loadRunSnapshotFile(ws.MetadataPath)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "RUN_NOT_FOUND", err.Error())
+		return
+	}
+	relativePath, err := filepath.Rel(s.workingRoot, ws.RootDir)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "RUN_LOOKUP_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, AssociatedRunResponse{
+		OK:           true,
+		RelativePath: filepath.ToSlash(relativePath),
 		Run:          snapshot,
 	})
 }
@@ -1355,6 +1407,7 @@ func (s *Server) executeWorkspaceRun(runID string, ws workspace.RunWorkspace) {
 	reporter := s.runManager.Reporter(runID)
 	primaryKey, err := s.detectPrimaryKey(ws.InputCSVPath)
 	if err != nil {
+		stopMonitor()
 		reporter.Report(progress.Event{
 			RunID:   runID,
 			Time:    time.Now().UTC(),
@@ -1385,9 +1438,11 @@ func (s *Server) executeWorkspaceRun(runID string, ws workspace.RunWorkspace) {
 		Reporter:             reporter,
 	})
 	if err != nil {
+		stopMonitor()
 		_, _ = s.runManager.Fail(runID, err)
 		return
 	}
+	stopMonitor()
 	_, _ = s.runManager.Complete(runID, result)
 }
 
@@ -1396,8 +1451,12 @@ func (s *Server) startRunMonitor(parent context.Context, runID, diskPath string)
 	sampler := monitor.NewSampler(firstNonEmpty(diskPath, s.workingRoot))
 	reporter := s.runManager.Reporter(runID)
 	emitter := progress.NewEmitter(runID, reporter)
+	var sampleMu sync.Mutex
+	var stopOnce sync.Once
 
 	emit := func() {
+		sampleMu.Lock()
+		defer sampleMu.Unlock()
 		sample, err := sampler.Sample()
 		if err != nil {
 			return
@@ -1420,7 +1479,12 @@ func (s *Server) startRunMonitor(parent context.Context, runID, diskPath string)
 			}
 		}
 	}()
-	return cancel
+	return func() {
+		stopOnce.Do(func() {
+			emit()
+			cancel()
+		})
+	}
 }
 
 func (s *Server) buildDiskEstimate(resolved gvyconfig.ResolvedConfig) monitor.DiskEstimate {
@@ -1607,9 +1671,8 @@ func (s *Server) resolveLegacyAutoConfig(req ValidateAutoRequest) (gvyconfig.Res
 
 /* pipelineOptionsFromResolved maps canonical resolved config into service execution options. */
 func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig) service.PipelineOptions {
-	fullAutoPipeline := configPhasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch})
 	batchClearOutput := resolved.Batch.ClearOutput
-	if fullAutoPipeline {
+	if resolved.Validation.ClearOutputs && containsConfigPhase(resolved.Plan.Phases, gvyconfig.PhaseBatch) {
 		batchClearOutput = false
 	}
 	return service.PipelineOptions{
@@ -1639,7 +1702,8 @@ func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig) service.Pipe
 			ClearOutputDir: batchClearOutput,
 		},
 		ReuseSplitCache:           resolved.Split.ReuseCache,
-		ClearValidationOutputDirs: resolved.Validation.ClearOutputs && fullAutoPipeline,
+		ClearSplitOutputDir:       resolved.Validation.ClearOutputs && containsConfigPhase(resolved.Plan.Phases, gvyconfig.PhaseSplit),
+		ClearValidationOutputDirs: resolved.Validation.ClearOutputs,
 		Mode:                      resolvedPipelineMode(resolved),
 	}
 }

@@ -548,7 +548,6 @@
       '<article class="error-file-row">',
       '<div class="error-file-row__head">',
       "<strong>Row " + escapeHTML(sample.row_number || "unknown") + "</strong>",
-      '<span class="error-file-row__message">' + escapeHTML(sample.errors || "Validation error") + "</span>",
       "</div>",
       '<dl class="error-column-grid">' + allColumnRows + "</dl>",
       "</article>",

@@ -620,14 +620,42 @@ func createOutputDirs(successDir, errorDir string) error {
 	return nil
 }
 
-/* clearValidationOutputDirs removes prior validation and batch artifacts. */
-func clearValidationOutputDirs(successDir, errorDir, batchExportDir string) error {
-	for _, dir := range []string{successDir, errorDir, batchExportDir} {
+/* clearPipelineOutputDirs removes prior artifacts for selected pipeline phases. */
+func clearPipelineOutputDirs(opts PipelineOptions) error {
+	for _, dir := range outputDirsToClear(opts) {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("failed clearing output dir %q: %w", dir, err)
 		}
 	}
 	return nil
+}
+
+func outputDirsToClear(opts PipelineOptions) []string {
+	dirs := make([]string, 0, 4)
+	if opts.ClearSplitOutputDir && containsPipelinePhase(opts.Phases, PipelinePhaseSplit) {
+		dirs = append(dirs, opts.Split.OutputDir)
+	}
+	if opts.ClearValidationOutputDirs && containsPipelinePhase(opts.Phases, PipelinePhaseValidate) {
+		dirs = append(dirs, opts.Validate.SuccessDir, opts.Validate.ErrorDir)
+	}
+	if opts.ClearValidationOutputDirs && containsPipelinePhase(opts.Phases, PipelinePhaseBatch) {
+		dirs = append(dirs, opts.Batch.OutputDir)
+	}
+
+	seen := make(map[string]struct{}, len(dirs))
+	deduped := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		deduped = append(deduped, dir)
+	}
+	return deduped
 }
 
 /* normalizeBatchSize applies the lower bound used by batch mode. */

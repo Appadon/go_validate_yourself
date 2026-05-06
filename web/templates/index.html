@@ -301,12 +301,8 @@
                   <dd id="run-id-value">{{if .LatestRunID}}{{.LatestRunID}}{{else}}Waiting for submission{{end}}</dd>
                 </div>
                 <div class="fact">
-                  <dt>Total rows</dt>
-                  <dd id="run-stage-value">Not available</dd>
-                </div>
-                <div class="fact">
-                  <dt>Run time</dt>
-                  <dd id="run-progress-value">Not started</dd>
+                  <dt>Input filename</dt>
+                  <dd id="run-input-filename-value">Not selected</dd>
                 </div>
               </dl>
 
@@ -440,11 +436,10 @@
 
     <div id="error-explorer-modal" class="schema-editor-modal" hidden>
       <div id="error-explorer-backdrop" class="schema-editor-modal__backdrop"></div>
-      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-labelledby="error-explorer-modal-title">
+      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-label="Error Explorer">
         <div class="schema-editor-card__bar">
           <div>
-            <p class="eyebrow">Errors</p>
-            <h2 id="error-explorer-modal-title">Error Explorer</h2>
+            <p class="eyebrow">Error Explorer</p>
           </div>
           <button id="error-explorer-close-button" class="button button--secondary button--small" type="button">Close</button>
         </div>

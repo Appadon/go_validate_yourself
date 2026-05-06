@@ -2,6 +2,8 @@ package runs
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -129,6 +131,8 @@ func TestManagerStoresTelemetryWithoutReplacingLatestEvent(t *testing.T) {
 		Message: "validating",
 	})
 	cpu := 12.5
+	readRate := 4096.0
+	writeRate := 8192.0
 	reporter.Report(progress.Event{
 		RunID: "run-telemetry",
 		Time:  time.Now().UTC(),
@@ -138,8 +142,12 @@ func TestManagerStoresTelemetryWithoutReplacingLatestEvent(t *testing.T) {
 			"performance": monitor.ResourceSnapshot{
 				Time:       time.Now().UTC(),
 				CPUPercent: &cpu,
-				Memory:     monitor.MemorySnapshot{AllocBytes: 1024},
-				Disk:       monitor.DiskSnapshot{AvailableBytes: 2048},
+				Memory:     monitor.MemorySnapshot{AllocBytes: 1024, RSSBytes: 2048},
+				IO: monitor.IOSnapshot{
+					ReadBytesPerSecond:  &readRate,
+					WriteBytesPerSecond: &writeRate,
+				},
+				Disk: monitor.DiskSnapshot{AvailableBytes: 2048},
 			},
 		},
 	})
@@ -154,11 +162,58 @@ func TestManagerStoresTelemetryWithoutReplacingLatestEvent(t *testing.T) {
 	if snapshot.Performance.CPUPercent == nil || *snapshot.Performance.CPUPercent != cpu {
 		t.Fatalf("CPUPercent = %#v, want %v", snapshot.Performance.CPUPercent, cpu)
 	}
+	if snapshot.PerformanceSummary == nil {
+		t.Fatal("PerformanceSummary was nil")
+	}
+	if snapshot.PerformanceSummary.MaxCPUPercent == nil || *snapshot.PerformanceSummary.MaxCPUPercent != cpu {
+		t.Fatalf("MaxCPUPercent = %#v, want %v", snapshot.PerformanceSummary.MaxCPUPercent, cpu)
+	}
+	if snapshot.PerformanceSummary.MaxRSSBytes != 2048 {
+		t.Fatalf("MaxRSSBytes = %d, want 2048", snapshot.PerformanceSummary.MaxRSSBytes)
+	}
+	if snapshot.PerformanceSummary.MaxIOWriteBytesPerSecond == nil || *snapshot.PerformanceSummary.MaxIOWriteBytesPerSecond != writeRate {
+		t.Fatalf("MaxIOWriteBytesPerSecond = %#v, want %v", snapshot.PerformanceSummary.MaxIOWriteBytesPerSecond, writeRate)
+	}
 	if snapshot.LatestEvent == nil || snapshot.LatestEvent.Type != progress.TypeProgress {
 		t.Fatalf("LatestEvent = %+v, want progress event", snapshot.LatestEvent)
 	}
 	if len(snapshot.Events) != 1 {
 		t.Fatalf("Events length = %d, want telemetry excluded from retained event log", len(snapshot.Events))
+	}
+}
+
+func TestManagerCompletesWithFinalWorkspaceSizes(t *testing.T) {
+	manager := NewManager()
+	runWorkspace := mustWorkspace(t, "run-sizes")
+	if err := runWorkspace.Prepare(); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if err := os.WriteFile(runWorkspace.InputCSVPath, []byte("a,b\n1,2\n"), 0o644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runWorkspace.SuccessDir, "part.parquet"), []byte("parquet"), 0o644); err != nil {
+		t.Fatalf("write output: %v", err)
+	}
+
+	if _, err := manager.Create("run-sizes", &runWorkspace); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := manager.Start("run-sizes"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	completed, err := manager.Complete("run-sizes", map[string]any{"ok": true})
+	if err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if completed.PerformanceSummary == nil {
+		t.Fatal("PerformanceSummary was nil")
+	}
+	if completed.PerformanceSummary.InputFileBytes != 8 {
+		t.Fatalf("InputFileBytes = %d, want 8", completed.PerformanceSummary.InputFileBytes)
+	}
+	if completed.PerformanceSummary.RunBytes < 14 {
+		t.Fatalf("RunBytes = %d, want at least 14", completed.PerformanceSummary.RunBytes)
 	}
 }
 

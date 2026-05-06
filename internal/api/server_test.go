@@ -881,6 +881,62 @@ func TestHandleRunFolderReportRejectsUnfinishedRun(t *testing.T) {
 	assertAPIErrorCode(t, recorder, http.StatusConflict, "RUN_NOT_FINISHED")
 }
 
+func TestHandleAssociatedRunLoadsSnapshotForSelectedCSV(t *testing.T) {
+	server := newSelectionTestServer(t)
+	csvPath := filepath.Join(server.workingRoot, "incoming", "Policy Export FINAL.csv")
+	writeTestFile(t, csvPath, "Record ID\n1\n")
+	ws, err := workspace.NewForInput(server.workspaceBaseDir, "ignored-run-id", csvPath)
+	if err != nil {
+		t.Fatalf("NewForInput() error = %v", err)
+	}
+	metadata, err := json.Marshal(runs.Snapshot{
+		RunID:     "run-associated",
+		State:     runs.StateRunning,
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Workspace: &ws,
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	writeTestFile(t, ws.MetadataPath, string(metadata))
+
+	request := httptest.NewRequest(http.MethodGet, "/api/runs/associated?path=incoming/Policy+Export+FINAL.csv", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleAssociatedRun(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response AssociatedRunResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.RelativePath != "runs/policy_export_final" {
+		t.Fatalf("relative path = %q", response.RelativePath)
+	}
+	if response.Run.RunID != "run-associated" || response.Run.State != runs.StateRunning {
+		t.Fatalf("run = %+v", response.Run)
+	}
+	if response.Run.Workspace == nil || response.Run.Workspace.SplitDir != ws.SplitDir {
+		t.Fatalf("workspace = %+v, want split dir %q", response.Run.Workspace, ws.SplitDir)
+	}
+}
+
+func TestHandleAssociatedRunReturnsNotFoundWhenMetadataMissing(t *testing.T) {
+	server := newSelectionTestServer(t)
+	writeTestFile(t, filepath.Join(server.workingRoot, "incoming", "input.csv"), "Record ID\n1\n")
+
+	request := httptest.NewRequest(http.MethodGet, "/api/runs/associated?path=incoming/input.csv", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleAssociatedRun(recorder, request)
+
+	assertAPIErrorCode(t, recorder, http.StatusNotFound, "RUN_NOT_FOUND")
+}
+
 func TestHandleCreateRunFromSelectionSuccessAndInspectability(t *testing.T) {
 	server := newSelectionTestServer(t)
 	csvPath := filepath.Join(server.workingRoot, "incoming", "input.csv")

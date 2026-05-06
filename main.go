@@ -823,9 +823,8 @@ func printResolvedPipelineBanners(resolved gvyconfig.ResolvedConfig, threadSourc
 
 /* pipelineOptionsFromResolved converts resolved config into service execution options. */
 func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig, splitPrimaryKey string) service.PipelineOptions {
-	fullAutoPipeline := phasesEqual(resolved.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch})
 	batchClearOutput := resolved.Batch.ClearOutput
-	if fullAutoPipeline {
+	if resolved.Validation.ClearOutputs && containsResolvedPhase(resolved.Plan.Phases, gvyconfig.PhaseBatch) {
 		batchClearOutput = false
 	}
 	return service.PipelineOptions{
@@ -855,7 +854,8 @@ func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig, splitPrimary
 			ClearOutputDir: batchClearOutput,
 		},
 		ReuseSplitCache:           resolved.Split.ReuseCache,
-		ClearValidationOutputDirs: resolved.Validation.ClearOutputs && fullAutoPipeline,
+		ClearSplitOutputDir:       resolved.Validation.ClearOutputs && containsResolvedPhase(resolved.Plan.Phases, gvyconfig.PhaseSplit),
+		ClearValidationOutputDirs: resolved.Validation.ClearOutputs,
 		Reporter:                  console.NewProgressReporter(),
 		Mode:                      resolvedPipelineMode(resolved),
 	}

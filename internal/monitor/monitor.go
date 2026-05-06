@@ -3,6 +3,7 @@ package monitor
 import (
 	"bufio"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,11 +30,24 @@ type MemorySnapshot struct {
 	RSSBytes   uint64 `json:"rss_bytes,omitempty"`
 }
 
+/* IOSnapshot captures cumulative logical process IO plus sampled throughput when available. */
+type IOSnapshot struct {
+	ReadBytes                   uint64   `json:"read_bytes"`
+	WriteBytes                  uint64   `json:"write_bytes"`
+	PhysicalReadBytes           uint64   `json:"physical_read_bytes,omitempty"`
+	PhysicalWriteBytes          uint64   `json:"physical_write_bytes,omitempty"`
+	ReadBytesPerSecond          *float64 `json:"read_bytes_per_second,omitempty"`
+	WriteBytesPerSecond         *float64 `json:"write_bytes_per_second,omitempty"`
+	PhysicalReadBytesPerSecond  *float64 `json:"physical_read_bytes_per_second,omitempty"`
+	PhysicalWriteBytesPerSecond *float64 `json:"physical_write_bytes_per_second,omitempty"`
+}
+
 /* ResourceSnapshot is one point-in-time process and disk sample. */
 type ResourceSnapshot struct {
 	Time       time.Time      `json:"time"`
 	CPUPercent *float64       `json:"cpu_percent,omitempty"`
 	Memory     MemorySnapshot `json:"memory"`
+	IO         IOSnapshot     `json:"io"`
 	Disk       DiskSnapshot   `json:"disk"`
 }
 
@@ -60,6 +74,8 @@ type Sampler struct {
 	DiskPath       string
 	previousProc   uint64
 	previousSystem uint64
+	previousIO     IOSnapshot
+	previousIOTime time.Time
 }
 
 /* NewSampler creates a process sampler for the filesystem containing diskPath. */
@@ -80,8 +96,9 @@ func (s *Sampler) Sample() (ResourceSnapshot, error) {
 		return ResourceSnapshot{}, err
 	}
 
+	now := time.Now().UTC()
 	sample := ResourceSnapshot{
-		Time: time.Now().UTC(),
+		Time: now,
 		Memory: MemorySnapshot{
 			AllocBytes: mem.Alloc,
 			SysBytes:   mem.Sys,
@@ -99,6 +116,33 @@ func (s *Sampler) Sample() (ResourceSnapshot, error) {
 	if procOK && systemOK {
 		s.previousProc = procTicks
 		s.previousSystem = systemTicks
+	}
+
+	if ioSnapshot, ok := readProcessIO(); ok {
+		if !s.previousIOTime.IsZero() {
+			elapsed := now.Sub(s.previousIOTime).Seconds()
+			if elapsed > 0 {
+				if ioSnapshot.ReadBytes >= s.previousIO.ReadBytes {
+					rate := float64(ioSnapshot.ReadBytes-s.previousIO.ReadBytes) / elapsed
+					ioSnapshot.ReadBytesPerSecond = &rate
+				}
+				if ioSnapshot.WriteBytes >= s.previousIO.WriteBytes {
+					rate := float64(ioSnapshot.WriteBytes-s.previousIO.WriteBytes) / elapsed
+					ioSnapshot.WriteBytesPerSecond = &rate
+				}
+				if ioSnapshot.PhysicalReadBytes >= s.previousIO.PhysicalReadBytes {
+					rate := float64(ioSnapshot.PhysicalReadBytes-s.previousIO.PhysicalReadBytes) / elapsed
+					ioSnapshot.PhysicalReadBytesPerSecond = &rate
+				}
+				if ioSnapshot.PhysicalWriteBytes >= s.previousIO.PhysicalWriteBytes {
+					rate := float64(ioSnapshot.PhysicalWriteBytes-s.previousIO.PhysicalWriteBytes) / elapsed
+					ioSnapshot.PhysicalWriteBytesPerSecond = &rate
+				}
+			}
+		}
+		s.previousIO = ioSnapshot
+		s.previousIOTime = now
+		sample.IO = ioSnapshot
 	}
 	return sample, nil
 }
@@ -143,6 +187,33 @@ func StatDisk(path string) (DiskSnapshot, error) {
 		UsedBytes:      used,
 		UsedPercent:    usedPercent,
 	}, nil
+}
+
+/* DirectorySize returns the total size of regular files below root. */
+func DirectorySize(root string) (int64, error) {
+	clean := strings.TrimSpace(root)
+	if clean == "" {
+		return 0, nil
+	}
+	var total int64
+	err := filepath.WalkDir(clean, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry == nil || !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("size directory %q: %w", clean, err)
+	}
+	return total, nil
 }
 
 func readRSSBytes() uint64 {
@@ -207,6 +278,42 @@ func readSystemTicks() (uint64, bool) {
 		total += value
 	}
 	return total, true
+}
+
+func readProcessIO() (IOSnapshot, bool) {
+	file, err := os.Open("/proc/self/io")
+	if err != nil {
+		return IOSnapshot{}, false
+	}
+	defer file.Close()
+
+	var snapshot IOSnapshot
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		value, err := strconv.ParseUint(strings.TrimSpace(parts[1]), 10, 64)
+		if err != nil {
+			continue
+		}
+		switch strings.TrimSpace(parts[0]) {
+		case "rchar":
+			snapshot.ReadBytes = value
+		case "wchar":
+			snapshot.WriteBytes = value
+		case "read_bytes":
+			snapshot.PhysicalReadBytes = value
+		case "write_bytes":
+			snapshot.PhysicalWriteBytes = value
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return IOSnapshot{}, false
+	}
+	return snapshot, true
 }
 
 func normalizedCPUPercent(processDelta, systemDelta uint64) float64 {

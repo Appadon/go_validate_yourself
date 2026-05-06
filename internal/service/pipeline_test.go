@@ -257,6 +257,44 @@ func TestRunPipelineSplitCacheReuseHonoredWhenConfigured(t *testing.T) {
 	assertExists(t, sentinel)
 }
 
+func TestRunPipelineClearOutputsRemovesSplitCacheAndDownstreamOutputs(t *testing.T) {
+	tempDir := t.TempDir()
+	inputPath, schemaPath := writePipelineInputFixture(t, tempDir)
+	opts := fullPipelineOptions(tempDir, inputPath, schemaPath)
+
+	firstResult, err := New().RunPipeline(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunPipeline() first run error = %v", err)
+	}
+	if firstResult.SplitReused {
+		t.Fatal("first split unexpectedly reused cache")
+	}
+
+	splitSentinel := filepath.Join(opts.Split.OutputDir, "stale.csv")
+	successSentinel := filepath.Join(opts.Validate.SuccessDir, "stale.parquet")
+	errorSentinel := filepath.Join(opts.Validate.ErrorDir, "stale.parquet")
+	batchSentinel := filepath.Join(opts.Batch.OutputDir, "stale.parquet")
+	writeTestFile(t, splitSentinel, "stale")
+	writeTestFile(t, successSentinel, "stale")
+	writeTestFile(t, errorSentinel, "stale")
+	writeTestFile(t, batchSentinel, "stale")
+
+	opts.ClearValidationOutputDirs = true
+	opts.ClearSplitOutputDir = true
+	secondResult, err := New().RunPipeline(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("RunPipeline() second run error = %v", err)
+	}
+	if secondResult.SplitReused {
+		t.Fatal("second split reused cache after clear outputs")
+	}
+	assertNotExists(t, splitSentinel)
+	assertNotExists(t, successSentinel)
+	assertNotExists(t, errorSentinel)
+	assertNotExists(t, batchSentinel)
+	assertExists(t, splitcsv.CacheMetadataPath(opts.Split.OutputDir))
+}
+
 func writePipelineInputFixture(t *testing.T, tempDir string) (string, string) {
 	t.Helper()
 	inputPath := filepath.Join(tempDir, "input.csv")

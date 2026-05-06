@@ -33,17 +33,32 @@ const (
 
 /* Snapshot captures the observable state for one run. */
 type Snapshot struct {
-	RunID       string                    `json:"run_id"`
-	State       State                     `json:"state"`
-	CreatedAt   time.Time                 `json:"created_at"`
-	StartedAt   *time.Time                `json:"started_at,omitempty"`
-	FinishedAt  *time.Time                `json:"finished_at,omitempty"`
-	Workspace   *workspace.RunWorkspace   `json:"workspace,omitempty"`
-	LatestEvent *progress.Event           `json:"latest_event,omitempty"`
-	Events      []progress.Event          `json:"events,omitempty"`
-	Performance *monitor.ResourceSnapshot `json:"performance,omitempty"`
-	FinalResult any                       `json:"final_result,omitempty"`
-	FinalError  string                    `json:"final_error,omitempty"`
+	RunID              string                    `json:"run_id"`
+	State              State                     `json:"state"`
+	CreatedAt          time.Time                 `json:"created_at"`
+	StartedAt          *time.Time                `json:"started_at,omitempty"`
+	FinishedAt         *time.Time                `json:"finished_at,omitempty"`
+	Workspace          *workspace.RunWorkspace   `json:"workspace,omitempty"`
+	LatestEvent        *progress.Event           `json:"latest_event,omitempty"`
+	Events             []progress.Event          `json:"events,omitempty"`
+	Performance        *monitor.ResourceSnapshot `json:"performance,omitempty"`
+	PerformanceSummary *PerformanceSummary       `json:"performance_summary,omitempty"`
+	FinalResult        any                       `json:"final_result,omitempty"`
+	FinalError         string                    `json:"final_error,omitempty"`
+}
+
+/* PerformanceSummary stores run-level resource peaks and final workspace sizes. */
+type PerformanceSummary struct {
+	Samples                  int64      `json:"samples"`
+	MaxCPUPercent            *float64   `json:"max_cpu_percent,omitempty"`
+	MaxAllocBytes            uint64     `json:"max_alloc_bytes,omitempty"`
+	MaxSysBytes              uint64     `json:"max_sys_bytes,omitempty"`
+	MaxRSSBytes              uint64     `json:"max_rss_bytes,omitempty"`
+	MaxIOReadBytesPerSecond  *float64   `json:"max_io_read_bytes_per_second,omitempty"`
+	MaxIOWriteBytesPerSecond *float64   `json:"max_io_write_bytes_per_second,omitempty"`
+	InputFileBytes           int64      `json:"input_file_bytes,omitempty"`
+	RunBytes                 int64      `json:"run_bytes,omitempty"`
+	UpdatedAt                *time.Time `json:"updated_at,omitempty"`
 }
 
 type runRecord struct {
@@ -149,11 +164,13 @@ func (m *Manager) Complete(runID string, result any) (Snapshot, error) {
 	}
 
 	previousState := record.snapshot.State
+	previousSummary := clonePerformanceSummary(record.snapshot.PerformanceSummary)
 	finishedAt := m.now()
 	record.snapshot.State = StateCompleted
 	record.snapshot.FinishedAt = &finishedAt
 	record.snapshot.FinalResult = result
 	record.snapshot.FinalError = ""
+	finalizePerformanceSummary(&record.snapshot, finishedAt)
 	if m.activeRun == runID {
 		m.activeRun = ""
 	}
@@ -163,6 +180,7 @@ func (m *Manager) Complete(runID string, result any) (Snapshot, error) {
 		record.snapshot.FinishedAt = nil
 		record.snapshot.FinalResult = nil
 		record.snapshot.FinalError = ""
+		record.snapshot.PerformanceSummary = previousSummary
 		m.activeRun = runID
 		return Snapshot{}, err
 	}
@@ -184,6 +202,7 @@ func (m *Manager) Fail(runID string, runErr error) (Snapshot, error) {
 	}
 
 	previousState := record.snapshot.State
+	previousSummary := clonePerformanceSummary(record.snapshot.PerformanceSummary)
 	finishedAt := m.now()
 	record.snapshot.State = StateFailed
 	record.snapshot.FinishedAt = &finishedAt
@@ -193,6 +212,7 @@ func (m *Manager) Fail(runID string, runErr error) (Snapshot, error) {
 		record.snapshot.FinalError = "run failed"
 	}
 	record.snapshot.FinalResult = nil
+	finalizePerformanceSummary(&record.snapshot, finishedAt)
 	if m.activeRun == runID {
 		m.activeRun = ""
 	}
@@ -201,6 +221,7 @@ func (m *Manager) Fail(runID string, runErr error) (Snapshot, error) {
 		record.snapshot.State = previousState
 		record.snapshot.FinishedAt = nil
 		record.snapshot.FinalError = ""
+		record.snapshot.PerformanceSummary = previousSummary
 		m.activeRun = runID
 		return Snapshot{}, err
 	}
@@ -221,6 +242,7 @@ func (m *Manager) AppendEvent(runID string, event progress.Event) (Snapshot, err
 	cloned := cloneEvent(event)
 	if performance, ok := performanceFromEvent(cloned); ok {
 		record.snapshot.Performance = performance
+		updatePerformanceSummary(&record.snapshot, *performance)
 		m.latestRun = runID
 		if err := persistSnapshot(record.snapshot); err != nil {
 			return Snapshot{}, err
@@ -374,13 +396,9 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 		cloned.LatestEvent = &latest
 	}
 	if snapshot.Performance != nil {
-		performance := *snapshot.Performance
-		if snapshot.Performance.CPUPercent != nil {
-			cpu := *snapshot.Performance.CPUPercent
-			performance.CPUPercent = &cpu
-		}
-		cloned.Performance = &performance
+		cloned.Performance = cloneResourceSnapshot(snapshot.Performance)
 	}
+	cloned.PerformanceSummary = clonePerformanceSummary(snapshot.PerformanceSummary)
 	if len(snapshot.Events) > 0 {
 		cloned.Events = make([]progress.Event, len(snapshot.Events))
 		for i, event := range snapshot.Events {
@@ -390,6 +408,105 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 	return cloned
 }
 
+func clonePerformanceSummary(summary *PerformanceSummary) *PerformanceSummary {
+	if summary == nil {
+		return nil
+	}
+	cloned := *summary
+	if summary.MaxCPUPercent != nil {
+		value := *summary.MaxCPUPercent
+		cloned.MaxCPUPercent = &value
+	}
+	if summary.MaxIOReadBytesPerSecond != nil {
+		value := *summary.MaxIOReadBytesPerSecond
+		cloned.MaxIOReadBytesPerSecond = &value
+	}
+	if summary.MaxIOWriteBytesPerSecond != nil {
+		value := *summary.MaxIOWriteBytesPerSecond
+		cloned.MaxIOWriteBytesPerSecond = &value
+	}
+	if summary.UpdatedAt != nil {
+		updatedAt := *summary.UpdatedAt
+		cloned.UpdatedAt = &updatedAt
+	}
+	return &cloned
+}
+
+func cloneResourceSnapshot(snapshot *monitor.ResourceSnapshot) *monitor.ResourceSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	cloned := *snapshot
+	if snapshot.CPUPercent != nil {
+		cpu := *snapshot.CPUPercent
+		cloned.CPUPercent = &cpu
+	}
+	if snapshot.IO.ReadBytesPerSecond != nil {
+		value := *snapshot.IO.ReadBytesPerSecond
+		cloned.IO.ReadBytesPerSecond = &value
+	}
+	if snapshot.IO.WriteBytesPerSecond != nil {
+		value := *snapshot.IO.WriteBytesPerSecond
+		cloned.IO.WriteBytesPerSecond = &value
+	}
+	if snapshot.IO.PhysicalReadBytesPerSecond != nil {
+		value := *snapshot.IO.PhysicalReadBytesPerSecond
+		cloned.IO.PhysicalReadBytesPerSecond = &value
+	}
+	if snapshot.IO.PhysicalWriteBytesPerSecond != nil {
+		value := *snapshot.IO.PhysicalWriteBytesPerSecond
+		cloned.IO.PhysicalWriteBytesPerSecond = &value
+	}
+	return &cloned
+}
+
+func updatePerformanceSummary(snapshot *Snapshot, sample monitor.ResourceSnapshot) {
+	if snapshot.PerformanceSummary == nil {
+		snapshot.PerformanceSummary = &PerformanceSummary{}
+	}
+	summary := snapshot.PerformanceSummary
+	summary.Samples++
+	if sample.CPUPercent != nil && (summary.MaxCPUPercent == nil || *sample.CPUPercent > *summary.MaxCPUPercent) {
+		value := *sample.CPUPercent
+		summary.MaxCPUPercent = &value
+	}
+	if sample.Memory.AllocBytes > summary.MaxAllocBytes {
+		summary.MaxAllocBytes = sample.Memory.AllocBytes
+	}
+	if sample.Memory.SysBytes > summary.MaxSysBytes {
+		summary.MaxSysBytes = sample.Memory.SysBytes
+	}
+	if sample.Memory.RSSBytes > summary.MaxRSSBytes {
+		summary.MaxRSSBytes = sample.Memory.RSSBytes
+	}
+	if sample.IO.ReadBytesPerSecond != nil && (summary.MaxIOReadBytesPerSecond == nil || *sample.IO.ReadBytesPerSecond > *summary.MaxIOReadBytesPerSecond) {
+		value := *sample.IO.ReadBytesPerSecond
+		summary.MaxIOReadBytesPerSecond = &value
+	}
+	if sample.IO.WriteBytesPerSecond != nil && (summary.MaxIOWriteBytesPerSecond == nil || *sample.IO.WriteBytesPerSecond > *summary.MaxIOWriteBytesPerSecond) {
+		value := *sample.IO.WriteBytesPerSecond
+		summary.MaxIOWriteBytesPerSecond = &value
+	}
+	updatedAt := sample.Time
+	summary.UpdatedAt = &updatedAt
+}
+
+func finalizePerformanceSummary(snapshot *Snapshot, finishedAt time.Time) {
+	if snapshot.PerformanceSummary == nil {
+		snapshot.PerformanceSummary = &PerformanceSummary{}
+	}
+	summary := snapshot.PerformanceSummary
+	if snapshot.Workspace != nil {
+		if info, err := os.Stat(snapshot.Workspace.InputCSVPath); err == nil && info.Mode().IsRegular() {
+			summary.InputFileBytes = info.Size()
+		}
+		if size, err := monitor.DirectorySize(snapshot.Workspace.RootDir); err == nil {
+			summary.RunBytes = size
+		}
+	}
+	summary.UpdatedAt = &finishedAt
+}
+
 func performanceFromEvent(event progress.Event) (*monitor.ResourceSnapshot, bool) {
 	if event.Type != progress.TypeTelemetry || len(event.Metrics) == 0 {
 		return nil, false
@@ -397,22 +514,12 @@ func performanceFromEvent(event progress.Event) (*monitor.ResourceSnapshot, bool
 	raw := event.Metrics["performance"]
 	switch performance := raw.(type) {
 	case monitor.ResourceSnapshot:
-		cloned := performance
-		if performance.CPUPercent != nil {
-			cpu := *performance.CPUPercent
-			cloned.CPUPercent = &cpu
-		}
-		return &cloned, true
+		return cloneResourceSnapshot(&performance), true
 	case *monitor.ResourceSnapshot:
 		if performance == nil {
 			return nil, false
 		}
-		cloned := *performance
-		if performance.CPUPercent != nil {
-			cpu := *performance.CPUPercent
-			cloned.CPUPercent = &cpu
-		}
-		return &cloned, true
+		return cloneResourceSnapshot(performance), true
 	default:
 		return nil, false
 	}
