@@ -11,9 +11,7 @@
     <div class="app-shell">
       <header class="topbar">
         <div class="topbar__copy">
-          <p class="eyebrow">CONSOLE</p>
-          <h1>Go Validate Yourself</h1>
-          <p class="lede">Workflow setup and live progress.</p>
+          <p class="eyebrow">GO VALIDATE YOURSELF</p>
         </div>
         <div class="topbar__status">
           <section class="status-card">
@@ -27,14 +25,7 @@
       </header>
 
       <main class="layout">
-        <section class="panel panel--selector wizard-shell" aria-labelledby="selection-title">
-          <div class="panel__head wizard-shell__head">
-            <div>
-              <h2 id="selection-title">Start run</h2>
-              <p class="panel-note">Browsing is limited to <code>{{.WorkingRoot}}</code></p>
-            </div>
-          </div>
-
+        <section class="panel panel--selector wizard-shell" aria-label="Run setup">
           <nav class="wizard-steps" aria-label="Run setup steps">
             <button class="wizard-step" type="button" data-wizard-step="0">
               <span class="wizard-step__number">1</span>
@@ -425,12 +416,10 @@
 
     <div id="schema-editor-modal" class="schema-editor-modal" hidden>
       <div id="schema-editor-backdrop" class="schema-editor-modal__backdrop"></div>
-      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-labelledby="schema-editor-title">
+      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-label="Schema editor">
         <div class="schema-editor-card__bar">
-          <div>
-            <p class="eyebrow">Schema</p>
-            <h2 id="schema-editor-title">Schema Editor</h2>
-          </div>
+          <button id="schema-editor-generate-button" class="button button--primary button--small" type="button">Generate Schema</button>
+          <h2 id="schema-editor-title" hidden>Schema Editor</h2>
           <div class="schema-editor-card__actions">
             <button id="schema-editor-save-button" class="button button--primary button--small" type="button">Save</button>
             <button id="schema-editor-save-quit-button" class="button button--secondary button--small" type="button">Save and Quit</button>

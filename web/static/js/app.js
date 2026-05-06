@@ -147,6 +147,7 @@
     schemaEditorModal: document.getElementById("schema-editor-modal"),
     schemaEditorBackdrop: document.getElementById("schema-editor-backdrop"),
     schemaEditorTitle: document.getElementById("schema-editor-title"),
+    schemaEditorGenerateButton: document.getElementById("schema-editor-generate-button"),
     schemaEditorSaveButton: document.getElementById("schema-editor-save-button"),
     schemaEditorSaveQuitButton: document.getElementById("schema-editor-save-quit-button"),
     schemaEditorCloseButton: document.getElementById("schema-editor-close-button"),
@@ -327,6 +328,7 @@
     window.addEventListener("message", handleFrameMessage);
     els.schemaInferCloseButton.addEventListener("click", closeSchemaInfer);
     els.schemaInferBackdrop.addEventListener("click", closeSchemaInfer);
+    els.schemaEditorGenerateButton.addEventListener("click", requestSchemaEditorGenerate);
     els.schemaEditorSaveButton.addEventListener("click", function () {
       requestSchemaEditorSave(false);
     });
@@ -1060,8 +1062,12 @@
 
   function renderServerState() {
     const busy = Boolean(state.health && state.health.busy);
-    els.serverStatusText.textContent = busy ? "Busy" : "Idle";
-    setBadge(els.serverStatusBadge, busy ? "Single run occupied" : "Ready for a new run", busy ? "warn" : "ok");
+    if (els.serverStatusText) {
+      els.serverStatusText.textContent = busy ? "Busy" : "Idle";
+    }
+    if (els.serverStatusBadge) {
+      setBadge(els.serverStatusBadge, busy ? "Single run occupied" : "Ready for a new run", busy ? "warn" : "ok");
+    }
   }
 
   function renderConfigVisibility() {
@@ -1934,6 +1940,15 @@
     els.schemaEditorFrame.contentWindow.postMessage({
       type: "gvy:schema-save-request",
       close: Boolean(closeAfter),
+    }, window.location.origin);
+  }
+
+  function requestSchemaEditorGenerate() {
+    if (!state.schemaEditor.open || !els.schemaEditorFrame.contentWindow) {
+      return;
+    }
+    els.schemaEditorFrame.contentWindow.postMessage({
+      type: "gvy:schema-toggle-inference",
     }, window.location.origin);
   }
 

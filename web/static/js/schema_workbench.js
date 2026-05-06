@@ -30,7 +30,7 @@
     inferencePanelOpen: false,
     inferenceResultOpen: false,
     inferenceView: "fields",
-    sampleSize: 100,
+    sampleSize: 1000,
     strategy: "byte-spread",
     keepSamples: true,
     writeSampleParquet: true,
@@ -314,7 +314,7 @@
       loadFileList("");
       loadCSVFileList(state.selectedCSV ? dirName(state.selectedCSV) : "");
       state.inferencePanelOpen = !state.schema.fields.length;
-      setMessage(state.selectedCSV ? "Ready to generate a schema from the selected CSV." : "Select a CSV, then generate a schema.", state.selectedCSV ? "info" : "warn");
+      setMessage(state.selectedCSV ? "" : "Select a CSV, then generate a schema.", state.selectedCSV ? "" : "error");
       render();
       return true;
     }
@@ -460,10 +460,15 @@
       return;
     }
     const data = event.data || {};
-    if (data.type !== "gvy:schema-save-request") {
+    if (data.type === "gvy:schema-save-request") {
+      saveToDefaultOrPicker(Boolean(data.close));
       return;
     }
-    saveToDefaultOrPicker(Boolean(data.close));
+    if (data.type === "gvy:schema-toggle-inference") {
+      state.inferenceMode = true;
+      toggleInferencePanel();
+      return;
+    }
   }
 
   function openColumnOptions(index) {
@@ -633,13 +638,13 @@
 
   async function runInference() {
     if (!state.selectedCSV) {
-      setMessage("Select a CSV in the wizard first, then open Generate Schema again.", "warn");
+      setMessage("Select a CSV in the wizard first, then open Generate Schema again.", "error");
       renderMessage();
       return;
     }
     const sampleSize = parseSampleSize();
     if (!Number.isFinite(sampleSize) || sampleSize < 1) {
-      setMessage("Sample size must be at least 1.", "warn");
+      setMessage("Sample size must be at least 1.", "error");
       return;
     }
 
@@ -648,7 +653,7 @@
     state.keepSamples = els.keepSamplesInput.checked;
     state.writeSampleParquet = els.writeParquetInput.checked;
     state.inferenceBusy = true;
-    setMessage("Generating schema.", "info");
+    setMessage("", "");
     renderInferenceControls();
     renderMessage();
 
@@ -678,7 +683,7 @@
       state.inferenceView = "fields";
       state.inferencePanelOpen = false;
       state.inferenceResultOpen = false;
-      setMessage("Schema generated. Review fields, edit options, then save.", "ok");
+      setMessage("", "");
       render();
       focusActiveColumnOptions();
     } catch (error) {
@@ -922,7 +927,7 @@
     els.inferenceSection.hidden = !state.inferenceMode || !state.inferencePanelOpen;
     els.inferenceResults.hidden = true;
     els.csvSelectionSummary.textContent = state.selectedCSV ? "Selected CSV: " + state.selectedCSV : "No CSV selected.";
-    els.sampleSizeInput.value = String(state.sampleSize || 100);
+    els.sampleSizeInput.value = String(state.sampleSize || 1000);
     els.strategyInput.value = state.strategy || "byte-spread";
     els.keepSamplesInput.checked = Boolean(state.keepSamples);
     els.writeParquetInput.checked = Boolean(state.writeSampleParquet);
