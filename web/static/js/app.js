@@ -21,6 +21,7 @@
     result: null,
     configDefaults: null,
     configDefaultsLoaded: false,
+    defaultWorkers: 0,
     preview: {
       status: "idle",
       resolved: null,
@@ -421,6 +422,7 @@
         throw new Error(payload && payload.message ? payload.message : "Could not load backend config defaults");
       }
       state.configDefaults = payload.defaults || {};
+      state.defaultWorkers = integerValue(payload.default_workers);
       state.configDefaultsLoaded = true;
       applyDefaultsToForm(state.configDefaults);
       setBadge(els.defaultsStatus, "Defaults loaded", "ok");
@@ -445,7 +447,7 @@
     els.phaseSplit.checked = defaultPhases.indexOf("split") >= 0;
     els.phaseValidate.checked = defaultPhases.indexOf("validate") >= 0;
     els.phaseBatch.checked = defaultPhases.indexOf("batch") >= 0;
-    els.workersInput.value = valueOrEmpty(defaults.runtime && defaults.runtime.workers);
+    els.workersInput.value = defaultWorkerInputValue(defaults.runtime && defaults.runtime.workers);
     els.splitPrimaryKeyInput.value = valueOrEmpty(defaults.split && defaults.split.primary_key);
     els.splitOutputDirInput.value = valueOrEmpty(defaults.outputs && defaults.outputs.split_dir);
     els.successDirInput.value = valueOrEmpty(defaults.outputs && defaults.outputs.success_dir);
@@ -1042,7 +1044,7 @@
       els.writeEmptyErrorInput.checked = Boolean(resolved.validation.write_empty_error);
     }
     if (resolved.runtime) {
-      els.workersInput.value = valueOrEmpty(resolved.runtime.workers);
+      els.workersInput.value = defaultWorkerInputValue(resolved.runtime.workers, resolved.effective_workers);
     }
     if (resolved.plan && resolved.plan.resume_policy) {
       els.resumePolicySelect.value = resolved.plan.resume_policy;
@@ -3051,6 +3053,16 @@
       return "Auto (" + effectiveText + " effective)";
     }
     return String(configured) + " configured (" + effectiveText + " effective)";
+  }
+
+  function defaultWorkerInputValue(configured, effective) {
+    if (configured > 0) {
+      return String(configured);
+    }
+    if (effective > 0) {
+      return String(effective);
+    }
+    return valueOrEmpty(state.defaultWorkers);
   }
 
   function storageRows(estimate) {

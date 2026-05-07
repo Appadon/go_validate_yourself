@@ -187,16 +187,6 @@
                 </summary>
 
                 <div class="config-grid config-grid--settings">
-                  <label class="field-control" for="workers-input">
-                    <span>Workers</span>
-                    <input id="workers-input" type="number" min="0" step="1">
-                  </label>
-
-                  <label class="field-control" for="split-primary-key-input">
-                    <span>Split primary key</span>
-                    <input id="split-primary-key-input" type="text" autocomplete="off" placeholder="First CSV column">
-                  </label>
-
                   <label class="field-control" for="split-output-dir-input">
                     <span>Split output directory</span>
                     <input id="split-output-dir-input" type="text" autocomplete="off">
@@ -215,6 +205,16 @@
                   <label class="field-control" for="batch-export-dir-input">
                     <span>Batch export directory</span>
                     <input id="batch-export-dir-input" type="text" autocomplete="off">
+                  </label>
+
+                  <label class="field-control" for="workers-input">
+                    <span>Workers</span>
+                    <input id="workers-input" type="number" min="1" step="1">
+                  </label>
+
+                  <label class="field-control" for="split-primary-key-input">
+                    <span>Split primary key</span>
+                    <input id="split-primary-key-input" type="text" autocomplete="off" placeholder="First CSV column">
                   </label>
 
                   <label class="field-control" for="batch-size-input">

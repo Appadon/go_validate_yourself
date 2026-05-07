@@ -117,8 +117,9 @@ type RunCreateResponse struct {
 
 /* ConfigDefaultsResponse returns the canonical built-in config defaults. */
 type ConfigDefaultsResponse struct {
-	OK       bool             `json:"ok"`
-	Defaults gvyconfig.Config `json:"defaults"`
+	OK             bool             `json:"ok"`
+	Defaults       gvyconfig.Config `json:"defaults"`
+	DefaultWorkers int              `json:"default_workers"`
 }
 
 /* ConfigResolveResponse returns a config after server-side normalization. */
@@ -687,8 +688,9 @@ func (s *Server) handleConfigDefaults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ConfigDefaultsResponse{
-		OK:       true,
-		Defaults: gvyconfig.Defaults(),
+		OK:             true,
+		Defaults:       gvyconfig.Defaults(),
+		DefaultWorkers: service.DefaultThreadCount(),
 	})
 }
 
@@ -709,6 +711,10 @@ func (s *Server) handleConfigResolve(w http.ResponseWriter, r *http.Request) {
 	resolved, err := gvyconfig.Normalize(cfg, gvyconfig.NormalizeOptions{})
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_CONFIG", err.Error())
+		return
+	}
+	if err := s.applyResolvedPreviewWorkspace(&resolved); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "WORKSPACE_PREVIEW_FAILED", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, ConfigResolveResponse{
@@ -1717,6 +1723,19 @@ func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig) service.Pipe
 		ClearValidationOutputDirs: resolved.Validation.ClearOutputs,
 		Mode:                      resolvedPipelineMode(resolved),
 	}
+}
+
+func (s *Server) applyResolvedPreviewWorkspace(resolved *gvyconfig.ResolvedConfig) error {
+	inputPath := resolvedWorkspaceInputPath(*resolved)
+	if strings.TrimSpace(inputPath) == "" {
+		return nil
+	}
+	ws, err := workspace.NewForInput(s.workspaceBaseDir, "preview-run", inputPath)
+	if err != nil {
+		return err
+	}
+	applyResolvedWorkspaceOutputs(resolved, ws)
+	return nil
 }
 
 func (s *Server) prepareResolvedRunWorkspace(resolved *gvyconfig.ResolvedConfig, runID string) (*workspace.RunWorkspace, error) {
