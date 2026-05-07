@@ -21,6 +21,7 @@
     result: null,
     configDefaults: null,
     configDefaultsLoaded: false,
+    defaultWorkers: 0,
     preview: {
       status: "idle",
       resolved: null,
@@ -106,6 +107,7 @@
     wizard: {
       activeStep: 0,
       maxStep: 5,
+      guidanceActive: !bootstrap.latest_run_id,
     },
   };
 
@@ -421,6 +423,7 @@
         throw new Error(payload && payload.message ? payload.message : "Could not load backend config defaults");
       }
       state.configDefaults = payload.defaults || {};
+      state.defaultWorkers = integerValue(payload.default_workers);
       state.configDefaultsLoaded = true;
       applyDefaultsToForm(state.configDefaults);
       setBadge(els.defaultsStatus, "Defaults loaded", "ok");
@@ -445,7 +448,7 @@
     els.phaseSplit.checked = defaultPhases.indexOf("split") >= 0;
     els.phaseValidate.checked = defaultPhases.indexOf("validate") >= 0;
     els.phaseBatch.checked = defaultPhases.indexOf("batch") >= 0;
-    els.workersInput.value = valueOrEmpty(defaults.runtime && defaults.runtime.workers);
+    els.workersInput.value = defaultWorkerInputValue(defaults.runtime && defaults.runtime.workers);
     els.splitPrimaryKeyInput.value = valueOrEmpty(defaults.split && defaults.split.primary_key);
     els.splitOutputDirInput.value = valueOrEmpty(defaults.outputs && defaults.outputs.split_dir);
     els.successDirInput.value = valueOrEmpty(defaults.outputs && defaults.outputs.success_dir);
@@ -955,6 +958,9 @@
     const previousRunId = state.snapshot && state.snapshot.run_id;
     state.snapshot = snapshot;
     state.runId = snapshot.run_id;
+    if (snapshot.state === "completed") {
+      state.wizard.guidanceActive = false;
+    }
     if (previousRunId !== snapshot.run_id) {
       resetReviewErrorSummary();
     }
@@ -1042,7 +1048,7 @@
       els.writeEmptyErrorInput.checked = Boolean(resolved.validation.write_empty_error);
     }
     if (resolved.runtime) {
-      els.workersInput.value = valueOrEmpty(resolved.runtime.workers);
+      els.workersInput.value = defaultWorkerInputValue(resolved.runtime.workers, resolved.effective_workers);
     }
     if (resolved.plan && resolved.plan.resume_policy) {
       els.resumePolicySelect.value = resolved.plan.resume_policy;
@@ -1122,6 +1128,7 @@
           state.snapshot.latest_event = event;
           if (event.type === "completed" && isRunLevelEvent(event)) {
             state.snapshot.state = "completed";
+            state.wizard.guidanceActive = false;
           } else if (event.type === "failed" && isRunLevelEvent(event)) {
             state.snapshot.state = "failed";
           }
@@ -1233,6 +1240,7 @@
 
     els.wizardBackButton.disabled = activeStep === 0;
     syncWizardNextButtonState();
+    syncGuidedActionButtons();
     els.wizardStepStatus.textContent = "Step " + (activeStep + 1) + " of " + (state.wizard.maxStep + 1);
   }
 
@@ -1242,8 +1250,24 @@
     const busy = Boolean(state.health && state.health.busy);
     const runningThisPage = state.snapshot && state.snapshot.state === "running";
     const previewOK = state.preview.status === "ok";
-    els.wizardNextButton.textContent = confirmStep ? "Start validation run" : "Next";
-    els.wizardNextButton.disabled = activeStep === state.wizard.maxStep || (confirmStep && (!previewOK || (busy && !runningThisPage)));
+    const runInProgress = state.pendingConfigRun || busy || (state.snapshot && !isTerminalState(state.snapshot.state));
+    const runCompleted = state.snapshot && state.snapshot.state === "completed";
+    const disabled = activeStep === state.wizard.maxStep || (confirmStep && (!previewOK || (busy && !runningThisPage)));
+    const showSetupGlow = state.wizard.guidanceActive && !runCompleted && !runInProgress && !disabled && (activeStep === 2 || confirmStep);
+    const showReportingGlow = !disabled && activeStep === 4 && runCompleted;
+    els.wizardNextButton.textContent = confirmStep ? "Start validation run" : activeStep === 4 ? "Continue to reporting" : "Next";
+    els.wizardNextButton.disabled = disabled;
+    els.wizardNextButton.classList.toggle("button--guided-glow", showSetupGlow || showReportingGlow);
+  }
+
+  function syncGuidedActionButtons() {
+    const activeStep = clampStep(state.wizard.activeStep);
+    const runCompleted = state.snapshot && state.snapshot.state === "completed";
+    const runInProgress = state.pendingConfigRun || Boolean(state.health && state.health.busy) || (state.snapshot && !isTerminalState(state.snapshot.state));
+    const showSetupGuidance = state.wizard.guidanceActive && !runCompleted && !runInProgress;
+    els.csvOpenButton.classList.toggle("button--guided-glow", showSetupGuidance && activeStep === 0 && !state.selected.csv);
+    els.schemaInferOpenButton.classList.toggle("button--guided-glow", showSetupGuidance && activeStep === 1 && Boolean(state.selected.csv) && !state.selected.schema);
+    els.errorExplorerOpenButton.classList.toggle("button--guided-glow", activeStep === 5 && Boolean(runCompleted));
   }
 
   function clampStep(step) {
@@ -1325,7 +1349,7 @@
       previewSectionHTML("Workflow", [
         rowHTML("Phases", phaseLabels.length ? phaseLabels.join(" -> ") : "None selected"),
         rowHTML("Resume behavior", resumePolicyText(plan.resume_policy)),
-        rowHTML("Workers", workerText(runtime.workers, resolved.effective_workers)),
+        rowHTML("Threads", workerText(runtime.workers, resolved.effective_workers)),
       ]),
     ];
 
@@ -1551,77 +1575,7 @@
   }
 
   function renderSummary() {
-    const snapshot = state.snapshot;
-    const final = finalResultInfo();
-    const result = final.pipeline || null;
-    const cards = [];
-    const splitSummary = field(result, "split_summary") || {};
-    const validation = field(result, "validation", "validation_dir") || {};
-    const validationSummary = field(validation, "summary") || {};
-    const batchSummary = field(result, "batch_summary") || {};
-
-    if (!snapshot) {
-      els.summaryCards.innerHTML = cardHTML("Report", [
-        rowHTML("Status", "No run selected"),
-        rowHTML("Details", "Run metrics will appear here after validation starts."),
-      ]);
-      return;
-    }
-
-    if (result) {
-      cards.push(cardHTML("Split", [
-        rowHTML("Primary key", valueText(result.split_primary_key)),
-        rowHTML("Reused cache", result.split_reused ? "Yes" : "No"),
-        rowHTML("Rows", numberText(field(splitSummary, "total_rows", "TotalRows"))),
-        rowHTML("Missing keys", numberText(field(splitSummary, "missing_key_rows", "MissingKeyRows"))),
-        rowHTML("Output files", numberText(field(splitSummary, "output_files", "OutputFiles"))),
-      ]));
-
-      cards.push(cardHTML("Validation", [
-        rowHTML("Input files", numberText(field(validation, "file_count", "FileCount"))),
-        rowHTML("Failed files", numberText(field(validationSummary, "failed_files", "FailedFiles"))),
-        rowHTML("Total rows", numberText(field(validationSummary, "total_rows", "TotalRows"))),
-        rowHTML("Valid rows", numberText(field(validationSummary, "valid_rows", "ValidRows"))),
-        rowHTML("Invalid rows", numberText(field(validationSummary, "invalid_rows", "InvalidRows"))),
-      ]));
-
-      cards.push(cardHTML("Batch export", [
-        rowHTML("Input files", numberText(field(batchSummary, "input_files", "InputFiles"))),
-        rowHTML("Batches", numberText(field(batchSummary, "batches", "Batches"))),
-        rowHTML("Rows written", numberText(field(batchSummary, "total_rows", "TotalRows"))),
-        rowHTML("Output dir", valueText(field(batchSummary, "output_dir", "OutputDir"))),
-      ]));
-    }
-
-    if (snapshot.performance_summary) {
-      const summary = snapshot.performance_summary;
-      cards.push(cardHTML("Resource peaks", [
-        rowHTML("CPU", percentText(summary.max_cpu_percent)),
-        rowHTML("Memory", bytesText(summary.max_rss_bytes || summary.max_alloc_bytes)),
-        rowHTML("IO read", rateBytesText(summary.max_io_read_bytes_per_second)),
-        rowHTML("IO write", rateBytesText(summary.max_io_write_bytes_per_second)),
-      ]));
-
-      cards.push(cardHTML("Storage", [
-        rowHTML("Input dataset", bytesText(summary.input_file_bytes)),
-        rowHTML("Run size", bytesText(summary.run_bytes)),
-      ]));
-    }
-
-    if (snapshot && snapshot.state === "failed") {
-      cards.push(cardHTML("Failure", [
-        rowHTML("Final error", valueText((state.result && state.result.final_error) || snapshot.final_error)),
-      ]));
-    }
-
-    if (snapshot && snapshot.state === "completed" && !result) {
-      cards.push(cardHTML("Result", [
-        rowHTML("Status", "Completed"),
-        rowHTML("Details", "Fetching final result…"),
-      ]));
-    }
-
-    els.summaryCards.innerHTML = cards.join("");
+    els.summaryCards.innerHTML = "";
   }
 
   function renderReportActions() {
@@ -1646,28 +1600,7 @@
   }
 
   function renderReviewErrorSummary() {
-    const summary = state.reviewErrorSummary;
-    if (!state.snapshot) {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Validation error patterns will appear here after a run is available.</p>';
-      return;
-    }
-    if (summary.status === "loading") {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Loading validation error summary.</p>';
-      return;
-    }
-    if (summary.status === "error") {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">' + escapeHTML(summary.error || "Could not load validation error summary.") + "</p>";
-      return;
-    }
-    if (!summary.data) {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Open Reporting to load grouped validation errors and examples.</p>';
-      return;
-    }
-    if (!summary.data.issues.length) {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">No validation error patterns were found in ' + escapeHTML(summary.data.path || currentErrorDir()) + ".</p>";
-      return;
-    }
-    els.reviewErrorSummary.innerHTML = summary.data.issues.map(reviewIssueHTML).join("");
+    els.reviewErrorSummary.innerHTML = "";
   }
 
   function ensureReviewErrorSummary() {
@@ -2432,6 +2365,7 @@
     }
     applyPickerValue(profile, value);
     if (profile.target === "selectedCsv") {
+      state.wizard.guidanceActive = true;
       setWizardStep(1);
       loadAssociatedRunForCSV(value);
     }
@@ -3051,6 +2985,16 @@
       return "Auto (" + effectiveText + " effective)";
     }
     return String(configured) + " configured (" + effectiveText + " effective)";
+  }
+
+  function defaultWorkerInputValue(configured, effective) {
+    if (configured > 0) {
+      return String(configured);
+    }
+    if (effective > 0) {
+      return String(effective);
+    }
+    return valueOrEmpty(state.defaultWorkers);
   }
 
   function storageRows(estimate) {

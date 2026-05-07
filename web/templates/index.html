@@ -187,16 +187,6 @@
                 </summary>
 
                 <div class="config-grid config-grid--settings">
-                  <label class="field-control" for="workers-input">
-                    <span>Workers</span>
-                    <input id="workers-input" type="number" min="0" step="1">
-                  </label>
-
-                  <label class="field-control" for="split-primary-key-input">
-                    <span>Split primary key</span>
-                    <input id="split-primary-key-input" type="text" autocomplete="off" placeholder="First CSV column">
-                  </label>
-
                   <label class="field-control" for="split-output-dir-input">
                     <span>Split output directory</span>
                     <input id="split-output-dir-input" type="text" autocomplete="off">
@@ -215,6 +205,16 @@
                   <label class="field-control" for="batch-export-dir-input">
                     <span>Batch export directory</span>
                     <input id="batch-export-dir-input" type="text" autocomplete="off">
+                  </label>
+
+                  <label class="field-control" for="workers-input">
+                    <span>Threads</span>
+                    <input id="workers-input" type="number" min="1" step="1">
+                  </label>
+
+                  <label class="field-control" for="split-primary-key-input">
+                    <span>Split primary key</span>
+                    <input id="split-primary-key-input" type="text" autocomplete="off" placeholder="First CSV column">
                   </label>
 
                   <label class="field-control" for="batch-size-input">
@@ -349,16 +349,10 @@
                 <strong id="report-folder-summary" class="selection-compact__value">Current run</strong>
               </div>
               <p id="report-status" class="form-message" aria-live="polite"></p>
-              <div id="review-error-summary" class="review-error-summary"></div>
-              <div id="summary-cards" class="summary-cards"></div>
+              <div id="review-error-summary" class="review-error-summary" hidden></div>
+              <div id="summary-cards" class="summary-cards" hidden></div>
 
-              <div class="error-explorer-launch">
-                <div>
-                  <p class="eyebrow">Errors</p>
-                  <h3>Error Explorer</h3>
-                </div>
-                <button id="error-explorer-open-button" class="button button--primary" type="button">Open Error Explorer</button>
-              </div>
+              <button id="error-explorer-open-button" class="button button--secondary error-explorer-launch" type="button">Open Error Explorer</button>
             </section>
           </section>
 

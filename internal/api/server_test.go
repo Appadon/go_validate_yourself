@@ -139,6 +139,9 @@ func TestHandleConfigDefaultsReturnsUsableDefaults(t *testing.T) {
 	if !response.OK {
 		t.Fatalf("expected ok response: %+v", response)
 	}
+	if response.DefaultWorkers != service.DefaultThreadCount() {
+		t.Fatalf("DefaultWorkers = %d, want %d", response.DefaultWorkers, service.DefaultThreadCount())
+	}
 	response.Defaults.Inputs.MainCSV = "input.csv"
 	response.Defaults.Inputs.Schema = "schema.json"
 	resolved, err := gvyconfig.Normalize(response.Defaults, gvyconfig.NormalizeOptions{})
@@ -174,11 +177,27 @@ func TestHandleConfigResolveExpandsAutoAndDerivedInputs(t *testing.T) {
 	if !configPhasesEqual(response.ResolvedConfig.Plan.Phases, []gvyconfig.Phase{gvyconfig.PhaseSplit, gvyconfig.PhaseValidate, gvyconfig.PhaseBatch}) {
 		t.Fatalf("phases = %v, want auto phases", response.ResolvedConfig.Plan.Phases)
 	}
-	if response.ResolvedConfig.Inputs.ValidateDir != "split" {
-		t.Fatalf("validate dir = %q, want split", response.ResolvedConfig.Inputs.ValidateDir)
+	expectedSplitDir := filepath.Join(server.workspaceBaseDir, "input", "split")
+	expectedSuccessDir := filepath.Join(server.workspaceBaseDir, "input", "success")
+	expectedErrorDir := filepath.Join(server.workspaceBaseDir, "input", "errors")
+	expectedBatchExportDir := filepath.Join(server.workspaceBaseDir, "input", "batch_export")
+	if response.ResolvedConfig.Inputs.ValidateDir != expectedSplitDir {
+		t.Fatalf("validate dir = %q, want %q", response.ResolvedConfig.Inputs.ValidateDir, expectedSplitDir)
 	}
-	if response.ResolvedConfig.Batch.InputDir != "success" {
-		t.Fatalf("batch input dir = %q, want success", response.ResolvedConfig.Batch.InputDir)
+	if response.ResolvedConfig.Batch.InputDir != expectedSuccessDir {
+		t.Fatalf("batch input dir = %q, want %q", response.ResolvedConfig.Batch.InputDir, expectedSuccessDir)
+	}
+	if response.ResolvedConfig.Outputs.SplitDir != expectedSplitDir {
+		t.Fatalf("split output dir = %q, want %q", response.ResolvedConfig.Outputs.SplitDir, expectedSplitDir)
+	}
+	if response.ResolvedConfig.Outputs.SuccessDir != expectedSuccessDir {
+		t.Fatalf("success dir = %q, want %q", response.ResolvedConfig.Outputs.SuccessDir, expectedSuccessDir)
+	}
+	if response.ResolvedConfig.Outputs.ErrorDir != expectedErrorDir {
+		t.Fatalf("error dir = %q, want %q", response.ResolvedConfig.Outputs.ErrorDir, expectedErrorDir)
+	}
+	if response.ResolvedConfig.Outputs.BatchExportDir != expectedBatchExportDir {
+		t.Fatalf("batch export dir = %q, want %q", response.ResolvedConfig.Outputs.BatchExportDir, expectedBatchExportDir)
 	}
 }
 
