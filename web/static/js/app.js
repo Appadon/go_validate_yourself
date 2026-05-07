@@ -107,6 +107,7 @@
     wizard: {
       activeStep: 0,
       maxStep: 5,
+      guidanceActive: !bootstrap.latest_run_id,
     },
   };
 
@@ -957,6 +958,9 @@
     const previousRunId = state.snapshot && state.snapshot.run_id;
     state.snapshot = snapshot;
     state.runId = snapshot.run_id;
+    if (snapshot.state === "completed") {
+      state.wizard.guidanceActive = false;
+    }
     if (previousRunId !== snapshot.run_id) {
       resetReviewErrorSummary();
     }
@@ -1124,6 +1128,7 @@
           state.snapshot.latest_event = event;
           if (event.type === "completed" && isRunLevelEvent(event)) {
             state.snapshot.state = "completed";
+            state.wizard.guidanceActive = false;
           } else if (event.type === "failed" && isRunLevelEvent(event)) {
             state.snapshot.state = "failed";
           }
@@ -1235,6 +1240,7 @@
 
     els.wizardBackButton.disabled = activeStep === 0;
     syncWizardNextButtonState();
+    syncGuidedActionButtons();
     els.wizardStepStatus.textContent = "Step " + (activeStep + 1) + " of " + (state.wizard.maxStep + 1);
   }
 
@@ -1244,8 +1250,24 @@
     const busy = Boolean(state.health && state.health.busy);
     const runningThisPage = state.snapshot && state.snapshot.state === "running";
     const previewOK = state.preview.status === "ok";
-    els.wizardNextButton.textContent = confirmStep ? "Start validation run" : "Next";
-    els.wizardNextButton.disabled = activeStep === state.wizard.maxStep || (confirmStep && (!previewOK || (busy && !runningThisPage)));
+    const runInProgress = state.pendingConfigRun || busy || (state.snapshot && !isTerminalState(state.snapshot.state));
+    const runCompleted = state.snapshot && state.snapshot.state === "completed";
+    const disabled = activeStep === state.wizard.maxStep || (confirmStep && (!previewOK || (busy && !runningThisPage)));
+    const showSetupGlow = state.wizard.guidanceActive && !runCompleted && !runInProgress && !disabled && (activeStep === 2 || confirmStep);
+    const showReportingGlow = !disabled && activeStep === 4 && runCompleted;
+    els.wizardNextButton.textContent = confirmStep ? "Start validation run" : activeStep === 4 ? "Continue to reporting" : "Next";
+    els.wizardNextButton.disabled = disabled;
+    els.wizardNextButton.classList.toggle("button--guided-glow", showSetupGlow || showReportingGlow);
+  }
+
+  function syncGuidedActionButtons() {
+    const activeStep = clampStep(state.wizard.activeStep);
+    const runCompleted = state.snapshot && state.snapshot.state === "completed";
+    const runInProgress = state.pendingConfigRun || Boolean(state.health && state.health.busy) || (state.snapshot && !isTerminalState(state.snapshot.state));
+    const showSetupGuidance = state.wizard.guidanceActive && !runCompleted && !runInProgress;
+    els.csvOpenButton.classList.toggle("button--guided-glow", showSetupGuidance && activeStep === 0 && !state.selected.csv);
+    els.schemaInferOpenButton.classList.toggle("button--guided-glow", showSetupGuidance && activeStep === 1 && Boolean(state.selected.csv) && !state.selected.schema);
+    els.errorExplorerOpenButton.classList.toggle("button--guided-glow", activeStep === 5 && Boolean(runCompleted));
   }
 
   function clampStep(step) {
@@ -2343,6 +2365,7 @@
     }
     applyPickerValue(profile, value);
     if (profile.target === "selectedCsv") {
+      state.wizard.guidanceActive = true;
       setWizardStep(1);
       loadAssociatedRunForCSV(value);
     }

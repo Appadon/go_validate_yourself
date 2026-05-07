@@ -1701,6 +1701,19 @@ body::before {
   border: 1px solid rgba(75, 141, 255, 0.16);
 }
 
+.button--guided-glow:not(:disabled) {
+  border-color: transparent;
+  color: var(--text);
+  background:
+    linear-gradient(180deg, rgba(18, 29, 51, 0.96), rgba(12, 20, 35, 0.96)) padding-box,
+    linear-gradient(90deg, #3f83ff 0%, #b7ff5a 100%) border-box;
+  box-shadow:
+    0 0 0 1px rgba(118, 168, 255, 0.14),
+    0 0 16px rgba(75, 141, 255, 0.14),
+    0 0 10px rgba(183, 255, 90, 0.06);
+  animation: phase-glow 3.8s ease-in-out infinite;
+}
+
 .button--small {
   min-width: 0;
   padding: 0.55rem 0.85rem;
