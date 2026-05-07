@@ -1553,77 +1553,7 @@
   }
 
   function renderSummary() {
-    const snapshot = state.snapshot;
-    const final = finalResultInfo();
-    const result = final.pipeline || null;
-    const cards = [];
-    const splitSummary = field(result, "split_summary") || {};
-    const validation = field(result, "validation", "validation_dir") || {};
-    const validationSummary = field(validation, "summary") || {};
-    const batchSummary = field(result, "batch_summary") || {};
-
-    if (!snapshot) {
-      els.summaryCards.innerHTML = cardHTML("Report", [
-        rowHTML("Status", "No run selected"),
-        rowHTML("Details", "Run metrics will appear here after validation starts."),
-      ]);
-      return;
-    }
-
-    if (result) {
-      cards.push(cardHTML("Split", [
-        rowHTML("Primary key", valueText(result.split_primary_key)),
-        rowHTML("Reused cache", result.split_reused ? "Yes" : "No"),
-        rowHTML("Rows", numberText(field(splitSummary, "total_rows", "TotalRows"))),
-        rowHTML("Missing keys", numberText(field(splitSummary, "missing_key_rows", "MissingKeyRows"))),
-        rowHTML("Output files", numberText(field(splitSummary, "output_files", "OutputFiles"))),
-      ]));
-
-      cards.push(cardHTML("Validation", [
-        rowHTML("Input files", numberText(field(validation, "file_count", "FileCount"))),
-        rowHTML("Failed files", numberText(field(validationSummary, "failed_files", "FailedFiles"))),
-        rowHTML("Total rows", numberText(field(validationSummary, "total_rows", "TotalRows"))),
-        rowHTML("Valid rows", numberText(field(validationSummary, "valid_rows", "ValidRows"))),
-        rowHTML("Invalid rows", numberText(field(validationSummary, "invalid_rows", "InvalidRows"))),
-      ]));
-
-      cards.push(cardHTML("Batch export", [
-        rowHTML("Input files", numberText(field(batchSummary, "input_files", "InputFiles"))),
-        rowHTML("Batches", numberText(field(batchSummary, "batches", "Batches"))),
-        rowHTML("Rows written", numberText(field(batchSummary, "total_rows", "TotalRows"))),
-        rowHTML("Output dir", valueText(field(batchSummary, "output_dir", "OutputDir"))),
-      ]));
-    }
-
-    if (snapshot.performance_summary) {
-      const summary = snapshot.performance_summary;
-      cards.push(cardHTML("Resource peaks", [
-        rowHTML("CPU", percentText(summary.max_cpu_percent)),
-        rowHTML("Memory", bytesText(summary.max_rss_bytes || summary.max_alloc_bytes)),
-        rowHTML("IO read", rateBytesText(summary.max_io_read_bytes_per_second)),
-        rowHTML("IO write", rateBytesText(summary.max_io_write_bytes_per_second)),
-      ]));
-
-      cards.push(cardHTML("Storage", [
-        rowHTML("Input dataset", bytesText(summary.input_file_bytes)),
-        rowHTML("Run size", bytesText(summary.run_bytes)),
-      ]));
-    }
-
-    if (snapshot && snapshot.state === "failed") {
-      cards.push(cardHTML("Failure", [
-        rowHTML("Final error", valueText((state.result && state.result.final_error) || snapshot.final_error)),
-      ]));
-    }
-
-    if (snapshot && snapshot.state === "completed" && !result) {
-      cards.push(cardHTML("Result", [
-        rowHTML("Status", "Completed"),
-        rowHTML("Details", "Fetching final result…"),
-      ]));
-    }
-
-    els.summaryCards.innerHTML = cards.join("");
+    els.summaryCards.innerHTML = "";
   }
 
   function renderReportActions() {
@@ -1648,28 +1578,7 @@
   }
 
   function renderReviewErrorSummary() {
-    const summary = state.reviewErrorSummary;
-    if (!state.snapshot) {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Validation error patterns will appear here after a run is available.</p>';
-      return;
-    }
-    if (summary.status === "loading") {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Loading validation error summary.</p>';
-      return;
-    }
-    if (summary.status === "error") {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">' + escapeHTML(summary.error || "Could not load validation error summary.") + "</p>";
-      return;
-    }
-    if (!summary.data) {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">Open Reporting to load grouped validation errors and examples.</p>';
-      return;
-    }
-    if (!summary.data.issues.length) {
-      els.reviewErrorSummary.innerHTML = '<p class="review-error-summary__empty">No validation error patterns were found in ' + escapeHTML(summary.data.path || currentErrorDir()) + ".</p>";
-      return;
-    }
-    els.reviewErrorSummary.innerHTML = summary.data.issues.map(reviewIssueHTML).join("");
+    els.reviewErrorSummary.innerHTML = "";
   }
 
   function ensureReviewErrorSummary() {
