@@ -173,9 +173,6 @@
                   <h3 id="field-detail-title">Column options</h3>
                   <p id="field-detail-subtitle">Select a column to edit its rules.</p>
                 </div>
-                <div class="schema-section-actions">
-                  <button id="column-options-close-button" class="button button--secondary button--small" type="button">Close</button>
-                </div>
               </div>
 
               <div id="field-editor-empty" class="schema-empty">
@@ -208,7 +205,7 @@
 
                     <label class="field-control" for="field-min-length-input" data-field-types="string">
                       <span>Min length</span>
-                      <input id="field-min-length-input" type="number" min="0" step="1">
+                      <input id="field-min-length-input" type="number" min="1" step="1">
                     </label>
 
                     <label class="field-control" for="field-default-input">
@@ -298,7 +295,13 @@
               </div>
 
               <div class="schema-field-detail__footer">
-                <button id="delete-field-button" class="button button--secondary button--small" type="button">Delete</button>
+                <div class="schema-field-detail__footer-left">
+                  <button id="delete-field-button" class="button button--secondary button--small" type="button">Delete</button>
+                </div>
+                <div class="schema-field-detail__footer-right">
+                  <button id="column-options-close-button" class="button button--secondary button--small" type="button">Close</button>
+                  <button id="column-options-save-button" class="button button--primary button--small" type="button">Save and Close</button>
+                </div>
               </div>
             </section>
           </div>

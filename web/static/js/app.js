@@ -353,7 +353,9 @@
       requestSchemaEditorSave(true);
     });
     els.schemaEditorCloseButton.addEventListener("click", closeSchemaEditor);
-    els.schemaEditorBackdrop.addEventListener("click", closeSchemaEditor);
+    els.schemaEditorBackdrop.addEventListener("click", function () {
+      els.schemaEditorFrame.focus();
+    });
     els.errorExplorerCloseButton.addEventListener("click", closeErrorExplorer);
     els.errorExplorerBackdrop.addEventListener("click", closeErrorExplorer);
     els.schemaDraftBackdrop.addEventListener("click", closeSchemaDraftPicker);
