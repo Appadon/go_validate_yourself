@@ -1003,16 +1003,8 @@ body::before {
 .error-explorer-launch {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 0.85rem 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.025);
-}
-
-.error-explorer-launch h3 {
-  margin: 0.16rem 0 0;
+  justify-content: center;
+  width: 100%;
 }
 
 .review-section {
@@ -1929,7 +1921,6 @@ code {
   .selector-group__head,
   .config-section__head,
   .wizard-card__head,
-  .error-explorer-launch,
   .progress-card__topline,
   .event-head,
   .picker-actions,

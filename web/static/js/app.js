@@ -1327,7 +1327,7 @@
       previewSectionHTML("Workflow", [
         rowHTML("Phases", phaseLabels.length ? phaseLabels.join(" -> ") : "None selected"),
         rowHTML("Resume behavior", resumePolicyText(plan.resume_policy)),
-        rowHTML("Workers", workerText(runtime.workers, resolved.effective_workers)),
+        rowHTML("Threads", workerText(runtime.workers, resolved.effective_workers)),
       ]),
     ];
 
