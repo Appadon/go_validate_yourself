@@ -643,6 +643,50 @@ func TestHandleSchemaDocumentSaveRejectsOutOfRootPath(t *testing.T) {
 	assertAPIErrorCode(t, recorder, http.StatusBadRequest, "INVALID_SCHEMA_PATH")
 }
 
+func TestHandleSchemaDocumentReadIncludesPersistedInferenceForRunSchema(t *testing.T) {
+	server := newSelectionTestServer(t)
+	csvPath := filepath.Join(server.workingRoot, "incoming", "Policy Export FINAL.csv")
+	writeTestFile(t, csvPath, "Record ID,Amount\n1,10\n")
+	ws, err := workspace.NewForInput(server.workspaceBaseDir, "ignored", csvPath)
+	if err != nil {
+		t.Fatalf("NewForInput() error = %v", err)
+	}
+	writeTestFile(t, ws.SchemaPath, `{"fields":[{"name":"Record ID","type":"string","required":true}]}`)
+	writeTestFile(t, ws.SchemaInferencePath, `{
+		"ok": true,
+		"csv_path": "`+csvPath+`",
+		"csv_relative_path": "incoming/Policy Export FINAL.csv",
+		"inference": {
+			"schema": {"fields":[{"name":"Record ID","type":"string","required":true}]},
+			"fields": [{"name":"Record ID","parquet_name":"record_id","type":"string","sample_values":["1"]}],
+			"samples": [{"sample_index":2,"offset_end":20,"values":{"Record ID":"1","Amount":"10"}}]
+		}
+	}`)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/schema?path=runs/policy_export_final/schema.json", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleSchemaDocument(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response SchemaDocumentResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.InferenceResult == nil {
+		t.Fatal("expected persisted inference result")
+	}
+	if len(response.InferenceResult.Inference.Samples) != 1 {
+		t.Fatalf("samples = %d, want 1", len(response.InferenceResult.Inference.Samples))
+	}
+	if response.InferenceResult.Inference.Samples[0].Values["Amount"] != "10" {
+		t.Fatalf("sample values = %+v", response.InferenceResult.Inference.Samples[0].Values)
+	}
+}
+
 func TestHandleSchemaInferReturnsDraftSchemaAndSampleParquet(t *testing.T) {
 	server := newSelectionTestServer(t)
 	writeTestFile(t, filepath.Join(server.workingRoot, "incoming", "input.csv"), strings.Join([]string{
@@ -684,11 +728,23 @@ func TestHandleSchemaInferReturnsDraftSchemaAndSampleParquet(t *testing.T) {
 	if response.Inference.Schema.Fields[1].Type != "float" {
 		t.Fatalf("amount type = %q, want float", response.Inference.Schema.Fields[1].Type)
 	}
-	if response.SampleParquetRelativePath != ".gvy/schema_samples/input.sample.parquet" {
+	if response.SampleParquetRelativePath != "runs/input/sample.parquet" {
 		t.Fatalf("sample parquet relative path = %q", response.SampleParquetRelativePath)
 	}
 	if _, err := os.Stat(response.SampleParquetPath); err != nil {
 		t.Fatalf("sample parquet was not written: %v", err)
+	}
+	inferencePath := filepath.Join(server.workingRoot, "runs", "input", "schema_inference.json")
+	data, err := os.ReadFile(inferencePath)
+	if err != nil {
+		t.Fatalf("schema inference was not written: %v", err)
+	}
+	var stored SchemaInferResponse
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("decode persisted inference: %v", err)
+	}
+	if len(stored.Inference.Samples) != 3 {
+		t.Fatalf("persisted samples = %d, want 3", len(stored.Inference.Samples))
 	}
 }
 

@@ -39,6 +39,12 @@ func TestNewUnderBuildsDeterministicWorkspacePaths(t *testing.T) {
 	if ws.MetadataPath != filepath.Join(ws.RootDir, "run.json") {
 		t.Fatalf("MetadataPath = %q", ws.MetadataPath)
 	}
+	if ws.SchemaInferencePath != filepath.Join(ws.RootDir, "schema_inference.json") {
+		t.Fatalf("SchemaInferencePath = %q", ws.SchemaInferencePath)
+	}
+	if ws.SchemaSampleParquetPath != filepath.Join(ws.RootDir, "sample.parquet") {
+		t.Fatalf("SchemaSampleParquetPath = %q", ws.SchemaSampleParquetPath)
+	}
 }
 
 func TestNewForInputBuildsSnakeCaseRunFolder(t *testing.T) {
@@ -58,6 +64,12 @@ func TestNewForInputBuildsSnakeCaseRunFolder(t *testing.T) {
 	}
 	if ws.SchemaPath != filepath.Join(ws.RootDir, "schema.json") {
 		t.Fatalf("SchemaPath = %q", ws.SchemaPath)
+	}
+	if ws.SchemaInferencePath != filepath.Join(ws.RootDir, "schema_inference.json") {
+		t.Fatalf("SchemaInferencePath = %q", ws.SchemaInferencePath)
+	}
+	if ws.SchemaSampleParquetPath != filepath.Join(ws.RootDir, "sample.parquet") {
+		t.Fatalf("SchemaSampleParquetPath = %q", ws.SchemaSampleParquetPath)
 	}
 }
 

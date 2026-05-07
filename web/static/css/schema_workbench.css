@@ -222,7 +222,7 @@ body:has(.schema-shell--embed)::before {
   z-index: 10;
   background: rgba(2, 5, 10, 0.68);
   backdrop-filter: blur(2px);
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .schema-inference {
@@ -544,9 +544,23 @@ body:has(.schema-shell--embed)::before {
 
 .schema-field-detail__footer {
   display: flex;
-  justify-content: flex-start;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   padding-top: 0.7rem;
   border-top: 1px solid var(--border);
+}
+
+.schema-field-detail__footer-left,
+.schema-field-detail__footer-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.schema-field-detail__footer-right {
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .schema-section-head h3 {
@@ -658,8 +672,8 @@ body:has(.schema-shell--embed)::before {
   max-height: 100%;
   margin: 0;
   padding: 0.75rem;
-  background: rgba(75, 141, 255, 0.08);
-  border: 1px solid rgba(118, 168, 255, 0.28);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
@@ -677,7 +691,9 @@ body:has(.schema-shell--embed)::before {
 
 .field-inference-panel__head h4 {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .field-inference-panel__head p {
@@ -692,6 +708,10 @@ body:has(.schema-shell--embed)::before {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.5rem;
+}
+
+.field-inference-metrics .schema-metric {
+  background: rgba(4, 7, 12, 0.3);
 }
 
 .field-inference-metrics .schema-metric strong {
@@ -867,6 +887,17 @@ body:has(.schema-shell--embed)::before {
   .schema-workflow__right {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .schema-field-detail__footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .schema-field-detail__footer-left,
+  .schema-field-detail__footer-right,
+  .schema-field-detail__footer .button {
+    width: 100%;
   }
 
   .schema-shell--embed .schema-workflow__right {

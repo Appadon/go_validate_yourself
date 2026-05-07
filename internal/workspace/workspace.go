@@ -14,16 +14,18 @@ const DefaultBaseDir = "/tmp/gvy-ui"
 
 /* RunWorkspace defines the on-disk layout reserved for one upload-driven run. */
 type RunWorkspace struct {
-	RunID          string `json:"run_id"`
-	RootDir        string `json:"root_dir"`
-	InputCSVPath   string `json:"input_csv_path"`
-	SchemaPath     string `json:"schema_path"`
-	SplitDir       string `json:"split_dir"`
-	SuccessDir     string `json:"success_dir"`
-	ErrorDir       string `json:"error_dir"`
-	BatchExportDir string `json:"batch_export_dir"`
-	MetadataPath   string `json:"metadata_path,omitempty"`
-	InputSHA256    string `json:"input_sha256,omitempty"`
+	RunID                   string `json:"run_id"`
+	RootDir                 string `json:"root_dir"`
+	InputCSVPath            string `json:"input_csv_path"`
+	SchemaPath              string `json:"schema_path"`
+	SplitDir                string `json:"split_dir"`
+	SuccessDir              string `json:"success_dir"`
+	ErrorDir                string `json:"error_dir"`
+	BatchExportDir          string `json:"batch_export_dir"`
+	MetadataPath            string `json:"metadata_path,omitempty"`
+	SchemaInferencePath     string `json:"schema_inference_path,omitempty"`
+	SchemaSampleParquetPath string `json:"schema_sample_parquet_path,omitempty"`
+	InputSHA256             string `json:"input_sha256,omitempty"`
 }
 
 /* New returns the default per-run workspace rooted under /tmp/gvy-ui. */
@@ -45,15 +47,17 @@ func NewUnder(baseDir, runID string) (RunWorkspace, error) {
 
 	rootDir := filepath.Join(filepath.Clean(rootBase), normalizedRunID)
 	return RunWorkspace{
-		RunID:          normalizedRunID,
-		RootDir:        rootDir,
-		InputCSVPath:   filepath.Join(rootDir, "input.csv"),
-		SchemaPath:     filepath.Join(rootDir, "schema.json"),
-		SplitDir:       filepath.Join(rootDir, "split"),
-		SuccessDir:     filepath.Join(rootDir, "success"),
-		ErrorDir:       filepath.Join(rootDir, "errors"),
-		BatchExportDir: filepath.Join(rootDir, "batch_export"),
-		MetadataPath:   filepath.Join(rootDir, "run.json"),
+		RunID:                   normalizedRunID,
+		RootDir:                 rootDir,
+		InputCSVPath:            filepath.Join(rootDir, "input.csv"),
+		SchemaPath:              filepath.Join(rootDir, "schema.json"),
+		SplitDir:                filepath.Join(rootDir, "split"),
+		SuccessDir:              filepath.Join(rootDir, "success"),
+		ErrorDir:                filepath.Join(rootDir, "errors"),
+		BatchExportDir:          filepath.Join(rootDir, "batch_export"),
+		MetadataPath:            filepath.Join(rootDir, "run.json"),
+		SchemaInferencePath:     filepath.Join(rootDir, "schema_inference.json"),
+		SchemaSampleParquetPath: filepath.Join(rootDir, "sample.parquet"),
 	}, nil
 }
 
@@ -74,15 +78,17 @@ func NewForInput(baseDir, runID, inputPath string) (RunWorkspace, error) {
 	}
 	rootDir := filepath.Join(filepath.Clean(rootBase), slug)
 	return RunWorkspace{
-		RunID:          normalizedRunID,
-		RootDir:        rootDir,
-		InputCSVPath:   strings.TrimSpace(inputPath),
-		SchemaPath:     filepath.Join(rootDir, "schema.json"),
-		SplitDir:       filepath.Join(rootDir, "split"),
-		SuccessDir:     filepath.Join(rootDir, "success"),
-		ErrorDir:       filepath.Join(rootDir, "errors"),
-		BatchExportDir: filepath.Join(rootDir, "batch_export"),
-		MetadataPath:   filepath.Join(rootDir, "run.json"),
+		RunID:                   normalizedRunID,
+		RootDir:                 rootDir,
+		InputCSVPath:            strings.TrimSpace(inputPath),
+		SchemaPath:              filepath.Join(rootDir, "schema.json"),
+		SplitDir:                filepath.Join(rootDir, "split"),
+		SuccessDir:              filepath.Join(rootDir, "success"),
+		ErrorDir:                filepath.Join(rootDir, "errors"),
+		BatchExportDir:          filepath.Join(rootDir, "batch_export"),
+		MetadataPath:            filepath.Join(rootDir, "run.json"),
+		SchemaInferencePath:     filepath.Join(rootDir, "schema_inference.json"),
+		SchemaSampleParquetPath: filepath.Join(rootDir, "sample.parquet"),
 	}, nil
 }
 

@@ -38,6 +38,8 @@
     pendingSaveAndClose: false,
     activeIndex: -1,
     columnOptionsOpen: false,
+    columnDraftIndex: -1,
+    columnDraft: null,
     dirty: false,
     message: "",
     messageTone: "",
@@ -93,6 +95,7 @@
     fieldTableBody: document.getElementById("field-table-body"),
     deleteFieldButton: document.getElementById("delete-field-button"),
     columnOptionsCloseButton: document.getElementById("column-options-close-button"),
+    columnOptionsSaveButton: document.getElementById("column-options-save-button"),
     fieldDetailSubtitle: document.getElementById("field-detail-subtitle"),
     fieldEditorEmpty: document.getElementById("field-editor-empty"),
     fieldEditor: document.getElementById("field-editor"),
@@ -230,6 +233,7 @@
     els.addFieldButton.addEventListener("click", addField);
     els.deleteFieldButton.addEventListener("click", deleteActiveField);
     els.columnOptionsCloseButton.addEventListener("click", closeColumnOptions);
+    els.columnOptionsSaveButton.addEventListener("click", saveColumnOptions);
     els.fieldAllowedAdd.addEventListener("click", addAllowedValueRowAndUpdate);
     els.fieldAllowedRows.addEventListener("input", updateActiveFieldFromForm);
     els.fieldAllowedRows.addEventListener("change", updateActiveFieldFromForm);
@@ -397,8 +401,16 @@
       }
       state.schema = normalizeSchema(payload.schema || blankSchema);
       state.loadedPath = payload.relative_path || state.selectedFile;
+      state.inferenceResult = payload.inference_result || null;
+      if (state.inferenceResult) {
+        state.selectedCSV = cleanRelativePath(state.inferenceResult.csv_relative_path || state.inferenceResult.csv_path || state.selectedCSV);
+        state.csvPickerSelection = state.selectedCSV;
+      }
       state.generatedSchemaPath = "";
       state.activeIndex = state.schema.fields.length ? 0 : -1;
+      state.columnOptionsOpen = false;
+      state.columnDraftIndex = -1;
+      state.columnDraft = null;
       state.dirty = false;
       setMessage("Schema loaded.", "ok");
       closeSchemaPicker();
@@ -478,12 +490,38 @@
     }
     state.activeIndex = index;
     state.columnOptionsOpen = true;
+    state.columnDraftIndex = index;
+    state.columnDraft = editableFieldClone(state.schema.fields[index]);
     render();
     focusActiveColumnOptions();
   }
 
   function closeColumnOptions() {
     state.columnOptionsOpen = false;
+    state.columnDraftIndex = -1;
+    state.columnDraft = null;
+    render();
+  }
+
+  function saveColumnOptions() {
+    ensureSchemaShape();
+    if (!state.columnDraft || !state.columnOptionsOpen) {
+      closeColumnOptions();
+      return;
+    }
+    const savedField = editableFieldClone(state.columnDraft);
+    if (state.columnDraftIndex >= 0 && state.columnDraftIndex < state.schema.fields.length) {
+      state.schema.fields[state.columnDraftIndex] = savedField;
+      state.activeIndex = state.columnDraftIndex;
+    } else {
+      state.schema.fields.push(savedField);
+      state.activeIndex = state.schema.fields.length - 1;
+    }
+    state.columnOptionsOpen = false;
+    state.columnDraftIndex = -1;
+    state.columnDraft = null;
+    state.dirty = true;
+    setMessage("", "");
     render();
   }
 
@@ -598,6 +636,9 @@
     state.loadedPath = path;
     state.generatedSchemaPath = "";
     state.activeIndex = -1;
+    state.columnOptionsOpen = false;
+    state.columnDraftIndex = -1;
+    state.columnDraft = null;
     state.dirty = true;
     setMessage("Draft ready. Add a field, then save it to " + path + ".", "info");
     render();
@@ -606,22 +647,27 @@
   function addField() {
     ensureSchemaShape();
     const index = state.schema.fields.length + 1;
-    state.schema.fields.push({
+    state.activeIndex = -1;
+    state.columnDraftIndex = -1;
+    state.columnDraft = editableFieldClone({
       name: "new_column_" + index,
       parquet_name: "new_column_" + index,
       type: "string",
       required: false,
+      min_length: 1,
     });
-    state.activeIndex = state.schema.fields.length - 1;
     state.columnOptionsOpen = true;
-    state.dirty = true;
     setMessage("", "");
     render();
+    focusActiveColumnOptions();
   }
 
   function deleteActiveField() {
     ensureSchemaShape();
     if (state.activeIndex < 0 || state.activeIndex >= state.schema.fields.length) {
+      if (state.columnOptionsOpen && state.columnDraftIndex < 0) {
+        closeColumnOptions();
+      }
       return;
     }
     state.schema.fields.splice(state.activeIndex, 1);
@@ -631,6 +677,9 @@
     } else {
       state.activeIndex = Math.min(state.activeIndex, state.schema.fields.length - 1);
     }
+    state.columnOptionsOpen = false;
+    state.columnDraftIndex = -1;
+    state.columnDraft = null;
     state.dirty = true;
     setMessage("", "");
     render();
@@ -679,6 +728,8 @@
       state.generatedSchemaPath = inferredSchemaPath();
       state.activeIndex = -1;
       state.columnOptionsOpen = false;
+      state.columnDraftIndex = -1;
+      state.columnDraft = null;
       state.dirty = true;
       state.inferenceView = "fields";
       state.inferencePanelOpen = false;
@@ -741,10 +792,11 @@
 
   function updateActiveFieldFromForm() {
     ensureSchemaShape();
-    if (state.activeIndex < 0 || state.activeIndex >= state.schema.fields.length) {
+    const field = state.columnDraft;
+    if (!field || !state.columnOptionsOpen) {
       return;
     }
-    const field = state.schema.fields[state.activeIndex];
+    const previousType = field.type || "string";
     field.name = els.fieldNameInput.value;
     field.parquet_name = els.fieldParquetInput.value;
     field.type = els.fieldTypeInput.value;
@@ -753,7 +805,14 @@
     setScalarProperty(field, "override", els.fieldOverrideInput.value, field.type);
     if (field.type === "string") {
       field.lower = els.fieldLowerInput.checked;
+      if (previousType !== "string" && !String(els.fieldMinLengthInput.value || "").trim()) {
+        els.fieldMinLengthInput.value = "1";
+      }
       setNumberProperty(field, "min_length", els.fieldMinLengthInput.value);
+      if (!Number.isFinite(Number(field.min_length)) || Number(field.min_length) < 1) {
+        field.min_length = 1;
+        els.fieldMinLengthInput.value = "1";
+      }
       setArrayProperty(field, "allowed_values", arrayFromAllowedValueRows());
       setMapProperty(field, "inline_replace", mapFromInlineReplaceRows());
     }
@@ -766,10 +825,7 @@
     if (field.type === "datetime") {
       setArrayProperty(field, "datetime_formats", linesFromText(els.fieldDatetimeFormatsInput.value));
     }
-    state.dirty = true;
     setMessage("", "");
-    renderFieldTable();
-    renderMeta();
     renderTypeSpecificOptions(field.type);
   }
 
@@ -1052,12 +1108,13 @@
 
   function renderFieldEditor() {
     ensureSchemaShape();
-    const field = state.schema.fields[state.activeIndex];
+    const field = state.columnDraft;
     const hasField = Boolean(field) && state.columnOptionsOpen;
     els.fieldEditor.hidden = !hasField;
     els.fieldEditorEmpty.hidden = hasField;
     els.fieldEditor.closest(".schema-field-detail").hidden = !hasField;
     els.deleteFieldButton.disabled = !hasField;
+    els.columnOptionsSaveButton.disabled = !hasField;
 
     if (!hasField) {
       els.fieldInferencePanel.hidden = true;
@@ -1070,7 +1127,7 @@
     els.fieldNameInput.value = field.name || "";
     els.fieldParquetInput.value = field.parquet_name || "";
     els.fieldTypeInput.value = supportedTypes.indexOf(field.type) >= 0 ? field.type : "string";
-    els.fieldMinLengthInput.value = field.min_length || "";
+    els.fieldMinLengthInput.value = field.type === "string" ? String(field.min_length || 1) : field.min_length || "";
     els.fieldDefaultInput.value = valueText(field.default);
     els.fieldOverrideInput.value = valueText(field.override);
     els.fieldRequiredInput.checked = Boolean(field.required);
@@ -1085,7 +1142,8 @@
   }
 
   function renderFieldInference(field) {
-    const inferred = inferredFieldForIndex(state.activeIndex);
+    const inferenceIndex = state.columnDraftIndex >= 0 ? state.columnDraftIndex : state.activeIndex;
+    const inferred = inferredFieldForIndex(inferenceIndex);
     if (!field || !inferred) {
       els.fieldInferencePanel.hidden = true;
       return;
@@ -1188,16 +1246,26 @@
   function normalizeSchema(schema) {
     const normalized = schema && typeof schema === "object" ? deepClone(schema) : deepClone(blankSchema);
     normalized.fields = Array.isArray(normalized.fields) ? normalized.fields : [];
-    normalized.fields = normalized.fields.map(function (field) {
-      const next = field && typeof field === "object" ? field : {};
-      next.type = supportedTypes.indexOf(next.type) >= 0 ? next.type : "string";
-      next.allowed_values = Array.isArray(next.allowed_values) ? next.allowed_values : [];
-      next.date_formats = Array.isArray(next.date_formats) ? next.date_formats : [];
-      next.datetime_formats = Array.isArray(next.datetime_formats) ? next.datetime_formats : [];
-      next.inline_replace = next.inline_replace && typeof next.inline_replace === "object" && !Array.isArray(next.inline_replace) ? next.inline_replace : {};
-      return next;
-    });
+    normalized.fields = normalized.fields.map(normalizeFieldForEdit);
     return normalized;
+  }
+
+  function editableFieldClone(field) {
+    return normalizeFieldForEdit(deepClone(field || {}));
+  }
+
+  function normalizeFieldForEdit(field) {
+    const next = field && typeof field === "object" ? field : {};
+    next.type = supportedTypes.indexOf(next.type) >= 0 ? next.type : "string";
+    next.allowed_values = Array.isArray(next.allowed_values) ? next.allowed_values : [];
+    next.date_formats = Array.isArray(next.date_formats) ? next.date_formats : [];
+    next.datetime_formats = Array.isArray(next.datetime_formats) ? next.datetime_formats : [];
+    next.inline_replace = next.inline_replace && typeof next.inline_replace === "object" && !Array.isArray(next.inline_replace) ? next.inline_replace : {};
+    if (next.type === "string") {
+      const minLength = Number(next.min_length);
+      next.min_length = Number.isFinite(minLength) && minLength > 0 ? Math.trunc(minLength) : 1;
+    }
+    return next;
   }
 
   function ensureSchemaShape() {
