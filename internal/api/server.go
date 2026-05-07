@@ -181,10 +181,11 @@ type FileListResponse struct {
 
 /* SchemaDocumentResponse returns an editable schema JSON document. */
 type SchemaDocumentResponse struct {
-	OK           bool                  `json:"ok"`
-	Path         string                `json:"path"`
-	RelativePath string                `json:"relative_path"`
-	Schema       schemaeditor.Document `json:"schema"`
+	OK              bool                  `json:"ok"`
+	Path            string                `json:"path"`
+	RelativePath    string                `json:"relative_path"`
+	Schema          schemaeditor.Document `json:"schema"`
+	InferenceResult *SchemaInferResponse  `json:"inference_result,omitempty"`
 }
 
 /* SchemaSaveRequest defines a schema JSON document to validate and write. */
@@ -1015,11 +1016,17 @@ func (s *Server) handleSchemaRead(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_SCHEMA", err.Error())
 		return
 	}
+	inferenceResult, err := s.loadSchemaInferenceForSchema(path)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "SCHEMA_INFERENCE_LOAD_FAILED", err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, SchemaDocumentResponse{
-		OK:           true,
-		Path:         path,
-		RelativePath: s.relativeWorkingPath(path),
-		Schema:       schema,
+		OK:              true,
+		Path:            path,
+		RelativePath:    s.relativeWorkingPath(path),
+		Schema:          schema,
+		InferenceResult: inferenceResult,
 	})
 }
 
@@ -1121,6 +1128,10 @@ func (s *Server) handleSchemaInfer(w http.ResponseWriter, r *http.Request) {
 	if sampleParquetPath != "" {
 		response.SampleParquetPath = sampleParquetPath
 		response.SampleParquetRelativePath = s.relativeWorkingPath(sampleParquetPath)
+	}
+	if err := s.saveSchemaInferenceForCSV(csvPath, response); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "SCHEMA_INFERENCE_SAVE_FAILED", err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -2859,6 +2870,53 @@ func loadRunSnapshotFile(path string) (runs.Snapshot, error) {
 	return snapshot, nil
 }
 
+func (s *Server) saveSchemaInferenceForCSV(csvPath string, response SchemaInferResponse) error {
+	ws, err := workspace.NewForInput(s.workspaceBaseDir, "schema-infer", csvPath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(ws.SchemaInferencePath), 0o755); err != nil {
+		return fmt.Errorf("create schema inference directory: %w", err)
+	}
+	data, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal schema inference: %w", err)
+	}
+	if err := os.WriteFile(ws.SchemaInferencePath, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write schema inference: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) loadSchemaInferenceForSchema(schemaPath string) (*SchemaInferResponse, error) {
+	baseReal := resolveRealPath(s.workspaceBaseDir)
+	schemaDir := filepath.Dir(schemaPath)
+	schemaDirReal := resolveRealPath(schemaDir)
+	if baseReal == "" || schemaDirReal == "" || !isWithinRoot(baseReal, schemaDirReal) {
+		return nil, nil
+	}
+
+	inferencePath := filepath.Join(schemaDir, "schema_inference.json")
+	file, err := os.Open(inferencePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open schema inference: %w", err)
+	}
+	defer file.Close()
+
+	var response SchemaInferResponse
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&response); err != nil {
+		return nil, fmt.Errorf("decode schema inference: %w", err)
+	}
+	if response.Inference.Schema.Fields == nil {
+		return nil, nil
+	}
+	return &response, nil
+}
+
 func (s *Server) shouldHideBrowsePath(absolutePath string) bool {
 	internalRoot := filepath.Dir(s.workspaceBaseDir)
 	if samePath(internalRoot, s.workingRoot) {
@@ -3014,8 +3072,11 @@ func (s *Server) resolveSchemaSavePath(rawPath string) (string, error) {
 func (s *Server) resolveSchemaSampleParquetPath(rawPath, csvPath string) (string, error) {
 	clean := strings.TrimSpace(rawPath)
 	if clean == "" {
-		base := strings.TrimSuffix(filepath.Base(csvPath), filepath.Ext(csvPath))
-		clean = filepath.Join(".gvy", "schema_samples", base+".sample.parquet")
+		ws, err := workspace.NewForInput(s.workspaceBaseDir, "schema-infer", csvPath)
+		if err != nil {
+			return "", err
+		}
+		clean = ws.SchemaSampleParquetPath
 	}
 
 	candidate := clean

@@ -401,6 +401,11 @@
       }
       state.schema = normalizeSchema(payload.schema || blankSchema);
       state.loadedPath = payload.relative_path || state.selectedFile;
+      state.inferenceResult = payload.inference_result || null;
+      if (state.inferenceResult) {
+        state.selectedCSV = cleanRelativePath(state.inferenceResult.csv_relative_path || state.inferenceResult.csv_path || state.selectedCSV);
+        state.csvPickerSelection = state.selectedCSV;
+      }
       state.generatedSchemaPath = "";
       state.activeIndex = state.schema.fields.length ? 0 : -1;
       state.columnOptionsOpen = false;
