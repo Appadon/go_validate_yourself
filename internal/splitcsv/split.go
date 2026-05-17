@@ -17,12 +17,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go_validate_yourself/internal/inputrows"
 	"go_validate_yourself/internal/progress"
 )
 
 const cacheMetadataFileName = ".gvy-split-cache.json"
 
-/* Config defines behavior for splitting one CSV into many files by key. */
+/* Config defines behavior for splitting one CSV or Parquet file into many files by key. */
 type Config struct {
 	InputPath       string
 	OutputDir       string
@@ -65,7 +66,7 @@ type writerCache struct {
 	createdFiles int
 }
 
-/* SplitByPrimaryKey streams one CSV and writes each row to one output file per primary-key value. */
+/* SplitByPrimaryKey streams one CSV or Parquet file and writes each row to one output file per primary-key value. */
 func SplitByPrimaryKey(ctx context.Context, cfg Config) (Summary, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -78,13 +79,14 @@ func SplitByPrimaryKey(ctx context.Context, cfg Config) (Summary, error) {
 		return Summary{}, fmt.Errorf("create output dir: %w", err)
 	}
 
-	in, reader, counter, inputSize, err := openInputCSV(cfg.InputPath)
+	source, err := inputrows.Open(cfg.InputPath)
 	if err != nil {
 		return Summary{}, err
 	}
-	defer in.Close()
+	defer source.Close()
 
-	header, keyIdx, err := readHeaderAndKeyIndex(reader, cfg.PrimaryKey)
+	header := source.Header()
+	keyIdx, err := resolveKeyIndex(header, cfg.PrimaryKey)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -95,13 +97,13 @@ func SplitByPrimaryKey(ctx context.Context, cfg Config) (Summary, error) {
 	var totalRows atomic.Int64
 	var missingRows atomic.Int64
 	startedAt := time.Now()
-	doneProgress := startSplitProgressReporter(ctx, &totalRows, &missingRows, counter, inputSize, startedAt, cfg.Progress)
+	doneProgress := startSplitProgressReporter(ctx, &totalRows, &missingRows, source, startedAt, cfg.Progress)
 	defer close(doneProgress)
 
 	missing := newMissingRowWriter(cfg.OutputDir, cfg.MissingKeysFile, header)
 	defer missing.Close()
 
-	summary, err := processSplitRows(ctx, reader, header, keyIdx, cache, missing, &totalRows, &missingRows)
+	summary, err := processSplitRows(ctx, source, header, keyIdx, cache, missing, &totalRows, &missingRows)
 	if err != nil {
 		return summary, err
 	}
@@ -113,7 +115,7 @@ func SplitByPrimaryKey(ctx context.Context, cfg Config) (Summary, error) {
 	}
 
 	summary.OutputFiles = cache.createdFiles
-	printSplitFinalProgress(totalRows.Load(), missingRows.Load(), counter.bytesRead.Load(), inputSize, startedAt, cfg.Progress)
+	printSplitFinalProgress(totalRows.Load(), missingRows.Load(), source.BytesRead(), source.InputSize(), startedAt, cfg.Progress)
 	return summary, nil
 }
 
@@ -130,6 +132,16 @@ func HashFile(path string) (string, error) {
 		return "", fmt.Errorf("hash input: %w", err)
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+/* Header returns the source header for a supported split input file. */
+func Header(path string) ([]string, error) {
+	source, err := inputrows.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer source.Close()
+	return append([]string(nil), source.Header()...), nil
 }
 
 /* CacheMetadataPath returns the metadata file path stored in a split output directory. */
@@ -202,31 +214,8 @@ func normalizeSplitConfig(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-/* openInputCSV opens an input file and returns a CSV reader with byte-count tracking. */
-func openInputCSV(path string) (*os.File, *csv.Reader, *countingReader, int64, error) {
-	in, err := os.Open(path)
-	if err != nil {
-		return nil, nil, nil, 0, fmt.Errorf("open input: %w", err)
-	}
-	stat, err := in.Stat()
-	if err != nil {
-		_ = in.Close()
-		return nil, nil, nil, 0, fmt.Errorf("stat input: %w", err)
-	}
-
-	counter := &countingReader{r: in}
-	reader := csv.NewReader(counter)
-	reader.FieldsPerRecord = -1
-	return in, reader, counter, stat.Size(), nil
-}
-
-/* readHeaderAndKeyIndex reads the header and resolves the index of the configured primary key. */
-func readHeaderAndKeyIndex(reader *csv.Reader, primaryKey string) ([]string, int, error) {
-	header, err := reader.Read()
-	if err != nil {
-		return nil, -1, fmt.Errorf("read header: %w", err)
-	}
-
+/* resolveKeyIndex resolves the index of the configured primary key from the input header. */
+func resolveKeyIndex(header []string, primaryKey string) (int, error) {
 	keyIdx := -1
 	for i, h := range header {
 		if strings.TrimSpace(h) == strings.TrimSpace(primaryKey) {
@@ -235,9 +224,9 @@ func readHeaderAndKeyIndex(reader *csv.Reader, primaryKey string) ([]string, int
 		}
 	}
 	if keyIdx < 0 {
-		return nil, -1, fmt.Errorf("primary key %q not found in CSV header", primaryKey)
+		return -1, fmt.Errorf("primary key %q not found in input header", primaryKey)
 	}
-	return header, keyIdx, nil
+	return keyIdx, nil
 }
 
 /* newWriterCache creates the file-writer LRU cache for split outputs. */
@@ -252,14 +241,14 @@ func newWriterCache(cfg Config, header []string) *writerCache {
 }
 
 /* startSplitProgressReporter starts periodic progress logs for split mode. */
-func startSplitProgressReporter(ctx context.Context, totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time, emitter progress.Emitter) chan struct{} {
+func startSplitProgressReporter(ctx context.Context, totalRows, missingRows *atomic.Int64, source inputrows.Source, startedAt time.Time, emitter progress.Emitter) chan struct{} {
 	done := make(chan struct{})
-	go reportSplitProgress(ctx, done, totalRows, missingRows, counter, inputSize, startedAt, emitter)
+	go reportSplitProgress(ctx, done, totalRows, missingRows, source, startedAt, emitter)
 	return done
 }
 
 /* reportSplitProgress emits split progress snapshots until done is closed. */
-func reportSplitProgress(ctx context.Context, done <-chan struct{}, totalRows, missingRows *atomic.Int64, counter *countingReader, inputSize int64, startedAt time.Time, emitter progress.Emitter) {
+func reportSplitProgress(ctx context.Context, done <-chan struct{}, totalRows, missingRows *atomic.Int64, source inputrows.Source, startedAt time.Time, emitter progress.Emitter) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -267,7 +256,8 @@ func reportSplitProgress(ctx context.Context, done <-chan struct{}, totalRows, m
 		case <-ticker.C:
 			rows := totalRows.Load()
 			missing := missingRows.Load()
-			readBytes := counter.bytesRead.Load()
+			readBytes := source.BytesRead()
+			inputSize := source.InputSize()
 			pct := splitReadPercent(readBytes, inputSize)
 			elapsed := time.Since(startedAt)
 			rowRate, byteRate := splitRates(rows, readBytes, elapsed)
@@ -344,13 +334,13 @@ func printSplitFinalProgress(rows, missing, readBytes, inputSize int64, startedA
 }
 
 /* processSplitRows performs the input streaming loop and dispatches records by key. */
-func processSplitRows(ctx context.Context, reader *csv.Reader, header []string, keyIdx int, cache *writerCache, missing *missingRowWriter, totalRows, missingRows *atomic.Int64) (Summary, error) {
+func processSplitRows(ctx context.Context, source inputrows.Source, header []string, keyIdx int, cache *writerCache, missing *missingRowWriter, totalRows, missingRows *atomic.Int64) (Summary, error) {
 	summary := Summary{}
 	for {
 		if err := ctx.Err(); err != nil {
 			return summary, err
 		}
-		record, err := reader.Read()
+		record, _, err := source.Next()
 		if errors.Is(err, io.EOF) {
 			return summary, nil
 		}
@@ -562,11 +552,6 @@ func sanitizeFileName(v string) string {
 	return r.Replace(v)
 }
 
-type countingReader struct {
-	r         io.Reader
-	bytesRead atomic.Int64
-}
-
 /* estimateTotalRows projects total rows from current rows and completion percent. */
 func estimateTotalRows(rows int64, pct float64) string {
 	if pct <= 0 || pct > 100 {
@@ -582,13 +567,4 @@ func estimateTotalRows(rows int64, pct float64) string {
 /* bytesToMiB converts byte count to mebibytes. */
 func bytesToMiB(v int64) float64 {
 	return float64(v) / (1024 * 1024)
-}
-
-/* Read proxies underlying reads while tracking total bytes consumed. */
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	if n > 0 {
-		c.bytesRead.Add(int64(n))
-	}
-	return n, err
 }

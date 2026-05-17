@@ -2,10 +2,8 @@ package service
 
 import (
 	"context"
-	"encoding/csv"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -129,22 +127,11 @@ func ResolveDefaultSchemaPath() (string, error) {
 	return "", fmt.Errorf("missing schema; pass -schema <path> (default %q not found)", defaultSchemaPath)
 }
 
-/* DetectPrimaryKey reads the first CSV header and uses it as the split key. */
+/* DetectPrimaryKey reads the first source header and uses it as the split key. */
 func DetectPrimaryKey(inputPath string) (string, error) {
-	f, err := os.Open(inputPath)
+	header, err := splitcsv.Header(inputPath)
 	if err != nil {
-		return "", fmt.Errorf("open input: %w", err)
-	}
-	defer f.Close()
-
-	reader := csv.NewReader(f)
-	reader.FieldsPerRecord = -1
-	header, err := reader.Read()
-	if err != nil {
-		if err == io.EOF {
-			return "", fmt.Errorf("input %q is empty", inputPath)
-		}
-		return "", fmt.Errorf("read header: %w", err)
+		return "", err
 	}
 	if len(header) == 0 {
 		return "", fmt.Errorf("input %q has no header columns", inputPath)
@@ -240,7 +227,7 @@ func runSplitPhase(ctx context.Context, opts SplitOptions, emitter progress.Emit
 	return summary, nil
 }
 
-/* RunValidateFile validates one CSV file and writes parquet and error outputs. */
+/* RunValidateFile validates one CSV or Parquet file and writes parquet and error outputs. */
 func (Service) RunValidateFile(ctx context.Context, opts ValidateOptions) (ValidationResult, error) {
 	ctx = ensureContext(ctx)
 	emitter := progress.NewEmitter(opts.RunID, opts.Reporter)
@@ -316,7 +303,7 @@ func runValidateFilePhase(ctx context.Context, opts ValidateOptions, emitter pro
 	}, nil
 }
 
-/* RunValidateDir validates all CSV files in a directory using a worker pool. */
+/* RunValidateDir validates all supported data files in a directory using a worker pool. */
 func (Service) RunValidateDir(ctx context.Context, opts ValidateOptions) (DirectoryValidationResult, error) {
 	ctx = ensureContext(ctx)
 	emitter := progress.NewEmitter(opts.RunID, opts.Reporter)
@@ -358,10 +345,10 @@ func runValidateDirPhase(ctx context.Context, opts ValidateOptions, emitter prog
 
 	files, err := validator.ListCSVFiles(opts.InputDir)
 	if err != nil {
-		return DirectoryValidationResult{}, fmt.Errorf("failed listing csv files: %w", err)
+		return DirectoryValidationResult{}, fmt.Errorf("failed listing validation input files: %w", err)
 	}
 	if len(files) == 0 {
-		return DirectoryValidationResult{}, fmt.Errorf("no csv files found in directory: %s", opts.InputDir)
+		return DirectoryValidationResult{}, fmt.Errorf("no csv or parquet files found in directory: %s", opts.InputDir)
 	}
 
 	emitter.Started(progress.PhaseValidate, fmt.Sprintf("starting directory validation [files %d] [workers %d]", len(files), workers), map[string]any{

@@ -73,18 +73,18 @@ func Print(w io.Writer, opts Options) error {
 		"URL: "+url,
 		"Example: "+bin+" -mode server -host 127.0.0.1 -port 1818")
 	r.mode("auto",
-		"Splits a main CSV, validates split files, then batches parquet output.",
-		"Required: <main.csv> <schema.json>",
+		"Splits a main CSV or Parquet file, validates split files, then batches parquet output.",
+		"Required: <main.csv|main.parquet> <schema.json>",
 		"Useful flags: -t <n>, -write-empty-error, -clear-validation-cache",
 		"Example: "+bin+" main.csv schema.json -t 10")
 	r.mode("validate",
-		"Validates one CSV file or every CSV file in a directory.",
-		"Required: <input.csv> or -dir <input_dir>",
+		"Validates one CSV or Parquet file, or every supported file in a directory.",
+		"Required: <input.csv|input.parquet> or -dir <input_dir>",
 		"Useful flags: -schema <schema.json>, -success-dir <path>, -error-dir <path>",
 		"Example: "+bin+" -mode validate -dir split/ -schema schema.json")
 	r.mode("split",
-		"Splits one CSV into smaller CSV files by primary key.",
-		"Required: <input.csv> or -split-input <input.csv>",
+		"Splits one CSV or Parquet file into smaller CSV files by primary key.",
+		"Required: <input.csv|input.parquet> or -split-input <path>",
 		"Useful flags: -split-primary-key <header>, -split-output-dir <path>",
 		"Example: "+bin+" -mode split main.csv -split-primary-key policy_number")
 	r.mode("batch",
@@ -116,13 +116,13 @@ func Print(w io.Writer, opts Options) error {
 	)
 	r.flagGroup("Validation",
 		[2]string{"-schema <path>", "Schema JSON file for validation"},
-		[2]string{"-dir <path>", "Directory of CSV files to validate"},
+		[2]string{"-dir <path>", "Directory of CSV or Parquet files to validate"},
 		[2]string{"-write-empty-error", "Write empty error Parquet files for valid inputs"},
 		[2]string{"-success-dir <path>", "Directory for valid parquet output (default success)"},
 		[2]string{"-error-dir <path>", "Directory for error Parquet output (default errors)"},
 	)
 	r.flagGroup("Split",
-		[2]string{"-split-input <path>", "Input CSV for split mode"},
+		[2]string{"-split-input <path>", "Input CSV or Parquet file for split mode"},
 		[2]string{"-split-output-dir <path>", "Output directory for split CSVs (default split)"},
 		[2]string{"-split-primary-key <name>", "Header name used as split key"},
 		[2]string{"-split-max-open <n>", "Maximum open split writers (default 256)"},
