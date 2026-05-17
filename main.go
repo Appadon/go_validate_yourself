@@ -133,16 +133,16 @@ func parseFlags() cliOptions {
 	flag.StringVar(&opts.phases, "phases", "", "Comma-separated pipeline phases: split,validate,batch")
 	flag.StringVar(&opts.schemaPath, "schema", "", "Schema JSON file for validation phases")
 	flag.StringVar(&opts.inputDir, "dir", "", "Directory containing CSV or Parquet files to validate")
-	flag.IntVar(&opts.threads, "t", service.DefaultThreadCount(), "Number of concurrent workers for validation and batch phases")
+	flag.IntVar(&opts.threads, "t", service.DefaultThreadCount(), "Number of concurrent workers for split Parquet finalization, validation, and batch phases")
 	flag.BoolVar(&opts.writeEmptyError, "write-empty-error", false, "Write empty error Parquet files for fully valid inputs")
 	flag.BoolVar(&opts.clearCache, "clear-validation-cache", false, "Clear success/error/batch directories before compatible full auto runs")
 	flag.StringVar(&opts.successDir, "success-dir", "success", "Directory for valid parquet output")
 	flag.StringVar(&opts.errorDir, "error-dir", "errors", "Directory for validation error Parquet output")
 	flag.StringVar(&opts.splitInput, "split-input", "", "Input CSV or Parquet file to split by primary key")
-	flag.StringVar(&opts.splitOutputDir, "split-output-dir", "split", "Output directory for split CSV files")
+	flag.StringVar(&opts.splitOutputDir, "split-output-dir", "split", "Output directory for split Parquet files")
 	flag.StringVar(&opts.splitPrimaryKey, "split-primary-key", "", "Header name to use as split key")
 	flag.IntVar(&opts.splitMaxOpen, "split-max-open", 256, "Maximum number of concurrently open split file writers")
-	flag.StringVar(&opts.splitMissingFile, "split-missing-file", "missing_keys.csv", "Name for rows where split key is blank")
+	flag.StringVar(&opts.splitMissingFile, "split-missing-file", "missing_keys.parquet", "Name for rows where split key is blank")
 	flag.IntVar(&opts.batchSize, "batch-size", 1000, "Number of parquet files per output batch")
 	flag.StringVar(&opts.batchDir, "batch-dir", "", "Directory containing parquet files for batch mode, or batch input override")
 	flag.StringVar(&opts.batchExportDir, "batch-export-dir", "batch_export", "Directory for batch mode output parquet files")
@@ -446,7 +446,7 @@ func applyCLIPositionals(cfg *gvyconfig.Config, opts cliOptions, args []string, 
 	}
 }
 
-/* applyAutoPositionals maps auto-mode positional arguments into main CSV and schema config fields. */
+/* applyAutoPositionals maps auto-mode positional arguments into main input and schema config fields. */
 func applyAutoPositionals(cfg *gvyconfig.Config, opts cliOptions, args []string) error {
 	remaining := append([]string{}, args...)
 	if !opts.schemaSpecified {
@@ -456,7 +456,7 @@ func applyAutoPositionals(cfg *gvyconfig.Config, opts cliOptions, args []string)
 		}
 	}
 	if len(remaining) > 1 {
-		return fmt.Errorf("auto mode accepts only <main.csv> plus flags")
+		return fmt.Errorf("auto mode accepts only <main.csv|main.parquet> plus flags")
 	}
 	if len(remaining) == 1 {
 		cfg.Inputs.MainCSV = remaining[0]
@@ -488,7 +488,7 @@ func applyValidatePositionals(cfg *gvyconfig.Config, opts cliOptions, args []str
 		return nil
 	}
 	if len(remaining) > 1 {
-		return fmt.Errorf("single-file validation accepts only <input.csv> plus flags")
+		return fmt.Errorf("single-file validation accepts only <input.csv|input.parquet> plus flags")
 	}
 	if len(remaining) == 1 {
 		cfg.Inputs.ValidateCSV = remaining[0]
@@ -499,11 +499,11 @@ func applyValidatePositionals(cfg *gvyconfig.Config, opts cliOptions, args []str
 	return nil
 }
 
-/* applySplitPositionals maps split positional arguments into the main CSV config field. */
+/* applySplitPositionals maps split positional arguments into the main input config field. */
 func applySplitPositionals(cfg *gvyconfig.Config, opts cliOptions, args []string) error {
 	if opts.splitInputSpecified {
 		if len(args) > 1 {
-			return fmt.Errorf("split mode accepts one positional input CSV")
+			return fmt.Errorf("split mode accepts one positional input CSV or Parquet file")
 		}
 		if len(args) == 1 && args[0] != opts.splitInput {
 			return fmt.Errorf("conflicting split input values: %q and %q", opts.splitInput, args[0])
@@ -512,7 +512,7 @@ func applySplitPositionals(cfg *gvyconfig.Config, opts cliOptions, args []string
 		return nil
 	}
 	if len(args) > 1 {
-		return fmt.Errorf("split mode accepts one positional input CSV")
+		return fmt.Errorf("split mode accepts one positional input CSV or Parquet file")
 	}
 	if len(args) == 1 {
 		cfg.Inputs.MainCSV = args[0]
@@ -835,6 +835,7 @@ func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig, splitPrimary
 			OutputDir:       resolved.Outputs.SplitDir,
 			PrimaryKey:      splitPrimaryKey,
 			MaxOpenWriters:  resolved.Split.MaxOpenWriters,
+			ParquetWorkers:  resolved.EffectiveWorkers,
 			MissingKeysFile: resolved.Split.MissingKeysFile,
 		},
 		Validate: service.ValidateOptions{

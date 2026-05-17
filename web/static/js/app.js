@@ -8,8 +8,8 @@
   const pickerProfiles = {
     csv: { apiKind: "csv", mode: "file", title: "Select main CSV", subtitle: "Browse the working directory and choose one CSV file.", target: "selectedCsv" },
     schema: { apiKind: "schema", mode: "file", title: "Select schema JSON", subtitle: "Browse the working directory and choose one schema JSON file.", target: "selectedSchema" },
-    validateCsv: { apiKind: "csv", mode: "file", title: "Select validation CSV", subtitle: "Choose one existing split CSV file.", target: "validateCsvInput" },
-    validateDir: { apiKind: "csv", mode: "dir", title: "Select validation directory", subtitle: "Choose a directory that contains existing split CSV output.", target: "validateDirInput" },
+    validateCsv: { apiKind: "csv", mode: "file", title: "Select validation file", subtitle: "Choose one existing validation input file.", target: "validateCsvInput" },
+    validateDir: { apiKind: "csv", mode: "dir", title: "Select validation directory", subtitle: "Choose a directory that contains existing split output.", target: "validateDirInput" },
     batchDir: { apiKind: "csv", mode: "dir", title: "Select batch input directory", subtitle: "Choose a directory that contains existing parquet output.", target: "batchInputDirInput" },
     runFolder: { apiKind: "run", mode: "dir", title: "Select previous run", subtitle: "Choose a detected GVY run folder that contains run.json.", target: "reportFolder" },
   };
@@ -1370,7 +1370,7 @@
 
     const outputRows = [];
     if (hasSplit) {
-      outputRows.push(rowHTML("Split CSVs", pathText(plan.split_output_dir || outputs.split_dir)));
+      outputRows.push(rowHTML("Split Parquet", pathText(plan.split_output_dir || outputs.split_dir)));
     }
     if (hasValidate) {
       outputRows.push(rowHTML("Valid parquet", pathText(plan.validation_success_dir || outputs.success_dir)));

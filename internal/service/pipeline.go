@@ -246,6 +246,7 @@ func (s Service) runPipelineSplit(ctx context.Context, opts PipelineOptions, emi
 			MainInputCSV:     opts.Split.InputPath,
 			SplitOutputDir:   opts.Split.OutputDir,
 			SplitMaxOpen:     opts.Split.MaxOpenWriters,
+			Threads:          opts.Split.ParquetWorkers,
 			SplitMissingFile: opts.Split.MissingKeysFile,
 		}, primaryKey, emitter)
 		if err != nil {
@@ -262,6 +263,7 @@ func (s Service) runPipelineSplit(ctx context.Context, opts PipelineOptions, emi
 		OutputDir:       opts.Split.OutputDir,
 		PrimaryKey:      primaryKey,
 		MaxOpenWriters:  opts.Split.MaxOpenWriters,
+		ParquetWorkers:  opts.Split.ParquetWorkers,
 		MissingKeysFile: opts.Split.MissingKeysFile,
 	}, emitter)
 	if err != nil {

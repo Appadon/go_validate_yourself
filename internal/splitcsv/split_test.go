@@ -2,17 +2,48 @@ package splitcsv
 
 import (
 	"context"
-	"encoding/csv"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"go_validate_yourself/internal/inputrows"
 	"go_validate_yourself/internal/progress"
 
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/writer"
 )
+
+func TestSplitByPrimaryKeyWritesParquetOutputForCSVInput(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.csv")
+	outputDir := filepath.Join(dir, "split")
+	writeTestFile(t, input, "Record ID,Amount\n1,10\n2,20\n1,30\n")
+
+	summary, err := SplitByPrimaryKey(context.Background(), Config{
+		InputPath:       input,
+		OutputDir:       outputDir,
+		PrimaryKey:      "Record ID",
+		MaxOpenWriters:  1,
+		MissingKeysFile: "missing_keys.csv",
+		Progress:        progress.Emitter{},
+	})
+	if err != nil {
+		t.Fatalf("SplitByPrimaryKey() error = %v", err)
+	}
+	if summary.TotalRows != 3 || summary.SplitRows != 3 || summary.MissingKeyRows != 0 || summary.OutputFiles != 2 {
+		t.Fatalf("Summary = %+v", summary)
+	}
+
+	rows := readParquetRows(t, filepath.Join(outputDir, "1.parquet"))
+	if len(rows) != 3 || rows[0][0] != "Record ID" || rows[1][1] != "10" || rows[2][1] != "30" {
+		t.Fatalf("unexpected split rows: %+v", rows)
+	}
+	if _, err := os.Stat(filepath.Join(outputDir, "1.csv")); !os.IsNotExist(err) {
+		t.Fatalf("split CSV output exists after parquet split: %v", err)
+	}
+}
 
 func TestSplitByPrimaryKeyReadsParquetInput(t *testing.T) {
 	dir := t.TempDir()
@@ -39,11 +70,11 @@ func TestSplitByPrimaryKeyReadsParquetInput(t *testing.T) {
 		t.Fatalf("Summary = %+v", summary)
 	}
 
-	rows := readCSVRows(t, filepath.Join(outputDir, "A123.csv"))
+	rows := readParquetRows(t, filepath.Join(outputDir, "A123.parquet"))
 	if len(rows) != 3 || rows[0][0] != "policy_number" || rows[1][1] != "10" || rows[2][1] != "30" {
 		t.Fatalf("unexpected split rows: %+v", rows)
 	}
-	missingRows := readCSVRows(t, filepath.Join(outputDir, "missing_keys.csv"))
+	missingRows := readParquetRows(t, filepath.Join(outputDir, "missing_keys.parquet"))
 	if len(missingRows) != 2 || missingRows[1][1] != "20" {
 		t.Fatalf("unexpected missing rows: %+v", missingRows)
 	}
@@ -81,17 +112,34 @@ func writeStringParquet(t *testing.T, path string, columns []string, rows [][]st
 	}
 }
 
-func readCSVRows(t *testing.T, path string) [][]string {
+func readParquetRows(t *testing.T, path string) [][]string {
 	t.Helper()
 
-	file, err := os.Open(path)
+	source, err := inputrows.Open(path)
 	if err != nil {
-		t.Fatalf("Open(%s) error = %v", path, err)
+		t.Fatalf("inputrows.Open(%s) error = %v", path, err)
 	}
-	defer file.Close()
-	rows, err := csv.NewReader(file).ReadAll()
-	if err != nil {
-		t.Fatalf("ReadAll(%s) error = %v", path, err)
+	defer source.Close()
+
+	rows := [][]string{source.Header()}
+	for {
+		record, _, err := source.Next()
+		if err != nil {
+			if err == io.EOF {
+				return rows
+			}
+			t.Fatalf("Next(%s) error = %v", path, err)
+		}
+		rows = append(rows, record)
 	}
-	return rows
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
 }

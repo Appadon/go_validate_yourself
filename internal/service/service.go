@@ -27,6 +27,7 @@ type SplitOptions struct {
 	OutputDir       string
 	PrimaryKey      string
 	MaxOpenWriters  int
+	ParquetWorkers  int
 	MissingKeysFile string
 	RunID           string
 	Reporter        progress.Reporter
@@ -188,12 +189,14 @@ func runSplitPhase(ctx context.Context, opts SplitOptions, emitter progress.Emit
 	if maxOpen < 1 {
 		maxOpen = 1
 	}
+	parquetWorkers := normalizeWorkers(opts.ParquetWorkers)
 
 	emitter.Started(progress.PhaseSplit, fmt.Sprintf("starting split phase [input %s] [output_dir %s] [primary_key %q]", opts.InputPath, opts.OutputDir, primaryKey), map[string]any{
 		"input_path":        opts.InputPath,
 		"output_dir":        opts.OutputDir,
 		"primary_key":       primaryKey,
 		"max_open_writers":  maxOpen,
+		"parquet_workers":   parquetWorkers,
 		"missing_keys_file": opts.MissingKeysFile,
 	})
 
@@ -206,6 +209,7 @@ func runSplitPhase(ctx context.Context, opts SplitOptions, emitter progress.Emit
 		OutputDir:       opts.OutputDir,
 		PrimaryKey:      primaryKey,
 		MaxOpenWriters:  maxOpen,
+		ParquetWorkers:  parquetWorkers,
 		MissingKeysFile: opts.MissingKeysFile,
 		Progress:        emitter,
 	})
@@ -488,6 +492,7 @@ func (s Service) RunAuto(ctx context.Context, opts AutoOptions) (AutoResult, err
 			OutputDir:       opts.SplitOutputDir,
 			PrimaryKey:      opts.SplitPrimaryKey,
 			MaxOpenWriters:  opts.SplitMaxOpen,
+			ParquetWorkers:  normalizeWorkers(opts.Threads),
 			MissingKeysFile: opts.SplitMissingFile,
 		},
 		Validate: ValidateOptions{
@@ -571,6 +576,7 @@ func (s Service) prepareAutoSplit(ctx context.Context, opts AutoOptions, primary
 		OutputDir:       opts.SplitOutputDir,
 		PrimaryKey:      primaryKey,
 		MaxOpenWriters:  opts.SplitMaxOpen,
+		ParquetWorkers:  normalizeWorkers(opts.Threads),
 		MissingKeysFile: opts.SplitMissingFile,
 	}, emitter)
 	if err != nil {

@@ -1442,7 +1442,7 @@ func (s *Server) executeWorkspaceRun(runID string, ws workspace.RunWorkspace) {
 		SplitOutputDir:       ws.SplitDir,
 		SplitPrimaryKey:      primaryKey,
 		SplitMaxOpen:         256,
-		SplitMissingFile:     "missing_keys.csv",
+		SplitMissingFile:     "missing_keys.parquet",
 		Threads:              service.DefaultThreadCount(),
 		WriteEmptyError:      false,
 		ClearValidationCache: true,
@@ -1538,7 +1538,7 @@ func (s *Server) buildDiskEstimate(resolved gvyconfig.ResolvedConfig) monitor.Di
 	for _, phase := range resolved.Plan.Phases {
 		switch phase {
 		case gvyconfig.PhaseSplit:
-			addComponent("Split CSV cache", 1.10)
+			addComponent("Split Parquet cache", 1.10)
 		case gvyconfig.PhaseValidate:
 			addComponent("Validation parquet and errors", 1.25)
 		case gvyconfig.PhaseBatch:
@@ -1700,6 +1700,7 @@ func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig) service.Pipe
 			OutputDir:       resolved.Outputs.SplitDir,
 			PrimaryKey:      resolved.Split.PrimaryKey,
 			MaxOpenWriters:  resolved.Split.MaxOpenWriters,
+			ParquetWorkers:  resolved.EffectiveWorkers,
 			MissingKeysFile: resolved.Split.MissingKeysFile,
 		},
 		Validate: service.ValidateOptions{

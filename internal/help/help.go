@@ -58,10 +58,10 @@ func Print(w io.Writer, opts Options) error {
 
 	r.section("Command Shapes")
 	r.commandLine(bin)
-	r.commandLine(bin + " <main.csv> <schema.json> [flags]")
-	r.commandLine(bin + " -mode validate <input.csv> [-schema <schema.json>] [flags]")
+	r.commandLine(bin + " <main.csv|main.parquet> <schema.json> [flags]")
+	r.commandLine(bin + " -mode validate <input.csv|input.parquet> [-schema <schema.json>] [flags]")
 	r.commandLine(bin + " -mode validate -dir <input_dir> [-schema <schema.json>] [flags]")
-	r.commandLine(bin + " -mode split <input.csv> [flags]")
+	r.commandLine(bin + " -mode split <input.csv|input.parquet> [flags]")
 	r.commandLine(bin + " -mode batch -batch-dir <input_dir> [flags]")
 	r.commandLine(fmt.Sprintf("%s -mode server [-host %s] [-port %d]", bin, defaults.Server.Host, defaults.Server.Port))
 	r.commandLine(bin + " -config gvy.config.json [flags]")
@@ -83,7 +83,7 @@ func Print(w io.Writer, opts Options) error {
 		"Useful flags: -schema <schema.json>, -success-dir <path>, -error-dir <path>",
 		"Example: "+bin+" -mode validate -dir split/ -schema schema.json")
 	r.mode("split",
-		"Splits one CSV or Parquet file into smaller CSV files by primary key.",
+		"Splits one CSV or Parquet file into smaller Parquet files by primary key.",
 		"Required: <input.csv|input.parquet> or -split-input <path>",
 		"Useful flags: -split-primary-key <header>, -split-output-dir <path>",
 		"Example: "+bin+" -mode split main.csv -split-primary-key policy_number")
@@ -111,7 +111,7 @@ func Print(w io.Writer, opts Options) error {
 		[2]string{"-port <n>", "Port for server mode (default 1818)"},
 	)
 	r.flagGroup("Runtime",
-		[2]string{"-t <n>", "Concurrent workers for validation and batch"},
+		[2]string{"-t <n>", "Concurrent workers for split finalization, validation, and batch"},
 		[2]string{"-clear-validation-cache", "Clear output dirs before compatible runs"},
 	)
 	r.flagGroup("Validation",
@@ -123,10 +123,10 @@ func Print(w io.Writer, opts Options) error {
 	)
 	r.flagGroup("Split",
 		[2]string{"-split-input <path>", "Input CSV or Parquet file for split mode"},
-		[2]string{"-split-output-dir <path>", "Output directory for split CSVs (default split)"},
+		[2]string{"-split-output-dir <path>", "Output directory for split Parquet files (default split)"},
 		[2]string{"-split-primary-key <name>", "Header name used as split key"},
 		[2]string{"-split-max-open <n>", "Maximum open split writers (default 256)"},
-		[2]string{"-split-missing-file <name>", "File for blank split keys (default missing_keys.csv)"},
+		[2]string{"-split-missing-file <name>", "File for blank split keys (default missing_keys.parquet)"},
 	)
 	r.flagGroup("Batch",
 		[2]string{"-batch-dir <path>", "Directory containing parquet files for batch mode"},

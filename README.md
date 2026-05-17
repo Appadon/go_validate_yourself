@@ -95,10 +95,10 @@ Command shapes:
 
 ```text
 gvy
-gvy <main.csv> <schema.json> [flags]
-gvy -mode validate <input.csv> [-schema <schema.json>] [flags]
+gvy <main.csv|main.parquet> <schema.json> [flags]
+gvy -mode validate <input.csv|input.parquet> [-schema <schema.json>] [flags]
 gvy -mode validate -dir <input_dir> [-schema <schema.json>] [flags]
-gvy -mode split <input.csv> [flags]
+gvy -mode split <input.csv|input.parquet> [flags]
 gvy -mode batch -batch-dir <input_dir> [flags]
 gvy -mode server [-host 127.0.0.1] [-port 1818]
 gvy -config gvy.config.json [flags]
@@ -109,9 +109,9 @@ Modes:
 | Mode | Behavior | Required input |
 | --- | --- | --- |
 | `server` | Starts the localhost web console and HTTP API. This is the default when no args are passed. | None |
-| `auto` | Runs `split`, then `validate`, then `batch`. | `<main.csv> <schema.json>` |
-| `validate` | Validates one data file or every supported file in a directory. | `<input.csv>` or `-dir <input_dir>` plus schema |
-| `split` | Splits one structured data file into smaller working files by primary key. | `<input.csv>` or `-split-input <input.csv>` |
+| `auto` | Runs `split`, then `validate`, then `batch`. | `<main.csv|main.parquet> <schema.json>` |
+| `validate` | Validates one data file or every supported file in a directory. | `<input.csv|input.parquet>` or `-dir <input_dir>` plus schema |
+| `split` | Splits one structured data file into smaller working files by primary key. | `<input.csv|input.parquet>` or `-split-input <input.csv|input.parquet>` |
 | `batch` | Groups Parquet files into batched Parquet outputs. | `-batch-dir <input_dir>` |
 
 Print the built-in help UI:
@@ -166,7 +166,7 @@ Minimal full-pipeline config:
   "split": {
     "primary_key": "",
     "max_open_writers": 256,
-    "missing_keys_file": "missing_keys.csv",
+    "missing_keys_file": "missing_keys.parquet",
     "reuse_cache": true
   },
   "validation": {
@@ -384,7 +384,7 @@ __row_number,__errors,__error_fields,__row_values,__search_text
 
 `__row_values` stores the original row columns in order as JSON so the browser explorer can show samples without downloading full error files.
 
-Split writes one working file per key into `split/` by default. Rows with blank split keys are written to `missing_keys.csv` unless configured otherwise.
+Split writes one Parquet working file per key into `split/` by default. Rows with blank split keys are written to `missing_keys.parquet` unless configured otherwise.
 
 Batch writes:
 
