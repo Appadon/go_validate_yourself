@@ -2,7 +2,6 @@ package validator
 
 import (
 	"context"
-	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"go_validate_yourself/internal/errorstore"
+	"go_validate_yourself/internal/inputrows"
 	"go_validate_yourself/internal/progress"
 
 	"github.com/xitongsys/parquet-go-source/local"
@@ -192,7 +192,7 @@ func ValidateSchema(cfg *SchemaConfig) error {
 	return nil
 }
 
-/* RunValidationAndWriteParquet validates one CSV and writes success and error Parquet outputs. */
+/* RunValidationAndWriteParquet validates one CSV or Parquet file and writes success and error Parquet outputs. */
 func RunValidationAndWriteParquet(ctx context.Context, input, successOutput, errorOutput string, schema SchemaConfig, writeEmptyError bool) (Stats, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -203,11 +203,11 @@ func RunValidationAndWriteParquet(ctx context.Context, input, successOutput, err
 	}
 	defer state.cleanupOnFailure()
 
-	f, reader, header, headerIdx, err := openCSVWithHeaderIndex(input)
+	source, header, headerIdx, err := openInputRows(input, schema)
 	if err != nil {
 		return Stats{}, err
 	}
-	defer f.Close()
+	defer source.Close()
 
 	if err := validateSchemaFieldsAgainstHeader(schema, headerIdx); err != nil {
 		return Stats{}, err
@@ -219,7 +219,7 @@ func RunValidationAndWriteParquet(ctx context.Context, input, successOutput, err
 	}
 	defer parquetFile.Close()
 
-	stats, invalidRows, err := validateAndWriteRows(ctx, reader, headerIdx, schema, pWriter)
+	stats, invalidRows, err := validateAndWriteRows(ctx, source, headerIdx, schema, pWriter)
 	if err != nil {
 		return stats, err
 	}
@@ -254,33 +254,36 @@ func (s *validationOutputState) cleanupOnFailure() {
 	_ = os.Remove(s.errorOutput)
 }
 
-/* openCSVWithHeaderIndex opens input CSV and returns header plus a header-index map. */
-func openCSVWithHeaderIndex(input string) (*os.File, *csv.Reader, []string, map[string]int, error) {
-	f, err := os.Open(input)
+/* openInputRows opens a supported source file and returns its header plus a header-index map. */
+func openInputRows(input string, schema SchemaConfig) (inputrows.Source, []string, map[string]int, error) {
+	source, err := inputrows.Open(input)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("open input: %w", err)
+		return nil, nil, nil, err
 	}
+	header := source.Header()
+	headerIdx := inputrows.HeaderIndex(header)
+	if strings.EqualFold(filepath.Ext(input), ".parquet") {
+		addParquetSchemaAliases(headerIdx, schema)
+	}
+	return source, header, headerIdx, nil
+}
 
-	reader := csv.NewReader(f)
-	reader.FieldsPerRecord = -1
-	header, err := reader.Read()
-	if err != nil {
-		_ = f.Close()
-		return nil, nil, nil, nil, fmt.Errorf("read header: %w", err)
+func addParquetSchemaAliases(headerIdx map[string]int, schema SchemaConfig) {
+	for _, field := range schema.Fields {
+		if _, ok := headerIdx[field.Name]; ok {
+			continue
+		}
+		if idx, ok := headerIdx[field.ParquetName]; ok {
+			headerIdx[field.Name] = idx
+		}
 	}
-
-	headerIdx := make(map[string]int, len(header))
-	for i, h := range header {
-		headerIdx[strings.TrimSpace(h)] = i
-	}
-	return f, reader, header, headerIdx, nil
 }
 
 /* validateSchemaFieldsAgainstHeader verifies required/defaulted schema fields exist in the input header. */
 func validateSchemaFieldsAgainstHeader(schema SchemaConfig, headerIdx map[string]int) error {
 	for _, field := range schema.Fields {
 		if _, ok := headerIdx[field.Name]; !ok && field.Override == nil && (field.Required || field.Default != nil) {
-			return fmt.Errorf("required schema field %q not found in CSV header", field.Name)
+			return fmt.Errorf("required schema field %q not found in input header", field.Name)
 		}
 	}
 	return nil
@@ -308,18 +311,16 @@ func openParquetWriter(successOutput string, schema SchemaConfig) (*writer.CSVWr
 	return pWriter, pw, nil
 }
 
-/* validateAndWriteRows validates each CSV row, writes valid rows to parquet, and captures invalid rows. */
-func validateAndWriteRows(ctx context.Context, reader *csv.Reader, headerIdx map[string]int, schema SchemaConfig, pWriter *writer.CSVWriter) (Stats, []InvalidRow, error) {
+/* validateAndWriteRows validates each source row, writes valid rows to parquet, and captures invalid rows. */
+func validateAndWriteRows(ctx context.Context, source inputrows.Source, headerIdx map[string]int, schema SchemaConfig, pWriter *writer.CSVWriter) (Stats, []InvalidRow, error) {
 	stats := Stats{}
 	invalidRows := make([]InvalidRow, 0)
-	rowNum := 1
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return stats, invalidRows, err
 		}
-		rowNum++
-		record, err := reader.Read()
+		record, rowNum, err := source.Next()
 		if errors.Is(err, io.EOF) {
 			return stats, invalidRows, nil
 		}
@@ -368,7 +369,7 @@ func OutputPaths(input, successDir, errorDir string) (string, string) {
 	return filepath.Join(successDir, base+".parquet"), filepath.Join(errorDir, base+"_error.parquet")
 }
 
-/* ListCSVFiles finds CSV files in a directory in stable sorted order. */
+/* ListCSVFiles finds supported validation files in a directory in stable sorted order. */
 func ListCSVFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -380,7 +381,7 @@ func ListCSVFiles(dir string) ([]string, error) {
 			continue
 		}
 		name := e.Name()
-		if strings.EqualFold(filepath.Ext(name), ".csv") {
+		if inputrows.IsSupportedExtension(filepath.Ext(name)) {
 			files = append(files, filepath.Join(dir, name))
 		}
 	}

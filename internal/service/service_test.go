@@ -82,7 +82,7 @@ func TestRunAutoResplitsWhenInputHashChanges(t *testing.T) {
 		t.Fatal("RunAuto() second run unexpectedly reused stale split cache")
 	}
 	assertNotExists(t, splitSentinel)
-	assertExists(t, filepath.Join(opts.SplitOutputDir, "3.csv"))
+	assertExists(t, filepath.Join(opts.SplitOutputDir, "3.parquet"))
 }
 
 func TestRunAutoReturnsCanceledContextError(t *testing.T) {
@@ -158,7 +158,7 @@ func autoTestOptions(tempDir, inputPath, schemaPath string) AutoOptions {
 		SplitOutputDir:       filepath.Join(tempDir, "split"),
 		SplitPrimaryKey:      "Record ID",
 		SplitMaxOpen:         16,
-		SplitMissingFile:     "missing_keys.csv",
+		SplitMissingFile:     "missing_keys.parquet",
 		Threads:              1,
 		WriteEmptyError:      false,
 		ClearValidationCache: false,

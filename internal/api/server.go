@@ -1442,7 +1442,7 @@ func (s *Server) executeWorkspaceRun(runID string, ws workspace.RunWorkspace) {
 		SplitOutputDir:       ws.SplitDir,
 		SplitPrimaryKey:      primaryKey,
 		SplitMaxOpen:         256,
-		SplitMissingFile:     "missing_keys.csv",
+		SplitMissingFile:     "missing_keys.parquet",
 		Threads:              service.DefaultThreadCount(),
 		WriteEmptyError:      false,
 		ClearValidationCache: true,
@@ -1538,7 +1538,7 @@ func (s *Server) buildDiskEstimate(resolved gvyconfig.ResolvedConfig) monitor.Di
 	for _, phase := range resolved.Plan.Phases {
 		switch phase {
 		case gvyconfig.PhaseSplit:
-			addComponent("Split CSV cache", 1.10)
+			addComponent("Split Parquet cache", 1.10)
 		case gvyconfig.PhaseValidate:
 			addComponent("Validation parquet and errors", 1.25)
 		case gvyconfig.PhaseBatch:
@@ -1626,7 +1626,7 @@ func (s *Server) resolveLegacyAutoConfig(req ValidateAutoRequest) (gvyconfig.Res
 	if mainInput == "" {
 		return gvyconfig.ResolvedConfig{}, fmt.Errorf("main_input_csv or input_csv is required")
 	}
-	if err := validateAbsoluteCSVPath(mainInput, "main_input_csv"); err != nil {
+	if err := validateAbsoluteDataPath(mainInput, "main_input_csv"); err != nil {
 		return gvyconfig.ResolvedConfig{}, err
 	}
 	if err := validateAbsoluteJSONPath(req.SchemaPath, "schema_path"); err != nil {
@@ -1700,6 +1700,7 @@ func pipelineOptionsFromResolved(resolved gvyconfig.ResolvedConfig) service.Pipe
 			OutputDir:       resolved.Outputs.SplitDir,
 			PrimaryKey:      resolved.Split.PrimaryKey,
 			MaxOpenWriters:  resolved.Split.MaxOpenWriters,
+			ParquetWorkers:  resolved.EffectiveWorkers,
 			MissingKeysFile: resolved.Split.MissingKeysFile,
 		},
 		Validate: service.ValidateOptions{
@@ -1922,7 +1923,7 @@ func copyFile(source, destination string) error {
 
 /* validateLegacyResolvedPaths preserves absolute-path requirements on /run/validate-auto. */
 func validateLegacyResolvedPaths(resolved gvyconfig.ResolvedConfig) error {
-	if err := validateAbsoluteCSVPath(resolved.Inputs.MainCSV, "main_input_csv"); err != nil {
+	if err := validateAbsoluteDataPath(resolved.Inputs.MainCSV, "main_input_csv"); err != nil {
 		return err
 	}
 	if err := validateAbsoluteJSONPath(resolved.Inputs.Schema, "schema_path"); err != nil {
@@ -1950,7 +1951,7 @@ func validateResolvedExecutionInputs(resolved gvyconfig.ResolvedConfig) error {
 	for _, phase := range resolved.Plan.Phases {
 		switch phase {
 		case gvyconfig.PhaseSplit:
-			if err := requireExistingFileWithExtension(resolved.Inputs.MainCSV, "inputs.main_csv", ".csv"); err != nil {
+			if err := requireExistingFileWithAnyExtension(resolved.Inputs.MainCSV, "inputs.main_csv", ".csv", ".parquet"); err != nil {
 				return err
 			}
 		case gvyconfig.PhaseValidate:
@@ -1958,7 +1959,7 @@ func validateResolvedExecutionInputs(resolved gvyconfig.ResolvedConfig) error {
 				return err
 			}
 			if strings.TrimSpace(resolved.Inputs.ValidateCSV) != "" {
-				if err := requireExistingFileWithExtension(resolved.Inputs.ValidateCSV, "inputs.validate_csv", ".csv"); err != nil {
+				if err := requireExistingFileWithAnyExtension(resolved.Inputs.ValidateCSV, "inputs.validate_csv", ".csv", ".parquet"); err != nil {
 					return err
 				}
 			} else if !configPhaseBefore(resolved.Plan.Phases, gvyconfig.PhaseSplit, gvyconfig.PhaseValidate) {
@@ -1992,12 +1993,16 @@ func configPhaseBefore(phases []gvyconfig.Phase, before, after gvyconfig.Phase) 
 }
 
 func requireExistingFileWithExtension(path, field, ext string) error {
+	return requireExistingFileWithAnyExtension(path, field, ext)
+}
+
+func requireExistingFileWithAnyExtension(path, field string, exts ...string) error {
 	clean := strings.TrimSpace(path)
 	if clean == "" {
 		return fmt.Errorf("%s is required", field)
 	}
-	if !strings.EqualFold(filepath.Ext(clean), ext) {
-		return fmt.Errorf("%s must use %s extension", field, ext)
+	if !hasAnyExtension(clean, exts...) {
+		return fmt.Errorf("%s must use %s extension", field, strings.Join(exts, " or "))
 	}
 	info, err := os.Stat(clean)
 	if err != nil {
@@ -2007,6 +2012,16 @@ func requireExistingFileWithExtension(path, field, ext string) error {
 		return fmt.Errorf("%s must be a file", field)
 	}
 	return nil
+}
+
+func hasAnyExtension(path string, exts ...string) bool {
+	actual := filepath.Ext(path)
+	for _, ext := range exts {
+		if strings.EqualFold(actual, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func requireExistingDir(path, field string) error {
@@ -2217,6 +2232,11 @@ func validateAbsoluteCSVPath(path, field string) error {
 	return validateAbsoluteFilePath(path, field, ".csv")
 }
 
+/* validateAbsoluteDataPath validates a required absolute CSV or Parquet file path. */
+func validateAbsoluteDataPath(path, field string) error {
+	return validateAbsoluteFilePathAny(path, field, ".csv", ".parquet")
+}
+
 /* validateAbsoluteJSONPath validates a required absolute JSON file path. */
 func validateAbsoluteJSONPath(path, field string) error {
 	return validateAbsoluteFilePath(path, field, ".json")
@@ -2224,6 +2244,10 @@ func validateAbsoluteJSONPath(path, field string) error {
 
 /* validateAbsoluteFilePath validates a required absolute file path and extension. */
 func validateAbsoluteFilePath(path, field, ext string) error {
+	return validateAbsoluteFilePathAny(path, field, ext)
+}
+
+func validateAbsoluteFilePathAny(path, field string, exts ...string) error {
 	clean := strings.TrimSpace(path)
 	if clean == "" {
 		return fmt.Errorf("%s is required", field)
@@ -2231,8 +2255,8 @@ func validateAbsoluteFilePath(path, field, ext string) error {
 	if !filepath.IsAbs(clean) {
 		return fmt.Errorf("%s must be an absolute path", field)
 	}
-	if !strings.EqualFold(filepath.Ext(clean), ext) {
-		return fmt.Errorf("%s must use %s extension", field, ext)
+	if !hasAnyExtension(clean, exts...) {
+		return fmt.Errorf("%s must use %s extension", field, strings.Join(exts, " or "))
 	}
 	info, err := os.Stat(clean)
 	if err != nil {

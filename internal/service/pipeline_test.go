@@ -25,7 +25,7 @@ func TestRunPipelineSplitOnlyExecutesSplitOnly(t *testing.T) {
 			OutputDir:       filepath.Join(tempDir, "split"),
 			PrimaryKey:      "Record ID",
 			MaxOpenWriters:  8,
-			MissingKeysFile: "missing_keys.csv",
+			MissingKeysFile: "missing_keys.parquet",
 		},
 		Reporter: collectPipelineEvents(&events),
 	})
@@ -35,7 +35,7 @@ func TestRunPipelineSplitOnlyExecutesSplitOnly(t *testing.T) {
 	if result.SplitSummary.TotalRows != 2 {
 		t.Fatalf("SplitSummary.TotalRows = %d, want 2", result.SplitSummary.TotalRows)
 	}
-	assertExists(t, filepath.Join(tempDir, "split", "1.csv"))
+	assertExists(t, filepath.Join(tempDir, "split", "1.parquet"))
 	assertPipelinePhases(t, result.RanPhases, []PipelinePhase{PipelinePhaseSplit})
 	assertNoPipelineEventPhase(t, events, progress.PhaseValidate)
 	assertNoPipelineEventPhase(t, events, progress.PhaseBatch)
@@ -134,7 +134,7 @@ func TestRunPipelineSplitValidateExecutesSplitThenValidation(t *testing.T) {
 			OutputDir:       filepath.Join(tempDir, "split"),
 			PrimaryKey:      "Record ID",
 			MaxOpenWriters:  8,
-			MissingKeysFile: "missing_keys.csv",
+			MissingKeysFile: "missing_keys.parquet",
 		},
 		Validate: ValidateOptions{
 			SchemaPath: schemaPath,
@@ -230,7 +230,7 @@ func TestRunPipelineSplitCacheReuseHonoredWhenConfigured(t *testing.T) {
 			OutputDir:       filepath.Join(tempDir, "split"),
 			PrimaryKey:      "Record ID",
 			MaxOpenWriters:  8,
-			MissingKeysFile: "missing_keys.csv",
+			MissingKeysFile: "missing_keys.parquet",
 		},
 	}
 
@@ -270,7 +270,7 @@ func TestRunPipelineClearOutputsRemovesSplitCacheAndDownstreamOutputs(t *testing
 		t.Fatal("first split unexpectedly reused cache")
 	}
 
-	splitSentinel := filepath.Join(opts.Split.OutputDir, "stale.csv")
+	splitSentinel := filepath.Join(opts.Split.OutputDir, "stale.parquet")
 	successSentinel := filepath.Join(opts.Validate.SuccessDir, "stale.parquet")
 	errorSentinel := filepath.Join(opts.Validate.ErrorDir, "stale.parquet")
 	batchSentinel := filepath.Join(opts.Batch.OutputDir, "stale.parquet")
@@ -336,7 +336,7 @@ func fullPipelineOptions(tempDir, inputPath, schemaPath string) PipelineOptions 
 			OutputDir:       filepath.Join(tempDir, "split"),
 			PrimaryKey:      "Record ID",
 			MaxOpenWriters:  16,
-			MissingKeysFile: "missing_keys.csv",
+			MissingKeysFile: "missing_keys.parquet",
 		},
 		Validate: ValidateOptions{
 			SchemaPath: schemaPath,

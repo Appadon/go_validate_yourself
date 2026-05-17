@@ -18,7 +18,7 @@ const (
 	defaultErrorDir         = "errors"
 	defaultBatchExportDir   = "batch_export"
 	defaultSplitMaxOpen     = 256
-	defaultSplitMissingFile = "missing_keys.csv"
+	defaultSplitMissingFile = "missing_keys.parquet"
 	defaultBatchSize        = 1000
 	defaultServerHost       = "127.0.0.1"
 	defaultServerPort       = 1818

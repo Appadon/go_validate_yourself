@@ -38,8 +38,8 @@ func TestDefaultConfigResolvesToCurrentDefaults(t *testing.T) {
 	if resolved.Split.MaxOpenWriters != 256 {
 		t.Fatalf("Split.MaxOpenWriters = %d, want 256", resolved.Split.MaxOpenWriters)
 	}
-	if resolved.Split.MissingKeysFile != "missing_keys.csv" {
-		t.Fatalf("Split.MissingKeysFile = %q, want missing_keys.csv", resolved.Split.MissingKeysFile)
+	if resolved.Split.MissingKeysFile != "missing_keys.parquet" {
+		t.Fatalf("Split.MissingKeysFile = %q, want missing_keys.parquet", resolved.Split.MissingKeysFile)
 	}
 	if resolved.Batch.Size != 1000 {
 		t.Fatalf("Batch.Size = %d, want 1000", resolved.Batch.Size)

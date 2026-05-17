@@ -2,10 +2,8 @@ package service
 
 import (
 	"context"
-	"encoding/csv"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,6 +27,7 @@ type SplitOptions struct {
 	OutputDir       string
 	PrimaryKey      string
 	MaxOpenWriters  int
+	ParquetWorkers  int
 	MissingKeysFile string
 	RunID           string
 	Reporter        progress.Reporter
@@ -129,22 +128,11 @@ func ResolveDefaultSchemaPath() (string, error) {
 	return "", fmt.Errorf("missing schema; pass -schema <path> (default %q not found)", defaultSchemaPath)
 }
 
-/* DetectPrimaryKey reads the first CSV header and uses it as the split key. */
+/* DetectPrimaryKey reads the first source header and uses it as the split key. */
 func DetectPrimaryKey(inputPath string) (string, error) {
-	f, err := os.Open(inputPath)
+	header, err := splitcsv.Header(inputPath)
 	if err != nil {
-		return "", fmt.Errorf("open input: %w", err)
-	}
-	defer f.Close()
-
-	reader := csv.NewReader(f)
-	reader.FieldsPerRecord = -1
-	header, err := reader.Read()
-	if err != nil {
-		if err == io.EOF {
-			return "", fmt.Errorf("input %q is empty", inputPath)
-		}
-		return "", fmt.Errorf("read header: %w", err)
+		return "", err
 	}
 	if len(header) == 0 {
 		return "", fmt.Errorf("input %q has no header columns", inputPath)
@@ -201,12 +189,14 @@ func runSplitPhase(ctx context.Context, opts SplitOptions, emitter progress.Emit
 	if maxOpen < 1 {
 		maxOpen = 1
 	}
+	parquetWorkers := normalizeWorkers(opts.ParquetWorkers)
 
 	emitter.Started(progress.PhaseSplit, fmt.Sprintf("starting split phase [input %s] [output_dir %s] [primary_key %q]", opts.InputPath, opts.OutputDir, primaryKey), map[string]any{
 		"input_path":        opts.InputPath,
 		"output_dir":        opts.OutputDir,
 		"primary_key":       primaryKey,
 		"max_open_writers":  maxOpen,
+		"parquet_workers":   parquetWorkers,
 		"missing_keys_file": opts.MissingKeysFile,
 	})
 
@@ -219,6 +209,7 @@ func runSplitPhase(ctx context.Context, opts SplitOptions, emitter progress.Emit
 		OutputDir:       opts.OutputDir,
 		PrimaryKey:      primaryKey,
 		MaxOpenWriters:  maxOpen,
+		ParquetWorkers:  parquetWorkers,
 		MissingKeysFile: opts.MissingKeysFile,
 		Progress:        emitter,
 	})
@@ -240,7 +231,7 @@ func runSplitPhase(ctx context.Context, opts SplitOptions, emitter progress.Emit
 	return summary, nil
 }
 
-/* RunValidateFile validates one CSV file and writes parquet and error outputs. */
+/* RunValidateFile validates one CSV or Parquet file and writes parquet and error outputs. */
 func (Service) RunValidateFile(ctx context.Context, opts ValidateOptions) (ValidationResult, error) {
 	ctx = ensureContext(ctx)
 	emitter := progress.NewEmitter(opts.RunID, opts.Reporter)
@@ -316,7 +307,7 @@ func runValidateFilePhase(ctx context.Context, opts ValidateOptions, emitter pro
 	}, nil
 }
 
-/* RunValidateDir validates all CSV files in a directory using a worker pool. */
+/* RunValidateDir validates all supported data files in a directory using a worker pool. */
 func (Service) RunValidateDir(ctx context.Context, opts ValidateOptions) (DirectoryValidationResult, error) {
 	ctx = ensureContext(ctx)
 	emitter := progress.NewEmitter(opts.RunID, opts.Reporter)
@@ -358,10 +349,10 @@ func runValidateDirPhase(ctx context.Context, opts ValidateOptions, emitter prog
 
 	files, err := validator.ListCSVFiles(opts.InputDir)
 	if err != nil {
-		return DirectoryValidationResult{}, fmt.Errorf("failed listing csv files: %w", err)
+		return DirectoryValidationResult{}, fmt.Errorf("failed listing validation input files: %w", err)
 	}
 	if len(files) == 0 {
-		return DirectoryValidationResult{}, fmt.Errorf("no csv files found in directory: %s", opts.InputDir)
+		return DirectoryValidationResult{}, fmt.Errorf("no csv or parquet files found in directory: %s", opts.InputDir)
 	}
 
 	emitter.Started(progress.PhaseValidate, fmt.Sprintf("starting directory validation [files %d] [workers %d]", len(files), workers), map[string]any{
@@ -501,6 +492,7 @@ func (s Service) RunAuto(ctx context.Context, opts AutoOptions) (AutoResult, err
 			OutputDir:       opts.SplitOutputDir,
 			PrimaryKey:      opts.SplitPrimaryKey,
 			MaxOpenWriters:  opts.SplitMaxOpen,
+			ParquetWorkers:  normalizeWorkers(opts.Threads),
 			MissingKeysFile: opts.SplitMissingFile,
 		},
 		Validate: ValidateOptions{
@@ -584,6 +576,7 @@ func (s Service) prepareAutoSplit(ctx context.Context, opts AutoOptions, primary
 		OutputDir:       opts.SplitOutputDir,
 		PrimaryKey:      primaryKey,
 		MaxOpenWriters:  opts.SplitMaxOpen,
+		ParquetWorkers:  normalizeWorkers(opts.Threads),
 		MissingKeysFile: opts.SplitMissingFile,
 	}, emitter)
 	if err != nil {
