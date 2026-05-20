@@ -913,11 +913,15 @@ func runResolvedServer(resolved gvyconfig.ResolvedConfig) error {
 	if err := banner.AnimateConsoleReady(os.Stdout); err != nil {
 		return fmt.Errorf("animate web console startup: %w", err)
 	}
-	if err := banner.PrintConsoleURL(os.Stdout, fmt.Sprintf("http://%s:%d/", resolved.Server.Host, resolved.Server.Port)); err != nil {
+	if err := banner.PrintConsoleURL(os.Stdout, resolvedServerConsoleURL(resolved)); err != nil {
 		return fmt.Errorf("print server URL: %w", err)
 	}
 	server := api.NewServer(resolved.Server.Host, resolved.Server.Port, service.New())
 	return server.ListenAndServe()
+}
+
+func resolvedServerConsoleURL(resolved gvyconfig.ResolvedConfig) string {
+	return fmt.Sprintf("http://%s:%d/run_manager", resolved.Server.Host, resolved.Server.Port)
 }
 
 /* resolvePrimaryKeyForRun returns the configured or auto-detected split primary key. */
