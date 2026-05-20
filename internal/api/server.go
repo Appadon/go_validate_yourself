@@ -115,6 +115,12 @@ type RunCreateResponse struct {
 	Run runs.Snapshot `json:"run"`
 }
 
+/* RunListResponse returns current and persisted run snapshots for the run manager page. */
+type RunListResponse struct {
+	OK   bool            `json:"ok"`
+	Runs []runs.Snapshot `json:"runs"`
+}
+
 /* ConfigDefaultsResponse returns the canonical built-in config defaults. */
 type ConfigDefaultsResponse struct {
 	OK             bool             `json:"ok"`
@@ -353,6 +359,7 @@ func NewServer(host string, port int, svc service.Service) *Server {
 	mux.HandleFunc("/schema-editor", server.handleSchemaEditorUI)
 	mux.HandleFunc("/schema-workbench", server.handleSchemaWorkbenchUI)
 	mux.HandleFunc("/error-explorer", server.handleErrorExplorerUI)
+	mux.HandleFunc("/run_manager", server.handleRunManagerUI)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
 	mux.HandleFunc("/health", server.handleHealth)
 	mux.HandleFunc("/shutdown", server.handleShutdown)
@@ -375,6 +382,44 @@ func NewServer(host string, port int, svc service.Service) *Server {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return server
+}
+
+/* handleRunManagerUI renders the read-only API run manager page. */
+func (s *Server) handleRunManagerUI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoopback(w, r) {
+		return
+	}
+	if r.URL.Path != "/run_manager" {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+	if !s.allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	health := s.currentHealth()
+	bootstrap, err := json.Marshal(uiBootstrap{
+		Server:      health,
+		LatestRunID: health.LatestRunID,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_BOOTSTRAP_FAILED", err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "run_manager.html", uiPageData{
+		Title:          "GVY Run Manager",
+		Version:        version,
+		ServerBusy:     health.Busy,
+		WorkingRoot:    s.workingRoot,
+		LatestRunID:    health.LatestRunID,
+		LatestRunState: health.LatestRunState,
+		BootstrapJSON:  template.JS(bootstrap),
+	}); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UI_RENDER_FAILED", err.Error())
+		return
+	}
 }
 
 /* handleErrorExplorerUI renders the validation error explorer proof of concept. */
@@ -811,7 +856,7 @@ func (s *Server) handleConfigRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-/* handleRuns dispatches collection routes for upload-driven browser runs. */
+/* handleRuns dispatches run collection routes. */
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoopback(w, r) {
 		return
@@ -820,10 +865,28 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
 		return
 	}
-	if !s.allowMethod(w, r, http.MethodPost) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListRuns(w, r)
+	case http.MethodPost:
+		s.handleCreateRun(w, r)
+	default:
+		w.Header().Set("Allow", strings.Join([]string{http.MethodGet, http.MethodPost}, ", "))
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "expected GET or POST")
+	}
+}
+
+/* handleListRuns returns live and persisted runs newest first. */
+func (s *Server) handleListRuns(w http.ResponseWriter, _ *http.Request) {
+	snapshots, err := s.listRunSnapshots()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "RUN_LIST_FAILED", err.Error())
 		return
 	}
-	s.handleCreateRun(w, r)
+	writeJSON(w, http.StatusOK, RunListResponse{
+		OK:   true,
+		Runs: snapshots,
+	})
 }
 
 /* handleFileList returns eligible selectable files under the server working root. */
@@ -1294,12 +1357,16 @@ func (s *Server) handleCreateRunFromSelection(w http.ResponseWriter, r *http.Req
 	})
 }
 
-/* handleGetRun returns the latest in-memory snapshot for the requested run id. */
+/* handleGetRun returns the latest snapshot for the requested run id. */
 func (s *Server) handleGetRun(w http.ResponseWriter, _ *http.Request, runID string) {
 	snapshot, ok := s.runManager.Snapshot(runID)
 	if !ok {
-		writeAPIError(w, http.StatusNotFound, "RUN_NOT_FOUND", "run not found")
-		return
+		var err error
+		snapshot, err = s.loadPersistedRunSnapshotByID(runID)
+		if err != nil {
+			writeAPIError(w, http.StatusNotFound, "RUN_NOT_FOUND", "run not found")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, RunSnapshotResponse{
 		OK:  true,
@@ -1311,8 +1378,12 @@ func (s *Server) handleGetRun(w http.ResponseWriter, _ *http.Request, runID stri
 func (s *Server) handleGetRunResult(w http.ResponseWriter, _ *http.Request, runID string) {
 	snapshot, ok := s.runManager.Snapshot(runID)
 	if !ok {
-		writeAPIError(w, http.StatusNotFound, "RUN_NOT_FOUND", "run not found")
-		return
+		var err error
+		snapshot, err = s.loadPersistedRunSnapshotByID(runID)
+		if err != nil {
+			writeAPIError(w, http.StatusNotFound, "RUN_NOT_FOUND", "run not found")
+			return
+		}
 	}
 	if snapshot.State != runs.StateCompleted && snapshot.State != runs.StateFailed {
 		writeAPIError(w, http.StatusConflict, "RUN_NOT_FINISHED", "run has not finished")
@@ -2852,6 +2923,109 @@ func (s *Server) discoverRunFolderEntries(root string) ([]FileListEntry, error) 
 	}
 	sortRunFolderEntries(entries)
 	return entries, nil
+}
+
+func (s *Server) listRunSnapshots() ([]runs.Snapshot, error) {
+	byID := make(map[string]runs.Snapshot)
+	live := s.runManager.List()
+	liveIDs := make(map[string]struct{}, len(live))
+	for _, snapshot := range live {
+		if snapshot.RunID == "" {
+			continue
+		}
+		byID[snapshot.RunID] = snapshot
+		liveIDs[snapshot.RunID] = struct{}{}
+	}
+
+	persisted, err := s.discoverRunSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	for _, snapshot := range persisted {
+		if snapshot.RunID == "" {
+			continue
+		}
+		if _, exists := liveIDs[snapshot.RunID]; exists {
+			continue
+		}
+		byID[snapshot.RunID] = snapshot
+	}
+
+	snapshots := make([]runs.Snapshot, 0, len(byID))
+	for _, snapshot := range byID {
+		snapshots = append(snapshots, snapshot)
+	}
+	sortRunSnapshots(snapshots)
+	return snapshots, nil
+}
+
+func (s *Server) discoverRunSnapshots() ([]runs.Snapshot, error) {
+	root := filepath.Clean(s.workspaceBaseDir)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, err
+	}
+
+	snapshots := []runs.Snapshot{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if !d.IsDir() || samePath(path, root) {
+			return nil
+		}
+		metadataPath := filepath.Join(path, "run.json")
+		if _, err := os.Stat(metadataPath); err != nil {
+			return nil
+		}
+		snapshot, err := loadRunSnapshotFile(metadataPath)
+		if err == nil {
+			snapshots = append(snapshots, snapshot)
+		}
+		return filepath.SkipDir
+	})
+	if err != nil {
+		return nil, err
+	}
+	sortRunSnapshots(snapshots)
+	return snapshots, nil
+}
+
+func (s *Server) loadPersistedRunSnapshotByID(runID string) (runs.Snapshot, error) {
+	cleanRunID := strings.TrimSpace(runID)
+	if cleanRunID == "" {
+		return runs.Snapshot{}, runs.ErrRunNotFound
+	}
+	snapshots, err := s.discoverRunSnapshots()
+	if err != nil {
+		return runs.Snapshot{}, err
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.RunID == cleanRunID {
+			return snapshot, nil
+		}
+	}
+	return runs.Snapshot{}, runs.ErrRunNotFound
+}
+
+func sortRunSnapshots(snapshots []runs.Snapshot) {
+	sort.Slice(snapshots, func(i, j int) bool {
+		left := runSnapshotSortTime(snapshots[i])
+		right := runSnapshotSortTime(snapshots[j])
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return strings.ToLower(snapshots[i].RunID) < strings.ToLower(snapshots[j].RunID)
+	})
+}
+
+func runSnapshotSortTime(snapshot runs.Snapshot) time.Time {
+	if snapshot.FinishedAt != nil {
+		return *snapshot.FinishedAt
+	}
+	if snapshot.StartedAt != nil {
+		return *snapshot.StartedAt
+	}
+	return snapshot.CreatedAt
 }
 
 func (s *Server) runFolderEntry(absolutePath string) (FileListEntry, error) {

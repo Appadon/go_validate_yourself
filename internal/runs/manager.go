@@ -317,6 +317,21 @@ func (m *Manager) LatestSnapshot() (Snapshot, bool) {
 	return cloneSnapshot(record.snapshot), true
 }
 
+/* List returns all current in-memory run snapshots. */
+func (m *Manager) List() []Snapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	snapshots := make([]Snapshot, 0, len(m.runs))
+	for _, record := range m.runs {
+		if record == nil {
+			continue
+		}
+		snapshots = append(snapshots, cloneSnapshot(record.snapshot))
+	}
+	return snapshots
+}
+
 /* Snapshot returns the stored snapshot for a specific run id. */
 func (m *Manager) Snapshot(runID string) (Snapshot, bool) {
 	m.mu.Lock()

@@ -70,6 +70,21 @@ func TestManagerRejectsSecondActiveRun(t *testing.T) {
 	}
 }
 
+func TestManagerListReturnsSnapshots(t *testing.T) {
+	manager := NewManager()
+	if _, err := manager.Create("run-list", nil); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	snapshots := manager.List()
+	if len(snapshots) != 1 {
+		t.Fatalf("List() length = %d, want 1", len(snapshots))
+	}
+	if snapshots[0].RunID != "run-list" || snapshots[0].State != StateQueued {
+		t.Fatalf("List()[0] = %+v", snapshots[0])
+	}
+}
+
 func TestManagerRetainsFailureEventsAndFinalError(t *testing.T) {
 	manager := NewManager()
 	if _, err := manager.Create("run-fail", nil); err != nil {

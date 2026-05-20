@@ -497,6 +497,51 @@ func TestHandleConfigRunRejectsNonLoopback(t *testing.T) {
 	assertAPIErrorCode(t, recorder, http.StatusForbidden, "FORBIDDEN")
 }
 
+func TestHandleRunManagerUIRendersWorkingRootPage(t *testing.T) {
+	server := newSelectionTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/run_manager", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleRunManagerUI(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if contentType := recorder.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
+		t.Fatalf("Content-Type = %q", contentType)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "Run Manager") {
+		t.Fatalf("body missing run manager title: %s", body)
+	}
+	if !strings.Contains(body, server.workingRoot) {
+		t.Fatalf("body missing working root %q: %s", server.workingRoot, body)
+	}
+}
+
+func TestHandleRunManagerUIRejectsNonLoopback(t *testing.T) {
+	server := newSelectionTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/run_manager", nil)
+	request.RemoteAddr = "10.0.0.10:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleRunManagerUI(recorder, request)
+
+	assertAPIErrorCode(t, recorder, http.StatusForbidden, "FORBIDDEN")
+}
+
+func TestHandleRunManagerUIRejectsWrongMethod(t *testing.T) {
+	server := newSelectionTestServer(t)
+	request := httptest.NewRequest(http.MethodPost, "/run_manager", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleRunManagerUI(recorder, request)
+
+	assertAPIErrorCode(t, recorder, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED")
+}
+
 func TestHandleUIRendersWorkingRootPage(t *testing.T) {
 	server := newSelectionTestServer(t)
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -1012,6 +1057,87 @@ func TestHandleAssociatedRunReturnsNotFoundWhenMetadataMissing(t *testing.T) {
 	assertAPIErrorCode(t, recorder, http.StatusNotFound, "RUN_NOT_FOUND")
 }
 
+func TestHandleListRunsIncludesActiveInMemoryRun(t *testing.T) {
+	server := newSelectionTestServer(t)
+	ws := mustCreateWorkspace(t, server)
+	if _, err := server.runManager.Create("run-active", &ws); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := server.runManager.Start("run-active"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/runs", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleRuns(recorder, request)
+
+	response := decodeRunList(t, recorder)
+	if len(response.Runs) != 1 {
+		t.Fatalf("runs length = %d, want 1", len(response.Runs))
+	}
+	if response.Runs[0].RunID != "run-active" || response.Runs[0].State != runs.StateRunning {
+		t.Fatalf("run = %+v", response.Runs[0])
+	}
+}
+
+func TestHandleListRunsIncludesPersistedRunMetadata(t *testing.T) {
+	server := newSelectionTestServer(t)
+	ws, err := workspace.NewUnder(server.workspaceBaseDir, "run-persisted")
+	if err != nil {
+		t.Fatalf("NewUnder() error = %v", err)
+	}
+	writeRunMetadata(t, ws.MetadataPath, runs.Snapshot{
+		RunID:     "run-persisted",
+		State:     runs.StateCompleted,
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Workspace: &ws,
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/runs", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleRuns(recorder, request)
+
+	response := decodeRunList(t, recorder)
+	if len(response.Runs) != 1 {
+		t.Fatalf("runs length = %d, want 1", len(response.Runs))
+	}
+	if response.Runs[0].RunID != "run-persisted" || response.Runs[0].Workspace == nil {
+		t.Fatalf("run = %+v", response.Runs[0])
+	}
+}
+
+func TestHandleListRunsDeduplicatesLiveOverPersistedRun(t *testing.T) {
+	server := newSelectionTestServer(t)
+	ws := mustCreateWorkspace(t, server)
+	if _, err := server.runManager.Create("run-duplicate", &ws); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	writeRunMetadata(t, ws.MetadataPath, runs.Snapshot{
+		RunID:     "run-duplicate",
+		State:     runs.StateCompleted,
+		CreatedAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		Workspace: &ws,
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/runs", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	recorder := httptest.NewRecorder()
+
+	server.handleRuns(recorder, request)
+
+	response := decodeRunList(t, recorder)
+	if len(response.Runs) != 1 {
+		t.Fatalf("runs length = %d, want 1", len(response.Runs))
+	}
+	if response.Runs[0].RunID != "run-duplicate" || response.Runs[0].State != runs.StateQueued {
+		t.Fatalf("deduped run = %+v, want live queued snapshot", response.Runs[0])
+	}
+}
+
 func TestHandleCreateRunFromSelectionSuccessAndInspectability(t *testing.T) {
 	server := newSelectionTestServer(t)
 	csvPath := filepath.Join(server.workingRoot, "incoming", "input.csv")
@@ -1482,6 +1608,30 @@ func decodeCreatedRun(t *testing.T, body []byte) RunCreateResponse {
 		t.Fatalf("decode create response: %v", err)
 	}
 	return response
+}
+
+func decodeRunList(t *testing.T, recorder *httptest.ResponseRecorder) RunListResponse {
+	t.Helper()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var response RunListResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("OK = false: %+v", response)
+	}
+	return response
+}
+
+func writeRunMetadata(t *testing.T, path string, snapshot runs.Snapshot) {
+	t.Helper()
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	writeTestFile(t, path, string(data))
 }
 
 func assertAPIErrorCode(t *testing.T, recorder *httptest.ResponseRecorder, statusCode int, errorCode string) {

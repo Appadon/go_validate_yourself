@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{.Title}}</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/static/css/app.css?v={{.Version}}-run-manager">
+  </head>
+  <body>
+    <div class="app-shell run-manager-shell">
+      <header class="topbar">
+        <div class="topbar__copy">
+          <p class="eyebrow">GO VALIDATE YOURSELF RUN MANAGER</p>
+        </div>
+        <div class="topbar__status">
+          <section class="status-card">
+            <span class="status-card__label">Server</span>
+            <strong id="server-status-text">{{if .ServerBusy}}Busy{{else}}Idle{{end}}</strong>
+            <span id="server-status-badge" class="badge {{if .ServerBusy}}badge--warn{{else}}badge--ok{{end}}">
+              {{if .ServerBusy}}Single run occupied{{else}}Ready{{end}}
+            </span>
+          </section>
+        </div>
+      </header>
+
+      <main class="layout run-manager-layout">
+        <section class="panel run-manager-panel" aria-labelledby="run-manager-title">
+          <div class="panel__head">
+            <div>
+              <p class="eyebrow">Runs</p>
+              <h2 id="run-manager-title">API-started run history</h2>
+              <p class="panel-note">Working root: <code>{{.WorkingRoot}}</code></p>
+            </div>
+            <div class="report-actions">
+              <button id="refresh-runs-button" class="button button--secondary" type="button">Refresh</button>
+            </div>
+          </div>
+
+          <p id="run-manager-status" class="form-message" aria-live="polite"></p>
+
+          <div class="run-table-wrap">
+            <table class="run-table">
+              <thead>
+                <tr>
+                  <th>Run ID</th>
+                  <th>State</th>
+                  <th>Created</th>
+                  <th>Started</th>
+                  <th>Finished</th>
+                  <th>Input filename</th>
+                  <th>Current phase</th>
+                  <th>Workspace</th>
+                </tr>
+              </thead>
+              <tbody id="run-list-body"></tbody>
+            </table>
+            <div id="run-list-empty" class="run-manager-empty" hidden>No API runs found under the current workspace.</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="run-detail-modal" class="schema-editor-modal" hidden>
+      <div id="run-detail-backdrop" class="schema-editor-modal__backdrop"></div>
+      <section class="schema-editor-card run-detail-card" role="dialog" aria-modal="true" aria-labelledby="run-detail-title">
+        <div class="schema-editor-card__bar">
+          <div>
+            <p class="eyebrow">Run Detail</p>
+            <h2 id="run-detail-title">Run report</h2>
+          </div>
+          <div class="schema-editor-card__actions">
+            <button id="copy-error-summary-button" class="button button--secondary button--small" type="button">Copy error summary</button>
+            <button id="download-run-json-button" class="button button--secondary button--small" type="button">Download JSON</button>
+            <button id="open-error-explorer-button" class="button button--secondary button--small" type="button">Open Error Explorer</button>
+            <button id="run-detail-close-button" class="button button--secondary button--small" type="button">Close</button>
+          </div>
+        </div>
+
+        <div class="run-detail-body">
+          <section class="panel--run" aria-labelledby="run-detail-title">
+            <div class="progress-card" aria-live="polite">
+              <div class="progress-card__topline">
+                <div class="progress-card__copy">
+                  <span id="stage-detail" class="progress-card__stage">Preparing</span>
+                  <strong id="phase-heading">Ready</strong>
+                </div>
+                <span id="phase-detail">No run selected.</span>
+              </div>
+              <div class="progress-bar" aria-hidden="true">
+                <span id="progress-fill" class="progress-bar__fill"></span>
+              </div>
+            </div>
+
+            <ol id="phase-timeline" class="phase-timeline" aria-label="Pipeline stages"></ol>
+
+            <dl class="facts facts--compact run-detail-facts">
+              <div class="fact">
+                <dt>Run ID</dt>
+                <dd id="run-id-value">No run selected</dd>
+              </div>
+              <div class="fact">
+                <dt>Input filename</dt>
+                <dd id="run-input-filename-value">Not selected</dd>
+              </div>
+              <div class="fact">
+                <dt>Workspace folder</dt>
+                <dd id="run-workspace-value">Not available</dd>
+              </div>
+              <div class="fact">
+                <dt>Runtime</dt>
+                <dd id="run-runtime-value">Not started</dd>
+              </div>
+            </dl>
+
+            <dl id="performance-cards" class="facts facts--performance" aria-label="Resource usage"></dl>
+          </section>
+
+          <details class="event-details" open>
+            <summary class="event-details__summary">
+              <span>
+                <strong>Progress stream</strong>
+                <span>Recent run events and diagnostics.</span>
+              </span>
+            </summary>
+            <ol id="event-log" class="event-log" aria-live="polite">
+              <li class="event-log__empty">Progress events will appear here once a validation starts.</li>
+            </ol>
+          </details>
+
+          <p id="run-detail-status" class="form-message" aria-live="polite"></p>
+        </div>
+      </section>
+    </div>
+
+    <div id="error-explorer-modal" class="schema-editor-modal" hidden>
+      <div id="error-explorer-backdrop" class="schema-editor-modal__backdrop"></div>
+      <section class="schema-editor-card" role="dialog" aria-modal="true" aria-label="Error Explorer">
+        <div class="schema-editor-card__bar">
+          <div>
+            <p class="eyebrow">Error Explorer</p>
+          </div>
+          <button id="error-explorer-close-button" class="button button--secondary button--small" type="button">Close</button>
+        </div>
+        <iframe id="error-explorer-frame" class="schema-editor-frame" title="Error explorer"></iframe>
+      </section>
+    </div>
+
+    <script>
+      window.GVY_UI_BOOTSTRAP = {{.BootstrapJSON}};
+    </script>
+    <script src="/static/js/run_manager.js?v={{.Version}}-run-manager" defer></script>
+  </body>
+</html>

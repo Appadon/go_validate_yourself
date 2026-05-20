@@ -946,6 +946,86 @@ body::before {
   gap: 0.9rem;
 }
 
+.run-manager-shell {
+  width: min(1720px, calc(100% - 1.5rem));
+}
+
+.run-manager-layout,
+.run-manager-panel {
+  min-height: 0;
+}
+
+.run-manager-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.run-table-wrap {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(4, 7, 12, 0.22);
+}
+
+.run-table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+}
+
+.run-table th,
+.run-table td {
+  padding: 0.72rem 0.78rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.35;
+}
+
+.run-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--muted);
+  background: rgba(14, 19, 28, 0.98);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.run-table td {
+  max-width: 18rem;
+  overflow-wrap: anywhere;
+}
+
+.run-table-row {
+  cursor: pointer;
+}
+
+.run-table-row:hover {
+  background: rgba(75, 141, 255, 0.08);
+}
+
+.run-manager-empty {
+  padding: 1rem;
+  color: var(--muted);
+}
+
+.run-detail-card {
+  width: min(1320px, calc(100vw - 1.5rem));
+}
+
+.run-detail-body {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  padding: 1rem;
+}
+
 .facts,
 .summary-cards {
   display: grid;
@@ -962,6 +1042,10 @@ body::before {
 }
 
 .facts--performance {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.run-detail-facts {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
@@ -1912,6 +1996,7 @@ code {
   }
 
   .facts,
+  .run-detail-facts,
   .error-facts,
   .error-report-grid,
   .error-toolbar,

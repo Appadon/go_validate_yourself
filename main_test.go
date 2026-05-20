@@ -126,6 +126,16 @@ func TestResolveCLIConfigEmptyInvocationDefaultsToServer(t *testing.T) {
 	}
 }
 
+func TestResolvedServerConsoleURLUsesRunManager(t *testing.T) {
+	resolved := gvyconfig.ResolvedConfig{}
+	resolved.Server.Host = "127.0.0.1"
+	resolved.Server.Port = 1818
+
+	if got, want := resolvedServerConsoleURL(resolved), "http://127.0.0.1:1818/run_manager"; got != want {
+		t.Fatalf("resolvedServerConsoleURL() = %q, want %q", got, want)
+	}
+}
+
 /* TestResolveCLIConfigConfigModeInterpretsPositionals verifies config mode controls positional overlays. */
 func TestResolveCLIConfigConfigModeInterpretsPositionals(t *testing.T) {
 	tempDir := t.TempDir()
