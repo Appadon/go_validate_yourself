@@ -45,8 +45,13 @@ type FieldRule struct {
 	NonZero             bool              `json:"non_zero"`
 	DateFormats         []string          `json:"date_formats"`
 	DatetimeFormats     []string          `json:"datetime_formats"`
+	MinDate             string            `json:"min_date"`
+	MaxDate             string            `json:"max_date"`
 	parsedAllowed       map[string]struct{}
 	parsedInlineReplace map[string]string
+	parsedDateRange     bool
+	parsedMinDateDay    int64
+	parsedMaxDateDay    int64
 }
 
 /* Stats captures row-level counts for one file. */
@@ -102,6 +107,11 @@ var defaultDatetimeFormats = []string{
 	time.RFC3339,
 	time.RFC3339Nano,
 }
+
+const (
+	defaultMinDate = "1900-01-01"
+	defaultMaxDate = "2100-12-31"
+)
 
 /* LoadSchema reads schema configuration from JSON. */
 func LoadSchema(path string) (SchemaConfig, error) {
@@ -160,6 +170,13 @@ func ValidateSchema(cfg *SchemaConfig) error {
 			if len(f.DatetimeFormats) == 0 {
 				f.DatetimeFormats = append([]string{}, defaultDatetimeFormats...)
 			}
+		}
+		if f.Type == "date" || f.Type == "datetime" {
+			if err := normalizeDateRange(f); err != nil {
+				return err
+			}
+		} else if strings.TrimSpace(f.MinDate) != "" || strings.TrimSpace(f.MaxDate) != "" {
+			return fmt.Errorf("field %q has date range but type %q is not date or datetime", f.Name, f.Type)
 		}
 
 		if len(f.AllowedValues) > 0 {
@@ -680,6 +697,9 @@ func normalizeAndValidateValue(raw string, field FieldRule) (*string, error) {
 		for _, layout := range field.DateFormats {
 			t, err := time.Parse(layout, raw)
 			if err == nil {
+				if err := validateDateInRange(t, field); err != nil {
+					return nil, err
+				}
 				return stringPtr(strconv.FormatInt(int64(daysSinceEpoch(t)), 10)), nil
 			}
 		}
@@ -689,6 +709,9 @@ func normalizeAndValidateValue(raw string, field FieldRule) (*string, error) {
 		for _, layout := range field.DatetimeFormats {
 			t, err := time.Parse(layout, raw)
 			if err == nil {
+				if err := validateDateInRange(t, field); err != nil {
+					return nil, err
+				}
 				return stringPtr(strconv.FormatInt(t.UTC().UnixMicro(), 10)), nil
 			}
 		}
@@ -745,6 +768,71 @@ func daysSinceEpoch(t time.Time) int32 {
 	y, m, d := t.Date()
 	utcDate := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 	return int32(utcDate.Unix() / 86400)
+}
+
+func normalizeDateRange(field *FieldRule) error {
+	minDate, maxDate, minDay, maxDay, err := dateRangeForField(*field)
+	if err != nil {
+		return err
+	}
+	field.MinDate = minDate
+	field.MaxDate = maxDate
+	field.parsedDateRange = true
+	field.parsedMinDateDay = minDay
+	field.parsedMaxDateDay = maxDay
+	return nil
+}
+
+func validateDateInRange(t time.Time, field FieldRule) error {
+	minDate, maxDate, minDay, maxDay, err := dateRangeForField(field)
+	if err != nil {
+		return err
+	}
+	day := dateDay(t)
+	if day < minDay || day > maxDay {
+		return fmt.Errorf("date outside range %s to %s", minDate, maxDate)
+	}
+	return nil
+}
+
+func dateRangeForField(field FieldRule) (string, string, int64, int64, error) {
+	if field.parsedDateRange {
+		return field.MinDate, field.MaxDate, field.parsedMinDateDay, field.parsedMaxDateDay, nil
+	}
+	minDate := strings.TrimSpace(field.MinDate)
+	if minDate == "" {
+		minDate = defaultMinDate
+	}
+	maxDate := strings.TrimSpace(field.MaxDate)
+	if maxDate == "" {
+		maxDate = defaultMaxDate
+	}
+	minDay, err := parseDateBound(minDate)
+	if err != nil {
+		return "", "", 0, 0, fmt.Errorf("field %q has invalid min_date %q (expected YYYY-MM-DD)", field.Name, minDate)
+	}
+	maxDay, err := parseDateBound(maxDate)
+	if err != nil {
+		return "", "", 0, 0, fmt.Errorf("field %q has invalid max_date %q (expected YYYY-MM-DD)", field.Name, maxDate)
+	}
+	if minDay > maxDay {
+		return "", "", 0, 0, fmt.Errorf("field %q has min_date after max_date", field.Name)
+	}
+	return minDate, maxDate, minDay, maxDay, nil
+}
+
+func parseDateBound(value string) (int64, error) {
+	t, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return 0, err
+	}
+	return dateDay(t), nil
+}
+
+func dateDay(t time.Time) int64 {
+	y, m, d := t.Date()
+	utcDate := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	return utcDate.Unix() / 86400
 }
 
 /* stringPtr returns a pointer to the provided string value. */

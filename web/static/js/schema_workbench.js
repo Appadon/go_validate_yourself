@@ -121,6 +121,8 @@
     fieldInlineReplaceRows: document.getElementById("field-inline-replace-rows"),
     fieldDateFormatsInput: document.getElementById("field-date-formats-input"),
     fieldDatetimeFormatsInput: document.getElementById("field-datetime-formats-input"),
+    fieldMinDateInput: document.getElementById("field-min-date-input"),
+    fieldMaxDateInput: document.getElementById("field-max-date-input"),
     typeSpecificOptions: Array.from(document.querySelectorAll("[data-field-types]")),
     csvPickerModal: document.getElementById("csv-picker-modal"),
     csvPickerBackdrop: document.getElementById("csv-picker-backdrop"),
@@ -282,6 +284,8 @@
       els.fieldNonZeroInput,
       els.fieldDateFormatsInput,
       els.fieldDatetimeFormatsInput,
+      els.fieldMinDateInput,
+      els.fieldMaxDateInput,
     ];
   }
 
@@ -825,6 +829,10 @@
     if (field.type === "datetime") {
       setArrayProperty(field, "datetime_formats", linesFromText(els.fieldDatetimeFormatsInput.value));
     }
+    if (field.type === "date" || field.type === "datetime") {
+      setTextProperty(field, "min_date", els.fieldMinDateInput.value);
+      setTextProperty(field, "max_date", els.fieldMaxDateInput.value);
+    }
     setMessage("", "");
     renderTypeSpecificOptions(field.type);
   }
@@ -854,6 +862,10 @@
         }
         if (field.type === "datetime") {
           arrayProperty(out, "datetime_formats", field.datetime_formats);
+        }
+        if (field.type === "date" || field.type === "datetime") {
+          stringProperty(out, "min_date", field.min_date);
+          stringProperty(out, "max_date", field.max_date);
         }
         return out;
       }),
@@ -1137,6 +1149,8 @@
     renderInlineReplaceRows(field.inline_replace);
     els.fieldDateFormatsInput.value = arrayText(field.date_formats);
     els.fieldDatetimeFormatsInput.value = arrayText(field.datetime_formats);
+    els.fieldMinDateInput.value = valueText(field.min_date);
+    els.fieldMaxDateInput.value = valueText(field.max_date);
     renderTypeSpecificOptions(els.fieldTypeInput.value);
     renderFieldInference(field);
   }
@@ -1260,6 +1274,8 @@
     next.allowed_values = Array.isArray(next.allowed_values) ? next.allowed_values : [];
     next.date_formats = Array.isArray(next.date_formats) ? next.date_formats : [];
     next.datetime_formats = Array.isArray(next.datetime_formats) ? next.datetime_formats : [];
+    next.min_date = typeof next.min_date === "string" ? next.min_date : "";
+    next.max_date = typeof next.max_date === "string" ? next.max_date : "";
     next.inline_replace = next.inline_replace && typeof next.inline_replace === "object" && !Array.isArray(next.inline_replace) ? next.inline_replace : {};
     if (next.type === "string") {
       const minLength = Number(next.min_length);
@@ -1318,6 +1334,15 @@
       return;
     }
     target[key] = clean;
+  }
+
+  function setTextProperty(target, key, value) {
+    const clean = String(value || "").trim();
+    if (clean) {
+      target[key] = clean;
+    } else {
+      delete target[key];
+    }
   }
 
   function setArrayProperty(target, key, values) {

@@ -551,9 +551,13 @@ func schemaFromInference(fields []FieldInference) validator.SchemaConfig {
 		}
 		if field.Type == "date" {
 			rule.DateFormats = append([]string(nil), dateLayouts...)
+			rule.MinDate = "1900-01-01"
+			rule.MaxDate = "2100-12-31"
 		}
 		if field.Type == "datetime" {
 			rule.DatetimeFormats = append([]string(nil), datetimeLayouts...)
+			rule.MinDate = "1900-01-01"
+			rule.MaxDate = "2100-12-31"
 		}
 		schema.Fields = append(schema.Fields, rule)
 	}
