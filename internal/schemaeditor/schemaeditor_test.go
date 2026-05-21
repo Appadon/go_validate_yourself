@@ -36,6 +36,21 @@ func TestSaveFormatsAndValidatesSchema(t *testing.T) {
 	}
 }
 
+func TestMarshalIncludesDateRange(t *testing.T) {
+	data, err := Marshal(Document{
+		Fields: []validator.FieldRule{
+			{Name: "Event Date", Type: "date", MinDate: "2020-01-01", MaxDate: "2020-12-31"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"min_date": "2020-01-01"`) || !strings.Contains(text, `"max_date": "2020-12-31"`) {
+		t.Fatalf("saved schema did not include date range: %s", text)
+	}
+}
+
 func TestMarshalRejectsInvalidSchema(t *testing.T) {
 	_, err := Marshal(Document{})
 	if err == nil {

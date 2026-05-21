@@ -66,6 +66,8 @@ type schemaField struct {
 	NonZero          bool              `json:"non_zero,omitempty"`
 	DateFormats      []string          `json:"date_formats,omitempty"`
 	DatetimeFormats  []string          `json:"datetime_formats,omitempty"`
+	MinDate          string            `json:"min_date,omitempty"`
+	MaxDate          string            `json:"max_date,omitempty"`
 }
 
 func toSchemaFile(schema Document) schemaFile {
@@ -86,6 +88,8 @@ func toSchemaFile(schema Document) schemaFile {
 			NonZero:          field.NonZero,
 			DateFormats:      field.DateFormats,
 			DatetimeFormats:  field.DatetimeFormats,
+			MinDate:          field.MinDate,
+			MaxDate:          field.MaxDate,
 		})
 	}
 	return out

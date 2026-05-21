@@ -230,7 +230,9 @@ Schemas describe how source columns are normalized, validated, and written to Pa
       "name": "Coverage Start Date",
       "parquet_name": "coverage_start_date",
       "type": "date",
-      "required": true
+      "required": true,
+      "min_date": "1900-01-01",
+      "max_date": "2100-12-31"
     }
   ]
 }
@@ -254,6 +256,8 @@ Supported field settings:
 | `non_zero` | Reject zero for integer fields. |
 | `date_formats` | Custom date parse layouts. |
 | `datetime_formats` | Custom datetime parse layouts. |
+| `min_date` | Earliest accepted date for `date` or `datetime` fields, in `YYYY-MM-DD` format. Defaults to `1900-01-01`. |
+| `max_date` | Latest accepted date for `date` or `datetime` fields, in `YYYY-MM-DD` format. Defaults to `2100-12-31`. |
 
 GVY treats these values as missing: empty string, `none`, `null`, `nan`, `na`, and `n/a`.
 

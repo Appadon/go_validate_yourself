@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go_validate_yourself/internal/errorstore"
@@ -122,6 +123,61 @@ func TestNormalizeAndValidateValueDatetime(t *testing.T) {
 	want := "1774535400000000"
 	if *got != want {
 		t.Fatalf("normalizeAndValidateValue() = %s, want %s", *got, want)
+	}
+}
+
+func TestNormalizeAndValidateValueDateRejectsDefaultRange(t *testing.T) {
+	field := FieldRule{
+		Name:        "event_date",
+		Type:        "date",
+		DateFormats: []string{"2006-01-02"},
+	}
+
+	for _, raw := range []string{"1899-12-31", "2101-01-01"} {
+		if _, err := normalizeAndValidateValue(raw, field); err == nil || !strings.Contains(err.Error(), "date outside range 1900-01-01 to 2100-12-31") {
+			t.Fatalf("normalizeAndValidateValue(%q) error = %v, want default range error", raw, err)
+		}
+	}
+}
+
+func TestNormalizeAndValidateValueDateUsesCustomRange(t *testing.T) {
+	schema := SchemaConfig{
+		Fields: []FieldRule{
+			{
+				Name:        "event_date",
+				Type:        "date",
+				DateFormats: []string{"2006-01-02"},
+				MinDate:     "2020-01-01",
+				MaxDate:     "2020-12-31",
+			},
+		},
+	}
+	if err := ValidateSchema(&schema); err != nil {
+		t.Fatalf("ValidateSchema() error = %v", err)
+	}
+
+	if _, err := normalizeAndValidateValue("2020-06-30", schema.Fields[0]); err != nil {
+		t.Fatalf("normalizeAndValidateValue() in range error = %v", err)
+	}
+	if _, err := normalizeAndValidateValue("2021-01-01", schema.Fields[0]); err == nil || !strings.Contains(err.Error(), "date outside range 2020-01-01 to 2020-12-31") {
+		t.Fatalf("normalizeAndValidateValue() error = %v, want custom range error", err)
+	}
+}
+
+func TestValidateSchemaRejectsInvalidDateRange(t *testing.T) {
+	schema := SchemaConfig{
+		Fields: []FieldRule{
+			{
+				Name:    "event_date",
+				Type:    "date",
+				MinDate: "2021-01-01",
+				MaxDate: "2020-12-31",
+			},
+		},
+	}
+
+	if err := ValidateSchema(&schema); err == nil || !strings.Contains(err.Error(), "min_date after max_date") {
+		t.Fatalf("ValidateSchema() error = %v, want date range order error", err)
 	}
 }
 
