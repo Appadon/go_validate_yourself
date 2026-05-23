@@ -56,27 +56,27 @@ type FieldRule struct {
 
 /* Stats captures row-level counts for one file. */
 type Stats struct {
-	TotalRows   int
-	ValidRows   int
-	InvalidRows int
+	TotalRows   int `json:"total_rows"`
+	ValidRows   int `json:"valid_rows"`
+	InvalidRows int `json:"invalid_rows"`
 }
 
 /* FileResult is the outcome of processing one input file in directory mode. */
 type FileResult struct {
-	Input       string
-	ParquetPath string
-	ErrorPath   string
-	Stats       Stats
-	Err         error
+	Input       string `json:"input"`
+	ParquetPath string `json:"parquet_path"`
+	ErrorPath   string `json:"error_path"`
+	Stats       Stats  `json:"stats"`
+	Err         error  `json:"-"`
 }
 
 /* DirectorySummary contains aggregated metrics for directory processing. */
 type DirectorySummary struct {
-	Files       int
-	FailedFiles int
-	TotalRows   int
-	ValidRows   int
-	InvalidRows int
+	Files       int `json:"files"`
+	FailedFiles int `json:"failed_files"`
+	TotalRows   int `json:"total_rows"`
+	ValidRows   int `json:"valid_rows"`
+	InvalidRows int `json:"invalid_rows"`
 }
 
 /* ValidationError captures one field-level validation error for a row. */

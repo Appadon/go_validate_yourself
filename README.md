@@ -340,9 +340,10 @@ config = {
     },
 }
 
-with Gvy.start(binary_path="./gvy") as gvy:
+with Gvy.start(binary_path="./gvy", working_dir="/abs/path/project") as gvy:
     preview = gvy.resolve_config(config)
     result = gvy.run_config(config)
+    run = gvy.get_run(result["run"]["run_id"])
 ```
 
 Run a saved config file:
@@ -370,6 +371,8 @@ with Gvy.start(binary_path="./gvy") as gvy:
 ```
 
 The SDK starts a local GVY server, waits for `/health`, sends JSON requests to the same localhost API used by the browser, and shuts the server down when the context exits. If `./gvy` is not present on Linux, the SDK can download the configured release asset into `~/.cache/gvy-sdk/`.
+
+Relative config paths and the run history are scoped to the SDK server working directory. By default that is the Python process current directory; pass `working_dir=` to match the folder you use when launching the browser UI.
 
 ## Output Layout
 

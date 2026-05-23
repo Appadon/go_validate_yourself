@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,7 @@ class DefaultSettings:
 	host: str = "127.0.0.1"
 	port: int = 1818
 	binary_path: str = "./gvy"
+	working_dir: Optional[str] = None
 	request_timeout: Optional[float] = None
 	startup_timeout: int = 30
 	validate_auto_defaults: Dict[str, Any] = field(default_factory=dict)
@@ -53,6 +55,7 @@ class Gvy:
 		host: str = "127.0.0.1",
 		port: int = 1818,
 		binary_path: str = "./gvy",
+		working_dir: Optional[ConfigPath] = None,
 		request_timeout: Optional[float] = None,
 		startup_timeout: int = 30,
 		validate_auto_defaults: Optional[Dict[str, Any]] = None,
@@ -66,6 +69,7 @@ class Gvy:
 			host=host,
 			port=port,
 			binary_path=binary_path,
+			working_dir=str(working_dir) if working_dir is not None else None,
 			request_timeout=request_timeout,
 			startup_timeout=startup_timeout,
 			validate_auto_defaults=dict(validate_auto_defaults or {}),
@@ -81,6 +85,7 @@ class Gvy:
 		host: str = "127.0.0.1",
 		port: int = 1818,
 		binary_path: str = "./gvy",
+		working_dir: Optional[ConfigPath] = None,
 		request_timeout: Optional[float] = None,
 		startup_timeout: int = 30,
 		validate_auto_defaults: Optional[Dict[str, Any]] = None,
@@ -93,6 +98,7 @@ class Gvy:
 			host=host,
 			port=port,
 			binary_path=binary_path,
+			working_dir=working_dir,
 			request_timeout=request_timeout,
 			startup_timeout=startup_timeout,
 			validate_auto_defaults=validate_auto_defaults,
@@ -128,7 +134,7 @@ class Gvy:
 				"-port",
 				str(self.settings.port),
 			],
-			cwd=str(binary_path.parent),
+			cwd=str(self._resolve_working_dir()),
 		)
 		return self._process
 
@@ -269,6 +275,32 @@ class Gvy:
 			timeout=self.settings.request_timeout,
 		)
 
+	def list_runs(self) -> Dict[str, Any]:
+		"""list_runs returns live and persisted runs visible to the GVY run manager."""
+		return self._request(
+			"GET",
+			"/api/runs",
+			timeout=self.settings.request_timeout,
+		)
+
+	def get_run(self, run_id: str) -> Dict[str, Any]:
+		"""get_run returns the latest snapshot for one run."""
+		quoted_run_id = self._quoted_run_id(run_id)
+		return self._request(
+			"GET",
+			f"/api/runs/{quoted_run_id}",
+			timeout=self.settings.request_timeout,
+		)
+
+	def get_run_result(self, run_id: str) -> Dict[str, Any]:
+		"""get_run_result returns the terminal result or final error for one run."""
+		quoted_run_id = self._quoted_run_id(run_id)
+		return self._request(
+			"GET",
+			f"/api/runs/{quoted_run_id}/result",
+			timeout=self.settings.request_timeout,
+		)
+
 	def validate_auto(self, input_csv: str, schema_path: str, **overrides: Any) -> Dict[str, Any]:
 		"""validate_auto runs the auto workflow by sending a config-first request."""
 		payload = dict(overrides)
@@ -300,6 +332,13 @@ class Gvy:
 		if not isinstance(config, dict):
 			raise GvyError("config must be a dictionary")
 		return dict(config)
+
+	def _quoted_run_id(self, run_id: str) -> str:
+		"""_quoted_run_id validates and URL-escapes a run id path segment."""
+		clean = str(run_id).strip()
+		if not clean:
+			raise GvyError("run_id is required")
+		return urllib.parse.quote(clean, safe="")
 
 	def _auto_payload_to_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
 		"""_auto_payload_to_config maps legacy SDK auto fields into canonical config."""
@@ -426,7 +465,21 @@ class Gvy:
 		binary_path = Path(self.settings.binary_path).expanduser()
 		if binary_path.is_absolute():
 			return binary_path
-		return (Path(__file__).resolve().parent.parent / binary_path).resolve()
+
+		working_candidate = (self._resolve_working_dir() / binary_path).resolve()
+		if working_candidate.exists():
+			return working_candidate
+
+		package_candidate = (Path(__file__).resolve().parent.parent / binary_path).resolve()
+		if package_candidate.exists():
+			return package_candidate
+		return working_candidate
+
+	def _resolve_working_dir(self) -> Path:
+		"""_resolve_working_dir returns the server working directory used for relative paths and runs."""
+		if self.settings.working_dir is None:
+			return Path.cwd().resolve()
+		return Path(self.settings.working_dir).expanduser().resolve()
 
 	def _can_download_binary(self) -> bool:
 		"""_can_download_binary enforces the current Linux-only download support."""
