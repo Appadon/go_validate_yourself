@@ -45,10 +45,10 @@ type Config struct {
 
 /* Summary captures split run metrics. */
 type Summary struct {
-	TotalRows      int
-	SplitRows      int
-	MissingKeyRows int
-	OutputFiles    int
+	TotalRows      int `json:"total_rows"`
+	SplitRows      int `json:"split_rows"`
+	MissingKeyRows int `json:"missing_key_rows"`
+	OutputFiles    int `json:"output_files"`
 }
 
 /* CacheMetadata captures the input signature for a reusable split directory. */

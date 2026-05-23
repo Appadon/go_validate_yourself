@@ -25,12 +25,12 @@ const readChunkSize = 2048
 
 /* Summary captures the high-level result of a batch parquet run. */
 type Summary struct {
-	InputFiles int
-	Batches    int
-	BatchSize  int
-	Workers    int
-	TotalRows  int64
-	OutputDir  string
+	InputFiles int    `json:"input_files"`
+	Batches    int    `json:"batches"`
+	BatchSize  int    `json:"batch_size"`
+	Workers    int    `json:"workers"`
+	TotalRows  int64  `json:"total_rows"`
+	OutputDir  string `json:"output_dir"`
 }
 
 /* ListParquetFiles returns sorted parquet files from one directory. */

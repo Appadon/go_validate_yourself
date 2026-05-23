@@ -435,6 +435,17 @@ func TestHandleConfigRunExecutesThroughRunPipeline(t *testing.T) {
 		return service.PipelineResult{
 			Phases:    opts.Phases,
 			RanPhases: opts.Phases,
+			ValidationDir: &service.DirectoryValidationResult{
+				InputDir: opts.Validate.InputDir,
+				Summary: validator.DirectorySummary{
+					Files:       1,
+					TotalRows:   2,
+					ValidRows:   1,
+					InvalidRows: 1,
+				},
+				SuccessDir: opts.Validate.SuccessDir,
+				ErrorDir:   opts.Validate.ErrorDir,
+			},
 		}, nil
 	}
 
@@ -459,6 +470,12 @@ func TestHandleConfigRunExecutesThroughRunPipeline(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("expected RunPipeline to be called")
+	}
+	if !strings.Contains(recorder.Body.String(), `"invalid_rows":1`) {
+		t.Fatalf("response should expose snake_case invalid rows for SDK callers: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), `"InvalidRows"`) {
+		t.Fatalf("response leaked Go field names: %s", recorder.Body.String())
 	}
 	var response ConfigRunResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
