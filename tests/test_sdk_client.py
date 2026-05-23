@@ -1,7 +1,10 @@
 import json
+import os
 import tempfile
 import unittest
+from pathlib import Path
 from typing import Any, Dict, Optional
+from unittest.mock import patch
 
 from gvy_sdk import Gvy
 
@@ -31,6 +34,51 @@ class RecordingGvy(Gvy):
 
 
 class TestSdkClient(unittest.TestCase):
+	def test_start_server_uses_working_dir_for_server_root(self) -> None:
+		class FakeProcess:
+			def poll(self) -> None:
+				return None
+
+		with tempfile.TemporaryDirectory() as temp_dir:
+			root = Path(temp_dir)
+			binary_dir = root / "bin"
+			working_dir = root / "project"
+			binary_dir.mkdir()
+			working_dir.mkdir()
+			binary_path = binary_dir / "gvy"
+			binary_path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+			client = Gvy(binary_path=str(binary_path), working_dir=working_dir)
+
+			with patch("gvy_sdk.client.subprocess.Popen", return_value=FakeProcess()) as popen:
+				client.start_server()
+
+		_, kwargs = popen.call_args
+		self.assertEqual(kwargs["cwd"], str(working_dir.resolve()))
+
+	def test_relative_binary_path_resolves_from_working_dir(self) -> None:
+		with tempfile.TemporaryDirectory() as temp_dir:
+			root = Path(temp_dir)
+			working_dir = root / "project"
+			working_dir.mkdir()
+			binary_path = working_dir / "gvy"
+			binary_path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+			client = Gvy(binary_path="./gvy", working_dir=working_dir)
+
+			self.assertEqual(client._resolve_binary_path(), binary_path.resolve())
+
+	def test_default_working_dir_is_caller_cwd(self) -> None:
+		previous_cwd = os.getcwd()
+		with tempfile.TemporaryDirectory() as temp_dir:
+			try:
+				os.chdir(temp_dir)
+				client = Gvy()
+
+				self.assertEqual(client._resolve_working_dir(), Path(temp_dir).resolve())
+			finally:
+				os.chdir(previous_cwd)
+
 	def test_run_config_sends_config_payload(self) -> None:
 		client = RecordingGvy({"ok": True})
 		config = {"mode": "split", "inputs": {"main_csv": "input.csv"}}
@@ -68,6 +116,25 @@ class TestSdkClient(unittest.TestCase):
 		self.assertEqual(response["resolved_config"]["mode"], "validate")
 		self.assertEqual(client.requests[0]["path"], "/api/config/resolve")
 		self.assertEqual(client.requests[0]["payload"], config)
+
+	def test_run_manager_helpers_call_run_endpoints(self) -> None:
+		client = RecordingGvy({"ok": True})
+
+		client.list_runs()
+		client.get_run("run-1")
+		client.get_run_result("run-1")
+
+		self.assertEqual(
+			[request["path"] for request in client.requests],
+			["/api/runs", "/api/runs/run-1", "/api/runs/run-1/result"],
+		)
+
+	def test_run_manager_helpers_quote_run_id(self) -> None:
+		client = RecordingGvy({"ok": True})
+
+		client.get_run("run/1")
+
+		self.assertEqual(client.requests[0]["path"], "/api/runs/run%2F1")
 
 	def test_run_validate_auto_uses_explicit_config_and_legacy_response(self) -> None:
 		client = RecordingGvy(
